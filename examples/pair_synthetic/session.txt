@@ -1,0 +1,12 @@
+# The synthetic pair: run it with  astrovista --run session.txt  or File > Run a command file
+# (file names are relative to this file's folder).  The image and its answer are made by
+# astro_vista.synthetic.pair(); the true values are in the FITS header (A_X, A_RE, ...).
+rd 1 pair.fits
+mask load stars pair.dmask 1             # circles around the stars: a fitting mask
+mask role stars fit
+sources 1                                # the sources: the cores around A and B use them
+sky 1 SEGMENT                            # every source down to 0.5 sigma left out; the sky of the rest
+# the pair: A, then B with A taken out, then A with B taken out, ... (4 cycles)
+pair 1 SKY=1000 MASK=stars \
+       A: NAME="A" X0=294.3 Y0=263.8 R0=3 R1=120 \
+       B: NAME="B" X0=421.18 Y0=322.97 R0=3 R1=50 NR=20

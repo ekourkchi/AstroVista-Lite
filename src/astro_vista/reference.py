@@ -182,12 +182,38 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
             ),
             _c(
                 "sky",
-                "sky N [MASK=a,b]",
-                "The sky level of buffer N: the median of the pixels the masks leave, clipped "
-                "at 3 standard deviations until it settles. Also gives the clipped mean and "
-                "the standard deviation.",
-                (("MASK=", "mask layers to leave out"),),
-                "sky 1 MASK=mymask",
+                "sky N [MASK=a,b]   ·   sky N SEGMENT [THRESH=0.5] [MINAREA=12] [GROW=2] "
+                "[CELLS=8] [BACK_SIZE=0] [PAD=v] [MASK=a,b] [TOMASK=skymask] [TOMAP=M] "
+                "[TOPLANE=M]",
+                "The sky level of buffer N. Alone: the median of the pixels the masks leave, "
+                "clipped at 3 standard deviations until it settles. With SEGMENT: every source "
+                "found down to THRESH standard deviations is left out (grown by GROW pixels), "
+                "and the sky is measured on the rest: its median, a clipped mean and sigma, the "
+                "medians of CELLS × CELLS boxes, a plane fitted to them (the gradient, as an "
+                "angle on the image from +x), an approximate sampling error and the spatial "
+                "spread, kept apart. The verdict: usable_support, candidate_inspect_support "
+                "(with its reasons) or no_estimate. Enough sky is needed, not proof: a halo too "
+                "faint to be detected can remain. The pixels left out become the mask layer "
+                "TOMASK, of role sky, which is never used in a fit.",
+                (
+                    ("MASK=", "mask layers to leave out as well"),
+                    ("SEGMENT", "find and leave out every source first"),
+                    (
+                        "THRESH=, MINAREA=",
+                        "the detection: sigma above the level (0.5), pixels (12)",
+                    ),
+                    ("GROW=", "pixels added around every source (2; 0: none)"),
+                    ("CELLS=", "the boxes per side for the cells and the plane (8)"),
+                    (
+                        "BACK_SIZE=",
+                        "0: one level, iterated (default); > 0: a background mesh of that "
+                        "size, as SExtractor's BACK_SIZE (it takes part of a large halo for sky)",
+                    ),
+                    ("PAD=", "a value that marks pixels without data (0 around a mosaic)"),
+                    ("TOMASK=", "the name of the sky layer (skymask)"),
+                    ("TOMAP=, TOPLANE=", "buffers for the cell medians and the fitted plane"),
+                ),
+                "sky 1 MASK=mymask\nsky 1 SEGMENT\nsky 1 SEGMENT THRESH=1 GROW=3 TOMAP=19",
             ),
             _c(
                 "mn",
@@ -432,9 +458,20 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ("MASKBUF=", "buffers used as masks: masked where 0 or NaN"),
                     ("MASKFILE=", "a mask file (FITS or .dmask, 0 = masked)"),
                     ("TOMODEL=, TORESID=", "the buffers for the model and the residual"),
+                    ("RAW", "the residual on every pixel (masked ones too), not blanked"),
+                    ("MINUS=", "buffers subtracted from the image before the fit"),
+                    (
+                        "MODE=",
+                        "harmonics by name: none, 3, 4, 3,4, 4,6, 3m, 4m, 6m,4m (m: their "
+                        "median over all ellipses; 6 replaces 3); or COS3X=, COS4X=",
+                    ),
+                    ("FIXCTR=", "0 every ellipse finds its centre, 1 fixed at X0, Y0, 2 median"),
+                    ("RLAW=, GAIN=, TIE=", "ELLIPROF's spacing of radii, gain and smoothing"),
                 ),
                 "elliprof 1 X0=567 Y0=562 R0=9 R1=347 NR=23 SKY=3246 RMSTAR "
-                "MASK=u12517j TOMODEL=3 TORESID=4",
+                "MASK=u12517j TOMODEL=3 TORESID=4\n"
+                "elliprof 1 X0=567 Y0=562 R0=9 R1=347 NR=23 SKY=3246 MODE=4 FIXCTR=0 "
+                "MASK=u12517j TORESID=4 RAW",
             ),
             _c(
                 "sources",
@@ -490,6 +527,66 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "on buffer N or of run k.",
                 (),
                 "centre 1 SOURCE=1",
+            ),
+        ],
+    ),
+    (
+        "Pairs of galaxies",
+        "Two overlapping galaxies are fitted in turn, each with the other's model taken out. "
+        "Help ▸ Documentation ▸ Fitting a pair of galaxies explains the method.",
+        [
+            _c(
+                "pair",
+                "pair N SKY=s [shared keywords] A: X0= Y0= R0= R1= [A's keywords] "
+                "B: X0= Y0= R0= R1= [B's keywords]",
+                "Fit a pair: A, then B on the image minus A (each with the other's core left "
+                "out), then CYCLES times A on the image minus B and B on the image minus A. A "
+                "model is kept only when its fit passes every check; the result is the last "
+                "cycle in which both passed. It makes four buffers: the models of A and B, "
+                "A + B, and the residual (the image minus the sky and both models, on every "
+                "pixel). The status says how it ended: stable_valid_pair, "
+                "valid_pair_not_stable, retained_after_failed_update, "
+                "incomplete_initialization or cancelled. help pair lists every keyword.",
+                (
+                    ("SKY=", "the sky, the same for every call (required)"),
+                    (
+                        "MASK=, MASKFILE=, MASKBUF=",
+                        "what to leave out of every fit (sky layers are refused)",
+                    ),
+                    (
+                        "CYCLES=, NITER=",
+                        "A then B this many times (4); iterations in each call (10)",
+                    ),
+                    ("CORECAP=", "the largest core left out around the other galaxy (50 px)"),
+                    ("TOMODELA=, TOMODELB=, TOMODEL=, TORESID=", "the result buffers (free ones)"),
+                    ("VIEWS", "also the image − sky − B and image − sky − A"),
+                    ("STOP, BOOTSTRAP=0", "stop once stable; no partial first fits"),
+                    (
+                        "A: … B: …",
+                        "each galaxy: X0= Y0= R0= R1= NR=25 NAME= MODE= FIXCTR= CORE= ADAPTIVE",
+                    ),
+                ),
+                "pair 1 SKY=3246 MASK=u12517j CYCLES=2 A: NAME=UGC12517 X0=567 Y0=562 R0=9 "
+                "R1=200 NR=20 B: X0=362.1 Y0=498.4 R0=2 R1=25 NR=10",
+            ),
+            _c(
+                "pairexport",
+                "pairexport N folder",
+                "Write the last pair fit of buffer N's image to a folder: the inputs it used, "
+                "the requested and effective settings, every elliprof call, the profiles, the "
+                "ellipses as DS9 regions, the models, the residual (float64) and a manifest. "
+                "transaction.json says complete once everything is written.",
+                (),
+                "pairexport 1 pair_result",
+            ),
+            _c(
+                "window",
+                "window N BOX=x0,y0,x1,y1 [OUT=M] [MASKS=a,b|all]",
+                "Cut out pixels x0 ≤ x < x1, y0 ≤ y < y1 (whole-pixel edges; data[y0:y1, "
+                "x0:x1]) into buffer OUT, the next free one by default. The WCS follows, and "
+                "the offset is kept in LTV1, LTV2. A box partly outside is clipped.",
+                (("MASKS=", "mask layers to cut too (new layers NAME_w); all: every one"),),
+                "window 1 BOX=300,300,800,800 OUT=20",
             ),
         ],
     ),
@@ -610,6 +707,17 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "or mask everything; show or hide the layer on the image.",
                 (),
                 "mask grow edges 2\nmask shrink edges 1\nmask hide edges\nmask show edges",
+            ),
+            _c(
+                "mask role",
+                "mask role NAME fit|sky|candidate|none",
+                "Say what a layer is for. fit: left out of fits; sky: left out of the sky only "
+                "(it covers the galaxies too, so a fit refuses it); candidate: proposed (from "
+                "the residual, say) and not used until promoted with role fit; none: used "
+                "wherever it is named. The pair tool lists the fit layers (and those without "
+                "a role).",
+                (),
+                "mask role edges fit",
             ),
             _c(
                 "masks",

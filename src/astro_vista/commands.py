@@ -9,6 +9,7 @@ first pixel spans 0 to 1, so its centre is at 0.5.  ``help`` lists the commands.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -22,7 +23,9 @@ import numpy as np
 
 from . import detection
 from . import masks as maskops
-from .fitting import FitResult, FitSettings, fit
+from . import pair as pairs
+from . import sky as skies
+from .fitting import MODES, FitResult, FitSettings, fit
 from .images import Image, image_hdus, read_fits, write_fits
 from .masks import Mask
 from .cmdbase import CommandError, Reply, integer, number, split_line
@@ -47,10 +50,24 @@ HELP = {
     "stats": "stats N [MASK=a,b]  -  mean, median, standard deviation, minimum and maximum "
     "of buffer N, leaving out masked and non-finite pixels",
     "sky": "sky N [MASK=a,b]  -  the sky level of buffer N: a 3-sigma clipped median of the "
-    "pixels the masks leave",
+    "pixels the masks leave.   sky N SEGMENT [THRESH=0.5] [MINAREA=12] [GROW=2] [CELLS=8] "
+    "[BACK_SIZE=0] [PAD=v] [MASK=a,b] [TOMASK=skymask] [TOMAP=M] [TOPLANE=M]  -  every source "
+    "found down to THRESH sigma is left out (the layer TOMASK, role sky), and the sky is "
+    "measured on the rest: level, cells, gradient, uncertainties and a verdict on the support",
     "elliprof": "elliprof N X0= Y0= R0= R1= NR= [NITER=10] [SKY=] [RMSTAR] [MASKFILE=file] "
-    "[MASK=a,b] [MASKBUF=M,...] [TOMODEL=M] [TORESID=M]  -  fit elliptical isophotes to "
-    "buffer N; MASK= names mask layers, MASKBUF= buffers used as masks (0 or NaN masked)",
+    "[MASK=a,b] [MASKBUF=M,...] [TOMODEL=M] [TORESID=M] [RAW] [MINUS=M,...] [MODE=3,4] "
+    "[COS3X=] [COS4X=] [FIXCTR=0|1|2] [RLAW=] [GAIN=] [TIE=]  -  fit elliptical isophotes to "
+    "buffer N; MASK= names mask layers, MASKBUF= buffers used as masks (0 or NaN masked); "
+    "MINUS= subtracts buffers first; RAW keeps every pixel of the residual",
+    "pair": "pair N SKY=s [MASK=a,b] [CYCLES=4] [NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] "
+    "[TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
+    "[FIXCTR=0] [CORE=] [ADAPTIVE]  B: X0= Y0= R0= R1= ...  -  fit two overlapping galaxies: "
+    "ELLIPROF on A and on B in turn, each with the other's model taken out (help pair)",
+    "pairexport": "pairexport N folder  -  write the last pair fit of buffer N's image to a "
+    "folder: inputs, settings, every call, profiles, regions, models and the residual",
+    "window": "window N BOX=x0,y0,x1,y1 [OUT=M] [MASKS=a,b|all]  -  cut out the pixels "
+    "data[y0:y1, x0:x1] (whole-pixel edges, ELLIPROF's coordinates) into buffer OUT (the next "
+    "free one); the WCS follows, and the mask layers named are cut too",
     "sources": "sources N [KEYWORD=value ...] [MASK=a,b] [TOSEG=M]  -  find the sources "
     "(stars and galaxies) in buffer N.  Keywords (SExtractor's names): THRESH_TYPE, "
     "DETECT_THRESH, DETECT_MINAREA, FILTER, FILTER_FWHM, FILTER_TYPE, DEBLEND_NTHRESH, "
@@ -106,6 +123,9 @@ From the data and the sources
                                   the sources' pixels (their segmentation)
 Changing a layer
   mask grow|shrink NAME R;  mask invert|clear|fill NAME;  mask show|hide NAME
+  mask role NAME fit|sky|candidate|none   what the layer is for: fit (left out of fits),
+                                  sky (left out of the sky only; never used in a fit),
+                                  candidate (proposed; promote it with role fit)
 undo / redo undo or redo the last mask edits"""
 
 
@@ -124,6 +144,10 @@ class Session(ImageCommands):
         self.mask_buffers: Dict[str, Tuple[int, Image]] = {}  # loaded masks, as buffers too
         self._undo: List[tuple] = []  # mask edits that can be undone, the last at the end
         self._redo: List[tuple] = []
+        self.skies: Dict[str, skies.SkyResult] = {}  # sky measurements by their id
+        self.sky_of: Dict[str, str] = {}  # the latest sky measurement of each image
+        self.pairs: Dict[str, "PairRecord"] = {}  # the latest pair fit of each image
+        self._pair_runs = 0
 
     # ---- helpers
     def buffer(self, text) -> Image:
@@ -155,7 +179,9 @@ class Session(ImageCommands):
         p = Path(text).expanduser()
         return p if p.is_absolute() else self.folder / p
 
-    def mask_list(self, text: Optional[str], shape) -> List[Mask]:
+    def mask_list(self, text: Optional[str], shape, fitting: bool = False) -> List[Mask]:
+        """The layers named in ``text``.  For a fit (``fitting``), sky layers (which leave
+        out the galaxies themselves) and candidates are refused."""
         if not text:
             return []
         found = []
@@ -164,6 +190,16 @@ class Session(ImageCommands):
                 raise CommandError(f"there is no mask layer {name!r}")
             if self.masks[name].shape != tuple(shape):
                 raise CommandError(f"the mask {name!r} is not the size of the image")
+            role = self.masks[name].role
+            if fitting and role == "sky":
+                raise CommandError(
+                    f"{name!r} is a sky-exclusion layer: it leaves out the galaxies too, so it "
+                    "is never used in a fit (mask role NAME fit makes a layer a fitting one)"
+                )
+            if fitting and role == "candidate":
+                raise CommandError(
+                    f"{name!r} is a candidate: review it, then promote it (mask role {name} fit)"
+                )
             found.append(self.masks[name])
         return found
 
@@ -210,6 +246,9 @@ class Session(ImageCommands):
         return reply
 
     def _execute(self, line: str) -> Reply:
+        line = re.sub(r"\\\s*\n\s*", " ", line)  # a line continued with \\
+        if verb_of(line) == "pair":
+            return self._pair_line(line.split(None, 1)[1] if len(line.split(None, 1)) > 1 else "")
         m = re.fullmatch(r"(?:\[\s*(\d+)\s*\]|B(\d+))\s*=(?!=)\s*(.+)", line.split("#")[0].strip())
         if m:
             return self.c_arithmetic(int(m.group(1) or m.group(2)), m.group(3))
@@ -340,6 +379,8 @@ class Session(ImageCommands):
             name = words[0].lower()
             if name == "mask":
                 return Reply(MASK_HELP)
+            if name == "pair":
+                return Reply(PAIR_HELP)
             if name in ("calc", "="):
                 from . import calc
 
@@ -349,7 +390,7 @@ class Session(ImageCommands):
             return Reply(HELP[name])
         return Reply(
             "\n".join(HELP[k] for k in HELP)
-            + "\n\nhelp mask: the mask commands.  Variables (set) can be used in keywords."
+            + "\n\nhelp mask: the mask commands.  help pair: fitting a pair.  Variables (set) can be used in keywords."
         )
 
     def c_cd(self, words, keys) -> Reply:
@@ -532,6 +573,8 @@ class Session(ImageCommands):
             raise CommandError(HELP["sky"])
         from astropy.stats import sigma_clipped_stats
 
+        if any(w.upper() == "SEGMENT" for w in words[1:]):
+            return self._sky_segment(integer(words[0], "the buffer"), self.buffer(words[0]), keys)
         image = self.buffer(words[0])
         values = image.data[self._good_pixels(image, keys)]
         mean, median, std = sigma_clipped_stats(values, sigma=3.0, maxiters=10)
@@ -549,10 +592,20 @@ class Session(ImageCommands):
             if key not in keys:
                 raise CommandError(f"{key}= is required ({HELP['elliprof']})")
         flags = {w.upper() for w in words[1:]}
-        unknown = flags - {"RMSTAR"}
+        unknown = flags - {"RMSTAR", "RAW"}
         if unknown:
             raise CommandError(f"unknown word {sorted(unknown)[0]!r}")
-        layers = self.mask_list(keys.get("MASK"), image.shape)
+        layers = self.mask_list(keys.get("MASK"), image.shape, fitting=True)
+        minus = [t for t in re.split(r"[,\s]+", keys.get("MINUS", "")) if t]
+        if minus:
+            data = image.data.astype(np.float64)
+            for text in minus:
+                other = self.buffer(text)
+                if other.shape != image.shape:
+                    raise CommandError(f"buffer {text} is not the size of the image")
+                data = data - other.data
+            image = image.derived(image.name, data)
+            image.family = self.buffer(words[0]).key
         for text in [t for t in re.split(r"[,\s]+", keys.get("MASKBUF", "")) if t]:
             # a buffer as a mask: masked where it is 0 or NaN (as elliprof reads masks)
             other = self.buffer(text)
@@ -572,6 +625,7 @@ class Session(ImageCommands):
             mask_file=self.path(keys["MASKFILE"]) if "MASKFILE" in keys else None,
             extra_mask=maskops.union(layers),
             extra_mask_label=", ".join(m.name for m in layers),
+            **self._native_keys(keys),
         )
         if s.mask_file is not None and not s.mask_file.exists():
             raise CommandError(f"no mask file {s.mask_file}")
@@ -586,18 +640,384 @@ class Session(ImageCommands):
             f"(elliprof {result.version}); {int(result.masked.sum())} pixels masked",
             {"fits", "centre"},
         )
+        residual = result.residual
+        if "RAW" in flags:  # every pixel: the image minus the sky and the model
+            residual = (image.data - (s.sky or 0.0) - result.model).astype(np.float32)
+        if minus:
+            reply.text += f"\n(fitted buffer {n} minus {', '.join(minus)})"
         for kind, key, data in (
             ("model", "TOMODEL", result.model),
-            ("residual", "TORESID", result.residual),
+            ("residual", "TORESID", residual),
         ):
             if key in keys:
                 m = integer(keys[key], key)
                 if m == n:
                     raise CommandError(f"{key} must not be the image's own buffer")
-                self.buffers[m] = image.derived(f"{image.name} {kind}", data)
+                self.buffers[m] = self.buffer(n).derived(f"{image.name} {kind}", data)
                 reply.text += f"\n{kind} in buffer {m}"
                 reply.changed |= {"buffers", "data"}
         return reply
+
+    @staticmethod
+    def _native_keys(keys) -> dict:
+        """The optional ELLIPROF keywords of a command (MODE= or COS3X=/COS4X=, FIXCTR=,
+        RLAW=, GAIN=, TIE=)."""
+        out = {}
+        if "MODE" in keys:
+            if "COS3X" in keys or "COS4X" in keys:
+                raise CommandError("give MODE= or COS3X=/COS4X=, not both")
+            mode = keys["MODE"].strip().lower()
+            if mode not in MODES:
+                raise CommandError(f"unknown MODE {mode!r} ({', '.join(MODES)})")
+            out["cos3x"], out["cos4x"] = MODES[mode]
+        for key in ("COS3X", "COS4X", "FIXCTR", "RLAW", "TIE"):
+            if key in keys:
+                out[key.lower()] = integer(keys[key], key)
+        if "GAIN" in keys:
+            out["gain"] = number(keys["GAIN"], "GAIN")
+        if out.get("fixctr", 0) not in (0, 1, 2):
+            raise CommandError("FIXCTR must be 0, 1 or 2")
+        return out
+
+    def _sky_segment(self, n: int, image: Image, keys) -> Reply:
+        layers = self.mask_list(keys.get("MASK"), image.shape)
+        settings = {
+            "thresh": number(keys.get("THRESH", skies.DEFAULTS["THRESH"]), "THRESH"),
+            "minarea": integer(keys.get("MINAREA", skies.DEFAULTS["MINAREA"]), "MINAREA"),
+            "grow": number(keys.get("GROW", skies.DEFAULTS["GROW"]), "GROW"),
+            "cells": integer(keys.get("CELLS", skies.DEFAULTS["CELLS"]), "CELLS"),
+            "back_size": integer(keys.get("BACK_SIZE", 0), "BACK_SIZE"),
+            "pad": number(keys["PAD"], "PAD") if "PAD" in keys else None,
+        }
+        outputs = {k: integer(keys[k], k) for k in ("TOMAP", "TOPLANE") if k in keys}
+        if n in outputs.values():
+            raise CommandError("TOMAP and TOPLANE must not be the measured buffer")
+        if len(set(outputs.values())) < len(outputs):
+            raise CommandError("TOMAP and TOPLANE must be different buffers")
+        target = keys.get("TOMASK", "skymask")
+        if target in self.masks and self.masks[target].role not in ("sky", ""):
+            raise CommandError(
+                f"{target!r} is a {maskops.ROLES[self.masks[target].role]} layer: give the "
+                "sky mask another name (TOMASK=)"
+            )
+        try:
+            result = skies.measure(
+                image.data,
+                image.label,
+                exclude=maskops.union(layers),
+                layers=",".join(m.name for m in layers),
+                **settings,
+            )
+        except (RuntimeError, ValueError) as e:
+            raise CommandError(str(e))
+        result.settings["layer_checksums"] = {m.name: _mask_sum(m) for m in layers}
+        self.skies[result.id] = result
+        self.sky_of[image.key] = result.id
+        self._remember(target)
+        self.masks[target] = Mask(
+            target,
+            result.exclusion.copy(),
+            self._colour(target),
+            visible=False,
+            source=f"sky segmentation {result.id} ({settings['thresh']:g} sigma)",
+            role="sky",
+        )
+        reply = Reply(result.summary(), {"masks", "sky"})
+        reply.text += f"\nsky-exclusion layer {target} (shown on request; never used in a fit)"
+        reply.values = {"sky_id": 0.0}
+        if result.state == "usable_support":
+            reply.values = {"sky": result.level, "sigma": result.sigma}
+        if "TOMAP" in outputs:
+            m = np.full(image.shape, np.nan, np.float32)
+            for c in result.cells:
+                if c.usable:
+                    m[c.y0 : c.y1, c.x0 : c.x1] = c.median
+            self.buffers[outputs["TOMAP"]] = image.derived(f"{image.name} sky cells", m)
+            reply.text += f"\ncell medians in buffer {outputs['TOMAP']}"
+        if "TOPLANE" in outputs:
+            if result.plane is None:
+                reply.text += "\n(no plane to write)"
+            else:
+                self.buffers[outputs["TOPLANE"]] = image.derived(
+                    f"{image.name} sky plane", skies.plane_image(result.plane, image.shape)
+                )
+                reply.text += f"\nfitted plane in buffer {outputs['TOPLANE']}"
+        if outputs:
+            reply.changed |= {"buffers", "data"}
+        return reply
+
+    def sky_stale(self, sky_id: str, image: Image) -> Optional[str]:
+        """Why a sky measurement no longer fits ``image`` (None when it still does)."""
+        result = self.skies.get(sky_id)
+        if result is None:
+            return "no such measurement"
+        if image.shape != result.support.shape or skies.checksum(image.data) != result.image_id:
+            return "the image has changed since the sky was measured"
+        for name, value in result.settings.get("layer_checksums", {}).items():
+            m = self.masks.get(name)
+            if m is None or _mask_sum(m) != value:
+                return f"the mask layer {name} has changed since the sky was measured"
+        return None
+
+    def c_window(self, words, keys) -> Reply:
+        if not words or "BOX" not in keys:
+            raise CommandError(HELP["window"])
+        n = integer(words[0], "the buffer")
+        image = self.buffer(n)
+        parts = [t for t in re.split(r"[,\s]+", keys["BOX"]) if t]
+        if len(parts) != 4:
+            raise CommandError("BOX=x0,y0,x1,y1: four whole numbers")
+        x0, y0, x1, y1 = (integer(t, "BOX") for t in parts)
+        ny, nx = image.shape
+        cx0, cy0, cx1, cy1 = max(x0, 0), max(y0, 0), min(x1, nx), min(y1, ny)
+        if cx1 <= cx0 or cy1 <= cy0:
+            raise CommandError(f"the box {x0},{y0},{x1},{y1} holds no pixel of the image")
+        note = ""
+        if (cx0, cy0, cx1, cy1) != (x0, y0, x1, y1):
+            note = f" (clipped to the image: {cx0},{cy0},{cx1},{cy1})"
+        out = integer(keys["OUT"], "OUT") if "OUT" in keys else self.free_buffer(n)
+        if out == n:
+            raise CommandError("OUT must be another buffer: the original stays")
+        header = image.header.copy()
+        for k in ("CRPIX1", "CRPIX2"):
+            if k in header:
+                header[k] = header[k] - (cx0 if k.endswith("1") else cy0)
+        header["LTV1"] = header.get("LTV1", 0) - cx0
+        header["LTV2"] = header.get("LTV2", 0) - cy0
+        for k in ("CNPIX1", "CNPIX2"):
+            header.remove(k, ignore_missing=True)
+        header["NAXIS1"], header["NAXIS2"] = cx1 - cx0, cy1 - cy0
+        name = f"{image.name} window {cx0},{cy0},{cx1},{cy1}"
+        self.buffers[out] = Image(name, image.data[cy0:cy1, cx0:cx1].copy(), header)
+        reply = Reply(
+            f"buffer {out}: {name}, {cx1 - cx0} x {cy1 - cy0}{note}; positions there are "
+            f"those here minus ({cx0}, {cy0}) (LTV1, LTV2 in its header)",
+            {"buffers", "data"},
+            show=out,
+        )
+        names = keys.get("MASKS", "")
+        layers = (
+            [m for m in self.masks.values() if m.shape == image.shape]
+            if names.lower() == "all"
+            else self.mask_list(names, image.shape)
+        )
+        for m in layers:
+            new = f"{m.name}_w"
+            self._remember(new)
+            self.masks[new] = Mask(
+                new,
+                m.masked[cy0:cy1, cx0:cx1].copy(),
+                self._colour(new),
+                m.visible,
+                m.opacity,
+                f"window of {m.name}",
+                m.role,
+            )
+            reply.text += f"\nmask {new}: {m.name} cut to the window"
+            reply.changed |= {"masks"}
+        return reply
+
+    # ---- pairs of galaxies
+    def pair_prepare(self, text: str) -> "PairJob":
+        """Read a pair command and fix everything its run uses (in the window's thread)."""
+        try:
+            words, shared, own = pairs.parse(text)
+            shared = self._with_variables("pair", shared)
+            own = {c: self._with_variables("pair", k) for c, k in own.items()}
+            components = pairs.components_from(own)
+            settings = pairs.settings_from(shared)
+        except pairs.PairError as e:
+            raise CommandError(f"{e}\n{HELP['pair']}")
+        if len(words) != 1:
+            raise CommandError("give one buffer: pair N ...")
+        n = integer(words[0], "the buffer")
+        image = self.buffer(n)
+        layers = self.mask_list(shared.get("MASK"), image.shape, fitting=True)
+        masked = maskops.union(layers)
+        masked = np.zeros(image.shape, bool) if masked is None else masked.copy()
+        label = [m.name for m in layers]
+        maskbuf = [t for t in re.split(r"[,\s]+", shared.get("MASKBUF", "")) if t]
+        for text_ in maskbuf:
+            other = self.buffer(text_)
+            if other.shape != image.shape:
+                raise CommandError(f"buffer {text_} is not the size of the image")
+            masked |= (other.data == 0) | ~np.isfinite(other.data)
+            label.append(f"buffer {text_}")
+        if "MASKFILE" in shared:
+            path = self.path(shared["MASKFILE"])
+            if not path.exists():
+                raise CommandError(f"no mask file {path}")
+            masked |= maskops.load(path, image.shape)
+            label.append(path.name)
+        # output buffers: given, or free ones; never the image, a mask buffer or each other
+        taken = {n} | {integer(t, "MASKBUF") for t in maskbuf}
+        outputs = {}
+        for key in ("TOMODELA", "TOMODELB", "TOMODEL", "TORESID"):
+            if key in shared:
+                m = integer(shared[key], key)
+                if m in taken:
+                    raise CommandError(
+                        f"{key}={m} is the image, a mask buffer or another output of this pair"
+                    )
+                outputs[key] = m
+                taken.add(m)
+        for key in ("TOMODELA", "TOMODELB", "TOMODEL", "TORESID"):
+            if key not in outputs:
+                kind = {
+                    "TOMODELA": "pair A model",
+                    "TOMODELB": "pair B model",
+                    "TOMODEL": "pair A+B model",
+                    "TORESID": "pair residual",
+                }[key]
+                m = self.output_buffer(n, kind)
+                while m in taken:
+                    m = self.free_buffer(m)
+                outputs[key] = m
+                taken.add(m)
+        if "VIEWS" in shared:
+            for key, kind in (("VIEWA", "pair image - sky - B"), ("VIEWB", "pair image - sky - A")):
+                m = self.output_buffer(n, kind)
+                while m in taken:
+                    m = self.free_buffer(m)
+                outputs[key] = m
+                taken.add(m)
+        run = next(
+            (
+                r
+                for r in reversed(self.runs)
+                if r.image_key == image.key
+                and r.segmentation is not None
+                and r.segmentation.shape == image.shape
+            ),
+            None,
+        )
+        sky_id, sigma = "", None
+        candidate = self.skies.get(self.sky_of.get(image.key, ""))
+        if candidate is not None and candidate.state != "no_estimate":
+            if abs(candidate.level - settings.sky) <= 1e-9 * max(1.0, abs(settings.sky)):
+                if self.sky_stale(candidate.id, image) is None:
+                    sky_id, sigma = candidate.id, candidate.sigma
+        self._pair_runs += 1
+        provenance = {
+            "file": str(image.path) if image.path else None,
+            "image": image.name,
+            "buffer": n,
+            "shape": list(image.shape),
+            "dtype_in_buffer": str(image.data.dtype),
+            "converted_to": "float64 for the pair arithmetic",
+            "snapshot_sha256": hashlib.sha256(
+                np.ascontiguousarray(image.data).tobytes()
+            ).hexdigest(),
+            "window_offset_ltv": [image.header.get("LTV1"), image.header.get("LTV2")],
+            "source_run": (
+                None
+                if run is None
+                else {
+                    "number": run.number,
+                    "command": "sources 1 "
+                    + " ".join(
+                        f"{k}={v}"
+                        for k, v in run.settings.items()
+                        if v != detection.DEFAULTS.get(k)
+                    ),
+                }
+            ),
+        }
+        try:
+            snap = pairs.prepare(
+                image.data,
+                image.label,
+                image.header,
+                components,
+                settings,
+                fit_mask=masked,
+                fit_mask_label=",".join(label),
+                run=run,
+                run_id=self._pair_runs,
+                sky_id=sky_id,
+                sky_sigma=sigma,
+                provenance=provenance,
+            )
+        except pairs.PairError as e:
+            raise CommandError(str(e))
+        return PairJob(n, image, snap, outputs, "pair " + text.strip())
+
+    def pair_commit(self, job: "PairJob", result: pairs.PairResult) -> Reply:
+        """Put a finished pair run into the session (in the window's thread)."""
+        image, snap, n = job.image, job.snap, job.number
+        if job.number not in self.buffers or self.buffers[n] is not image:
+            pass  # the buffer was replaced meanwhile: the result keeps its own snapshot
+        sky_result = self.skies.get(snap.sky_id) if snap.sky_id else None
+        if result.residual is not None and sky_result is not None:
+            result.sky_check = skies.check(sky_result, result.residual)
+        self.pairs[image.key] = PairRecord(job, result)
+        reply = Reply(pairs.summary(result, snap), {"pairs"})
+        if result.complete:
+            a, b = result.commits["A"].model, result.commits["B"].model
+            views = {
+                "TOMODELA": (f"{image.name} pair A model ({snap.components['A'].label})", a),
+                "TOMODELB": (f"{image.name} pair B model ({snap.components['B'].label})", b),
+                "TOMODEL": (f"{image.name} pair A+B model", result.total),
+                "TORESID": (f"{image.name} pair residual", result.residual),
+                "VIEWA": (f"{image.name} pair image - sky - B", snap.image - snap.settings.sky - b),
+                "VIEWB": (f"{image.name} pair image - sky - A", snap.image - snap.settings.sky - a),
+            }
+            made = []
+            for key, m in job.outputs.items():
+                name, data = views[key]
+                self.buffers[m] = image.derived(name, data)
+                self.buffers[m].note = job.line
+                made.append(f"{m} {name.split(' pair ', 1)[1]}")
+            reply.text += "\nbuffers: " + "; ".join(made)
+            reply.changed |= {"buffers", "data"}
+        return reply
+
+    def _pair_line(self, text: str) -> Reply:
+        """pair, run to the end in this thread (scripts, the terminal without a window)."""
+        if not text.strip():
+            raise CommandError(PAIR_HELP)
+        job = self.pair_prepare(text)
+        result = pairs.run(job.snap)
+        return self.pair_commit(job, result)
+
+    def c_pair(self, words, keys) -> Reply:  # reached only through _pair_line
+        raise CommandError(PAIR_HELP)
+
+    def c_pairexport(self, words, keys) -> Reply:
+        if len(words) < 2:
+            raise CommandError(HELP["pairexport"])
+        image = self.buffer(words[0])
+        record = self.pairs.get(image.key)
+        if record is None:
+            raise CommandError(f"no pair fit of {image.name} yet (pair {words[0]} ...)")
+        folder = self.path(words[1])
+        snap, result = record.job.snap, record.result
+        sky_result = self.skies.get(snap.sky_id) if snap.sky_id else None
+        replay = []
+        if snap.provenance.get("file"):
+            ltv = snap.provenance.get("window_offset_ltv") or [None, None]
+            replay.append(f"rd 1 {snap.provenance['file']}")
+            if snap.provenance.get("source_run"):
+                replay.append(snap.provenance["source_run"]["command"].strip())
+            if ltv[0]:
+                replay.append(
+                    f"# then window 1 BOX=... (LTV1={ltv[0]}, LTV2={ltv[1]}: the window's "
+                    "offset in the original)"
+                )
+            replay.append(re.sub(r"^pair\s+\S+", "pair 1", record.job.line))
+        try:
+            pairs.export(
+                result,
+                snap,
+                folder,
+                record.job.line,
+                sky_report=sky_result.report() if sky_result else None,
+                sky_exclusion=sky_result.exclusion if sky_result else None,
+                replay=replay,
+            )
+        except OSError as e:
+            raise CommandError(f"cannot write {folder}: {e}")
+        return Reply(f"wrote the pair fit ({result.status}) to {folder}")
 
     def c_sources(self, words, keys) -> Reply:
         """Find the sources in a buffer (the Source finder)."""
@@ -672,6 +1092,7 @@ class Session(ImageCommands):
         return Reply(
             "\n".join(
                 f"{m.name}  {m.shape[1]} x {m.shape[0]}  {m.count()} pixels masked"
+                + (f"  [{maskops.ROLES[m.role]}]" if m.role else "")
                 + ("" if m.visible else "  (hidden)")
                 for m in self.masks.values()
             )
@@ -683,16 +1104,19 @@ class Session(ImageCommands):
         m = self.masks.get(name)
         if m is None:
             return (name, None)
-        return (name, (np.packbits(m.masked), m.shape, m.colour, m.visible, m.opacity, m.source))
+        return (
+            name,
+            (np.packbits(m.masked), m.shape, m.colour, m.visible, m.opacity, m.source, m.role),
+        )
 
     def _restore(self, snapshot) -> None:
         name, state = snapshot
         if state is None:
             self.masks.pop(name, None)
             return
-        packed, shape, colour, visible, opacity, source = state
+        packed, shape, colour, visible, opacity, source, role = state
         masked = np.unpackbits(packed, count=shape[0] * shape[1]).reshape(shape).astype(bool)
-        self.masks[name] = Mask(name, masked, colour, visible, opacity, source)
+        self.masks[name] = Mask(name, masked, colour, visible, opacity, source, role)
 
     def _remember(self, *names) -> None:
         """Keep the layers ``names`` as they are, so that the edit about to be made can
@@ -832,6 +1256,12 @@ class Session(ImageCommands):
         if action in ("show", "hide"):
             mask.visible = action == "show"
             return Reply(changed=changed)
+        if action == "role":
+            if not rest or rest[0].lower() not in ("fit", "sky", "candidate", "none"):
+                raise CommandError("usage: mask role NAME fit|sky|candidate|none")
+            self._remember(name)
+            mask.role = "" if rest[0].lower() == "none" else rest[0].lower()
+            return Reply(f"mask {name}: {maskops.ROLES[mask.role]}", changed)
         if action == "rename":
             if not rest or rest[0] in self.masks:
                 raise CommandError("usage: mask rename NAME NEW (a name not in use)")
@@ -990,7 +1420,14 @@ class Session(ImageCommands):
         # file names in the file are relative to the file's own folder while it runs
         folder, self.folder = self.folder, path.parent.resolve()
         try:
-            for k, line in enumerate(path.read_text().splitlines(), 1):
+            lines = path.read_text().splitlines()
+            joined = []  # lines ending in \\ continue on the next
+            for k, line in enumerate(lines, 1):
+                if joined and joined[-1][1].rstrip().endswith("\\"):
+                    joined[-1] = (joined[-1][0], joined[-1][1].rstrip()[:-1] + " " + line.strip())
+                else:
+                    joined.append((k, line))
+            for k, line in joined:
                 if not line.split("#")[0].strip():
                     continue
                 try:
@@ -1010,16 +1447,21 @@ class Session(ImageCommands):
 
 # keywords offered by Tab completion after each command
 KEYWORDS = {
-    "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= TORESID=",
+    "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
+    "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE=",
+    "pair": "SKY= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
+    "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE",
+    "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
     "stats": "MASK=",
-    "sky": "MASK=",
+    "sky": "MASK= SEGMENT THRESH= MINAREA= GROW= CELLS= BACK_SIZE= PAD= TOMASK= TOMAP= TOPLANE=",
 }
 KEYWORDS.update(IMAGE_KEYWORDS)
 MASK_ACTIONS = (
     "new load save frombuf tobuf copy union intersect rename delete circle ellipse box "
-    "polygon brush unpatch nan range sources segments grow shrink invert clear fill show hide"
+    "polygon brush unpatch nan range sources segments grow shrink invert clear fill show hide "
+    "role"
 ).split()
 FILE_COMMANDS = {"rd": 2, "wd": 2, "run": 1, "cd": 1, "fitsinfo": 1}  # the word that is a file name
 
@@ -1046,7 +1488,18 @@ def completions(session: "Session", line: str):
             names = list(session.masks)
             head, _, last = value.rpartition(",")
             return offset + (len(head) + 1 if head else 0), [n for n in names if n.startswith(last)]
-        if key.upper() in ("MASKBUF", "TOMODEL", "TORESID", "TOSEG", "OUT"):
+        if key.upper() in (
+            "MASKBUF",
+            "TOMODEL",
+            "TORESID",
+            "TOSEG",
+            "OUT",
+            "TOMODELA",
+            "TOMODELB",
+            "TOMAP",
+            "TOPLANE",
+            "MINUS",
+        ):
             return offset, [str(n) for n in sorted(session.buffers) if str(n).startswith(value)]
         if key.upper() == "MASKFILE":
             return offset, _files(session, value)
@@ -1158,7 +1611,16 @@ def _is_number(text: str) -> bool:
         return False
 
 
-SLOW = {"elliprof", "sources", "run", "rd"}  # commands shown as busy while they run
+SLOW = {
+    "elliprof",
+    "sources",
+    "run",
+    "rd",
+    "pair",
+    "sky",
+    "pairexport",
+    "window",
+}  # commands shown as busy while they run
 
 
 def verb_of(line: str) -> str:
@@ -1167,3 +1629,48 @@ def verb_of(line: str) -> str:
     except ValueError:
         return ""
     return tokens[0].lower() if tokens else ""
+
+
+PAIR_HELP = """Fitting a pair of galaxies
+  pair N SKY=s [shared keywords]  A: [A's keywords]  B: [B's keywords]
+Shared (before A:)
+  SKY=          the sky, frozen for the whole run (required; sky N SEGMENT measures it)
+  MASK=a,b      fitting layers (role fit, or no role; sky layers are refused)
+  MASKFILE= MASKBUF=   as for elliprof
+  CYCLES=4      A then B, this many times after the initialisation (2 + 2 x CYCLES calls)
+  NITER=10      iterations inside each elliprof call
+  CORECAP=50    the largest core (pixels) left out around the other galaxy
+  RLAW= GAIN= TIE= RMSTAR TIMEOUT=300   passed to every call
+  STOP          stop early once A, B and A + B all change by less than 2 %
+  VIEWS         also make the image - sky - B and image - sky - A buffers
+  TOMODELA= TOMODELB= TOMODEL= TORESID=   the result buffers (free ones by default)
+Each galaxy (after A: or B:)
+  X0= Y0= R0= R1=   its centre (ELLIPROF's coordinates) and radii (semi-major, pixels)
+  NR=25  NAME="..."  MODE=none|3|4|3,4|4,6|3m|4m|6m,4m (or COS3X= COS4X=)  FIXCTR=0|1|2
+  CORE=r        the core centred on THIS galaxy, left out while the other is fitted
+  ADAPTIVE      if its outer isophotes fail, try a smaller R1 (at most 3 times)
+A line can go on after a \\ at its end.  The result is one of stable_valid_pair,
+valid_pair_not_stable, retained_after_failed_update, incomplete_initialization, cancelled."""
+
+
+def _mask_sum(mask: Mask) -> str:
+    return hashlib.sha1(np.packbits(mask.masked).tobytes()).hexdigest()[:12]
+
+
+class PairJob:
+    """A pair command read and fixed, ready to run (see pair.py)."""
+
+    def __init__(self, number: int, image: Image, snap, outputs: Dict[str, int], line: str):
+        self.number = number
+        self.image = image
+        self.snap = snap
+        self.outputs = outputs
+        self.line = line
+
+
+class PairRecord:
+    """A pair fit kept in the session: the job and its result."""
+
+    def __init__(self, job: PairJob, result):
+        self.job = job
+        self.result = result

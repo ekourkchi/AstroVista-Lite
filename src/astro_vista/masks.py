@@ -13,6 +13,12 @@ from typing import Optional
 
 import numpy as np
 
+ROLES = {
+    "fit": "fit-exclusion",
+    "sky": "sky-exclusion",
+    "candidate": "fit-exclusion candidate",
+    "": "no role",
+}
 # colours given to new masks in turn
 COLOURS = ("#ff5050", "#ffb000", "#c060ff", "#40c0ff", "#60e060", "#ff70c0")
 
@@ -25,6 +31,10 @@ class Mask:
     visible: bool = True
     opacity: float = 0.45
     source: str = ""  # how it was made (shown as a tooltip)
+    # what the layer is for: "fit" (left out of fits), "sky" (left out of the sky only),
+    # "candidate" (proposed, not used until promoted to "fit"), or "" (not said: used
+    # wherever it is named)
+    role: str = ""
 
     @property
     def shape(self):
