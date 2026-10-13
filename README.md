@@ -74,8 +74,8 @@ window:
   the buffers chosen, with the same scale if wanted) switched on in the display bar above
   the image, which folds away for more room; the FITS header.
 
-AstroVista Lite is published on PyPI as **AstroVista** (`pip install AstroVista`; the
-names `astrovista` and `astro-vista` install the same program). The full AstroVista will
+AstroVista Lite is published on PyPI as **AstroVista** (`pip install AstroVista`;
+`pip install astrovista` is the same, since PyPI ignores capitals). The full AstroVista will
 follow there when it is ready.
 
 ## Installing

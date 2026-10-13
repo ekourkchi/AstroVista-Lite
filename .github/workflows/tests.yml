@@ -77,6 +77,5 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install build twine
       - run: |
-          python -m build --outdir dist/main .
-          python -m build --outdir dist/alias packaging/aliases/astro-vista
-          python -m twine check --strict dist/main/* dist/alias/*
+          python -m build --outdir dist .
+          python -m twine check --strict dist/*
