@@ -587,7 +587,8 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ("SCALE=", "the Kron ellipses × SCALE (default 1.5)"),
                     (
                         "KEEP=",
-                        "centre (the source at X0, Y0, default), none, or a source " "NUMBER",
+                        "centre (the source at X0, Y0, default; before any fit, the largest "
+                        "source), none, or a source NUMBER",
                     ),
                     ("X0=, Y0=", "the centre to keep (default: the last ELLIPROF centre)"),
                     ("IDS=", "only these source numbers"),

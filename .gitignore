@@ -5,3 +5,17 @@ build/
 dist/
 .pytest_cache/
 .DS_Store
+# the papers' build files
+paper/paper.pdf
+paper/arxiv/*.aux
+paper/arxiv/*.bbl
+paper/arxiv/*.blg
+paper/arxiv/*.log
+paper/arxiv/*.out
+paper/arxiv/*.fls
+paper/arxiv/*.fdb_latexmk
+paper/arxiv/main.pdf
+paper/arxiv/paper.bib
+paper/arxiv/aastex701.cls
+paper/arxiv/aasjournalv7.bst
+paper/arxiv/*.tar.gz

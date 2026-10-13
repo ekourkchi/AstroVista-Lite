@@ -1,0 +1,33 @@
+{
+  "title": "AstroVista Lite: isophote fitting, source finding, masks and image arithmetic for astronomical images",
+  "description": "AstroVista Lite fits the isophotes of galaxies (ELLIPROF), finds and measures the stars and galaxies around them, masks what is in the way and does arithmetic on whole images, all in one window, with a terminal that follows the MONSTA command language. It is simple enough for teaching and useful for everyday research. Website: https://ekourkchi.github.io/AstroVista-Lite/",
+  "upload_type": "software",
+  "license": "MIT",
+  "creators": [
+    {
+      "name": "Kourkchi, Ehsan"
+    }
+  ],
+  "keywords": [
+    "astronomy",
+    "surface photometry",
+    "isophotes",
+    "galaxies",
+    "image analysis",
+    "FITS",
+    "source extraction",
+    "education"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/ekourkchi/AstroVista-Lite",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://pypi.org/project/AstroVista/",
+      "relation": "isIdenticalTo",
+      "scheme": "url"
+    }
+  ]
+}

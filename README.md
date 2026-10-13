@@ -291,7 +291,10 @@ pytest -q
 ```
 
 The tests run offscreen (no window appears); `python tests/smoke.py out` runs a whole
-session in the real window. `python docs/build.py` rebuilds the website's terminal and
+session in the real window. `paper/` holds the drafts of the JOSS paper (`paper.md`) and
+the arXiv manuscript (`arxiv/main.tex`, built with `make` there); `python
+paper/make_figures.py` remakes their figures and numbers from the example. Contributions
+are welcome: see [`CONTRIBUTING.md`](https://github.com/ekourkchi/AstroVista-Lite/blob/main/CONTRIBUTING.md). `python docs/build.py` rebuilds the website's terminal and
 reference pages from `src/astro_vista/reference.py`, the same source as the program's own
 documentation.
 
@@ -302,12 +305,18 @@ libraries it installs keep their own licences, listed under *Credits*.
 
 ## Citing
 
-If AstroVista Lite helps your work or your teaching, please cite its GitHub repository:
+If AstroVista Lite helps your work or your teaching, please cite it, with the version you
+used (`astrovista --version`):
 
-> Kourkchi, E., *AstroVista Lite*, https://github.com/ekourkchi/AstroVista-Lite
+> Kourkchi, E., *AstroVista Lite*, version 1.0.1, https://github.com/ekourkchi/AstroVista-Lite
 
-(GitHub's "Cite this repository" button gives the same from
-[`CITATION.cff`](https://github.com/ekourkchi/AstroVista-Lite/blob/main/CITATION.cff).)
+GitHub's "Cite this repository" button gives the same from
+[`CITATION.cff`](https://github.com/ekourkchi/AstroVista-Lite/blob/main/CITATION.cff).
+Each release will also be archived on Zenodo with a DOI to cite, and a paper describing
+AstroVista Lite is in preparation for the *Journal of Open Source Software* and arXiv
+(drafts in [`paper/`](https://github.com/ekourkchi/AstroVista-Lite/tree/main/paper)); this
+section will give the paper's reference once it is published.
+
 For the measurements, please also cite elliprof (isophotes), and SEP and SExtractor (the
 Source finder), listed below.
 

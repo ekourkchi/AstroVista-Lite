@@ -1988,3 +1988,19 @@ def test_a_mask_saved_as_a_legacy_bitmap_gets_the_dmask_ending(tmp_path):
     assert is_bitmap_mask(tmp_path / "edges_mask.dmask")
     s.execute("mask load back edges_mask.dmask 1")
     assert (s.masks["back"].masked == s.masks["edges"].masked).all()
+
+
+def test_masking_the_sources_before_a_fit_keeps_the_galaxy(tmp_path):
+    # with no ELLIPROF centre yet, mask sources keeps the largest source (the galaxy)
+    s = Session()
+    s.folder = tmp_path
+    write_fits(galaxy(), tmp_path / "galaxy.fits")
+    s.execute("rd 1 galaxy.fits")
+    s.execute("sources 1")
+    s.execute("mask new found 1")
+    reply = s.execute("mask sources found SCALE=1.5")
+    assert "the largest" in reply.text
+    assert not s.masks["found"].masked[140, 150]  # the galaxy's centre stays unmasked
+    s.execute("mask clear found")
+    s.execute("mask sources found KEEP=none")  # unless asked to mask everything
+    assert s.masks["found"].masked[140, 150]

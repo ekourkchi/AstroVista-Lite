@@ -100,7 +100,8 @@ From the data and the sources
   mask sources NAME [RUN=k] [SCALE=1.5] [KEEP=centre|none|number] [X0= Y0=]
                   [IDS=1,5,9] [WHERE='MAG_AUTO < 22 and FWHM_IMAGE < 3']
                                   the sources' Kron ellipses x SCALE, except the galaxy at
-                                  X0, Y0 (by default the last ELLIPROF centre)
+                                  X0, Y0 (by default the last ELLIPROF centre; before
+                                  any fit, the largest source)
   mask segments NAME [RUN=k] [GROW=0] [KEEP=...] [X0= Y0=]
                                   the sources' pixels (their segmentation)
 Changing a layer
@@ -922,6 +923,12 @@ class Session(ImageCommands):
                     raise CommandError(str(e))
             if keep is not None:
                 chosen[keep] = False
+                kept_note = f" (source {int(run.columns['NUMBER'][keep])} kept unmasked"
+                if centre is None and str(keys.get("KEEP", "centre")).lower() == "centre":
+                    kept_note += ": the largest, as there is no ELLIPROF centre yet"
+                kept_note += ")"
+            else:
+                kept_note = ""
             if action == "sources":
                 mask.masked |= detection.source_mask(run, mask.shape, None, scale, chosen)
                 mask.source = f"sources of run {run.number} x {scale:g}"
@@ -938,6 +945,8 @@ class Session(ImageCommands):
             raise CommandError(f"unknown mask action {action!r}\n{MASK_HELP}")
         after = mask.count()
         reply = Reply(f"mask {name}: {after} pixels masked ({after - before:+d})", changed)
+        if action in ("sources", "segments"):
+            reply.text += kept_note
         if name in self.mask_buffers:
             self._mask_buffer(name, reply)
         return reply
@@ -963,8 +972,10 @@ class Session(ImageCommands):
         if keep.isdigit():
             rows = np.flatnonzero(run.columns["NUMBER"] == int(keep))
             return int(rows[0]) if rows.size else None
-        if centre is None or not len(run):
+        if not len(run):
             return None
+        if centre is None:  # no centre yet: the largest source, nearly always the galaxy
+            return int(np.argmax(run.columns["ISOAREA_IMAGE"]))
         row = run.nearest(*centre)
         x, y, a, _b, _t = run.ellipses(scale)[row]
         return row if np.hypot(x - centre[0], y - centre[1]) <= max(a, 5.0) else None

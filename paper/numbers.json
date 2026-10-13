@@ -1,0 +1,57 @@
+{
+  "version": "1.0.1",
+  "validation_max_relative_difference": {
+    "Rmaj": 2.940807563016443e-06,
+    "x0": 7.8448165072769e-08,
+    "y0": 8.788970608124786e-08,
+    "I0": 2.6381239966062186e-08,
+    "ellip": 2.446974266505283e-06,
+    "alpha": 5.36970607317356e-06,
+    "I4": 2.963071110320262e-08,
+    "slope": 7.359981495462684e-07
+  },
+  "isophotes": 23,
+  "published_mask_pixels": 103402,
+  "sources_found": 508,
+  "sources_mask_pixels": 212492,
+  "masked_pixels_both": 260045,
+  "image_pixels": 1047550,
+  "devauc_published_mask": {
+    "re": 126.5352,
+    "ie": 12854.9978,
+    "scatter": 0.0703,
+    "n": 23.0
+  },
+  "devauc_both_masks": {
+    "re": 126.3863,
+    "ie": 12879.2051,
+    "scatter": 0.0696,
+    "n": 23.0
+  },
+  "residual_pixels_compared": 285947,
+  "residual_median_abs_fraction_published_mask": 0.02585,
+  "residual_median_abs_fraction_both_masks": 0.02592,
+  "outer_intensity_change_percent": [
+    0.57,
+    -0.39,
+    -1.0,
+    -0.33
+  ],
+  "outer_radii": [
+    246.8,
+    277.4,
+    310.7,
+    347.0
+  ],
+  "timings_s": {
+    "read the image (gzip-free FITS)": 0.002,
+    "ELLIPROF, 23 isophotes, model and residual": 0.098,
+    "source finder": 0.108,
+    "arithmetic: [5] = [1] - median([1])": 0.009,
+    "median of three images": 0.069,
+    "Gaussian smoothing, FWHM 3": 0.015,
+    "median filter 5 x 5, with NaN pixels": 0.197,
+    "cosmic-ray cleaning (zap)": 0.463,
+    "rotation by 12.5 degrees": 0.045
+  }
+}

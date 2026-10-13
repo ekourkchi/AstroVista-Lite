@@ -1,0 +1,43 @@
+# The papers, built on every change to paper/:
+#   - the JOSS paper (paper/paper.md) with the journal's own draft builder;
+#   - the arXiv manuscript (paper/arxiv/main.tex) with AASTeX.
+# The PDFs are attached to the run as artifacts.
+name: papers
+
+on:
+  push:
+    paths: ["paper/**", ".github/workflows/papers.yml"]
+  workflow_dispatch:
+
+jobs:
+  joss:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: openjournals/openjournals-draft-action@master
+        with:
+          journal: joss
+          paper-path: paper/paper.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joss-paper
+          path: paper/paper.pdf
+
+  arxiv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AASTeX 7 from CTAN, and the bibliography
+        working-directory: paper/arxiv
+        run: |
+          curl -sL -o aastex.zip https://mirrors.ctan.org/macros/latex/contrib/aastex.zip
+          unzip -oqj aastex.zip 'aastex/aastex701.cls' 'aastex/aasjournalv7.bst'
+          cp ../paper.bib paper.bib
+      - uses: xu-cheng/latex-action@v3
+        with:
+          working_directory: paper/arxiv
+          root_file: main.tex
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arxiv-manuscript
+          path: paper/arxiv/main.pdf
