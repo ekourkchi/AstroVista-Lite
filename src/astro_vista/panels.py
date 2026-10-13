@@ -1405,11 +1405,25 @@ class LayersPanel(QtWidgets.QWidget):
                 item.setIcon(0, swatch(colour.name(), 14))
 
     def _save(self, name: str) -> None:
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        path, kind = QtWidgets.QFileDialog.getSaveFileName(
             self, "Save the mask", f"{name}_mask.fits", "FITS (*.fits);;Legacy bitmap (*.dmask)"
         )
         if path:
-            self.mask_command.emit(f"mask save {name} {shlex.quote(path)}")
+            self.mask_command.emit(f"mask save {name} {shlex.quote(mask_file_name(path, kind))}")
+
+
+def mask_file_name(path: str, kind: str) -> str:
+    """The file name for a mask saved with the type chosen in the dialog: the type decides
+    the ending (the ending decides the format), so choosing "Legacy bitmap" writes a
+    .dmask even when the name typed ends in .fits, and the other way round."""
+    stem, dot, ending = path.rpartition(".")
+    if not dot or "/" in ending:
+        stem, ending = path, ""
+    if "dmask" in kind and ending.lower() != "dmask":
+        return (stem if ending.lower() in ("fits", "fit", "fts") else path) + ".dmask"
+    if "FITS" in kind and ending.lower() == "dmask":
+        return stem + ".fits"
+    return path
 
 
 class DisplayPanel(QtWidgets.QWidget):

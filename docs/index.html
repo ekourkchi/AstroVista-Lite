@@ -81,6 +81,30 @@ astrovista galaxy.fits      <span class="c"># or your own images</span></code></
   <pre><code>python3 -m venv ~/astrovista-env
 source ~/astrovista-env/bin/activate
 pip install AstroVista</code></pre>
+  <h3>Supported systems</h3>
+  <table>
+    <tr><th></th><th>Supported</th></tr>
+    <tr><td><b>macOS</b></td><td>13 (Ventura) or later, Apple silicon and Intel</td></tr>
+    <tr><td><b>Linux, x86_64</b></td><td>glibc 2.34 or later: Ubuntu 22.04+, Debian 12+, Fedora 35+, RHEL / Rocky / Alma 9+</td></tr>
+    <tr><td><b>Linux, ARM</b></td><td>glibc 2.39 or later: Ubuntu 24.04+</td></tr>
+    <tr><td><b>Windows</b></td><td>not yet (WSL2 with the Linux instructions should work, but is untested)</td></tr>
+    <tr><td><b>Python</b></td><td>3.10 to 3.13; 3.14 works too, but SEP is then compiled during the install, which needs a C compiler</td></tr>
+  </table>
+  <h3>When Python is missing or too old</h3>
+  <p>Check with <code>python3 --version</code>. If it is older than 3.10, or missing, a
+  conda environment brings its own Python
+  (<a href="https://github.com/conda-forge/miniforge">Miniforge</a> is a small, free conda
+  installer):</p>
+  <pre><code>conda create -n astrovista -c conda-forge python=3.12 pip
+conda activate astrovista
+pip install AstroVista</code></pre>
+  <p>On an older system where pip finds no Qt (<i>No matching distribution found for
+  PySide6</i>), take Qt and the scientific libraries from conda-forge and only AstroVista
+  from pip:</p>
+  <pre><code>conda create -n astrovista -c conda-forge python=3.12 pip pyside6 pyqtgraph numpy scipy astropy matplotlib sep
+conda activate astrovista
+pip install AstroVista</code></pre>
+  <h3>Starting it</h3>
   <p>Images and masks can be loaded from the command line: <code>-i</code> puts images into
   buffers 1, 2, … and <code>-m</code> adds mask layers.</p>
   <pre><code>astrovista -i galaxy.fits "frame.fits[sci]" -m galaxy.dmask

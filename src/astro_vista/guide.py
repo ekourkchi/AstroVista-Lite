@@ -971,8 +971,12 @@ def with_tip(widget: QtWidgets.QWidget, key: str) -> QtWidgets.QWidget:
 TOPICS["faq"] = (
     "FAQ",
     """
-<p><b>Where does it run?</b> On Linux and macOS, with Python 3.10 or later; it is on
-PyPI: <code>pip install AstroVista</code>.</p>
+<p><b>Where does it run?</b> On macOS 13 or later (Apple silicon and Intel) and on Linux
+with glibc 2.34 or later (Ubuntu 22.04+, Debian 12+, Fedora 35+, RHEL 9+; on ARM, Ubuntu
+24.04+), with Python 3.10 to 3.13 (3.14 needs a C compiler for SEP). It is on PyPI:
+<code>pip install AstroVista</code>. With an older Python, or none, a conda environment
+works: <code>conda create -n astrovista -c conda-forge python=3.12 pip</code>, then
+<code>conda activate astrovista</code> and <code>pip install AstroVista</code>.</p>
 <p><b>Do I need to install anything besides AstroVista Lite?</b> No: <code>pip install
 AstroVista</code> brings everything, the Source finder included.</p>
 <p><b>Linux says it could not load the Qt platform plugin "xcb"</b>: a minimal system (a

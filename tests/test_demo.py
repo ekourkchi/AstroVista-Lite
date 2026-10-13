@@ -1884,7 +1884,7 @@ def test_every_command_on_the_website_runs(tmp_path):
     s.execute("mask new mymask 1")
     for n in (2, 3, 5, 8):
         s.execute(f"copy 1 {n}")
-    shell = ("pip ", "astrovista", "python", "source ", "sudo ", "Kourkchi")
+    shell = ("pip ", "conda ", "astrovista", "python", "source ", "sudo ", "Kourkchi")
     ran = 0
     for page in pages:
         for block in re.findall(r"<pre><code>(.*?)</code></pre>", page.read_text(), re.S):
@@ -1965,3 +1965,26 @@ def test_the_median_filter_leaves_nan_out_quickly():
     s.execute("filt 1 MEDIAN=5 OUT=2")
     assert time.perf_counter() - start < 3.0
     assert np.isfinite(s.buffers[2].data).all()  # every 5 x 5 box has finite pixels
+
+
+def test_a_mask_saved_as_a_legacy_bitmap_gets_the_dmask_ending(tmp_path):
+    # the type chosen in the save dialog decides the ending, which decides the format
+    from astro_vista.panels import mask_file_name
+
+    bitmap, fits_ = "Legacy bitmap (*.dmask)", "FITS (*.fits)"
+    assert mask_file_name("/d/edges_mask.fits", bitmap) == "/d/edges_mask.dmask"
+    assert mask_file_name("/d/edges", bitmap) == "/d/edges.dmask"
+    assert mask_file_name("/d/edges.dmask", fits_) == "/d/edges.fits"
+    assert mask_file_name("/d.v1/edges", bitmap) == "/d.v1/edges.dmask"
+    assert mask_file_name("/d/edges_mask.fits", fits_) == "/d/edges_mask.fits"
+    s = Session()
+    s.folder = tmp_path
+    s.buffers[1] = Image("a", np.ones((20, 30), np.float32))
+    s.execute("mask new edges 1")
+    s.execute("mask box edges 0 0 5 5")
+    s.execute(f"mask save edges {mask_file_name(str(tmp_path / 'edges_mask.fits'), bitmap)}")
+    from astro_vista.images import is_bitmap_mask
+
+    assert is_bitmap_mask(tmp_path / "edges_mask.dmask")
+    s.execute("mask load back edges_mask.dmask 1")
+    assert (s.masks["back"].masked == s.masks["edges"].masked).all()
