@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pairs of Galaxies</title>
+<meta name="description" content="Fit two overlapping galaxies with AstroVista Lite: measure the sky by segmentation, place the two centres, and let ELLIPROF fit each galaxy with the other's model taken out.">
+<link rel="icon" href="images/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html"><img src="images/logo.svg" alt="">AstroVista Lite</a>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="tutorial.html">Tutorial</a>
+      <a class="here" href="pairs.html">Pairs</a>
+      <a href="terminal.html">Terminal</a>
+      <a href="reference.html">Reference</a>
+      <a href="commands.html">Recipes</a>
+      <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap narrow">
+<section>
+  <p class="kicker">Tutorial</p>
+  <h1>Two galaxies at once</h1>
+  <p>When two galaxies overlap, each one's light lies on the other's isophotes. Masking the
+  neighbour is not enough: its halo reaches far beyond any mask, and pulls the ellipticity,
+  the position angle and the profile of the galaxy being fitted towards it. The
+  <b>Pair fit</b> tool fits both galaxies, in turn, each with the other's current model
+  taken out of the image.</p>
+  <p>This lesson uses a <b>synthetic pair</b> that ships with AstroVista Lite, so that the
+  right answer is known: two elliptical galaxies that follow de Vaucouleurs' law, 140 pixels
+  apart, with stars, a sky of 1000 and noise. The true values are in the image's FITS
+  header.</p>
+  <div class="toc">
+    <b>The steps</b>
+    <ol>
+      <li><a href="#p-open">Open the pair</a></li>
+      <li><a href="#p-sky">Measure the sky</a></li>
+      <li><a href="#p-place">Place the two galaxies</a></li>
+      <li><a href="#p-fit">Fit the pair</a></li>
+      <li><a href="#p-read">Read the result</a></li>
+      <li><a href="#p-keep">Keep the result</a></li>
+    </ol>
+    <a href="#p-how">How it works</a> · <a href="#p-status">How a fit ends</a> · <a href="#p-exercises">Exercises</a>
+  </div>
+</section>
+
+<section>
+<ol class="steps">
+  <li class="step" id="p-open">
+    <h3>Open the pair</h3>
+    <p>Choose <b>File ▸ Open the pair example</b>. The image goes into buffer 1, a mask of
+    the stars is loaded (with the role <i>fit</i>: it is left out of every fit), the
+    sources are found, and the <b>Tools ▸ Pair fit</b> tab opens with the two galaxies
+    already placed. The dashed circles are each galaxy's R1: guides, not fits.</p>
+    <figure><img src="images/pair_setup.png" alt="The synthetic pair with A's centre and R1 circle in cyan and B's in orange, and the Pair fit panel" loading="lazy"></figure>
+    <p>The same in the terminal:</p>
+    <pre><code>rd 1 pair.fits
+mask load stars pair.dmask 1
+mask role stars fit                 <span class="c"># left out of fits</span>
+sources 1</code></pre>
+  </li>
+
+  <li class="step" id="p-sky">
+    <h3>Measure the sky</h3>
+    <p>Press <b>Measure sky (0.5σ segmentation)</b>. Every source found down to half the
+    noise (stars, both galaxies and their halos) is left out, grown by two pixels, and the
+    sky is measured on the rest: its median, the medians of 8 × 8 cells across the frame
+    (the map: dark is low, hatched cells have too little sky), a plane through them (the
+    arrow: the gradient) and the uncertainties, kept apart.</p>
+    <figure><img src="images/pair_sky.png" alt="The sky card: candidate_inspect_support, level 1000.64, the cell map with the galaxies' cells hatched and a gradient arrow" loading="lazy"></figure>
+    <p>Here the verdict is <b>candidate_inspect_support</b>: half the cells disagree with
+    the plane by more than their noise allows, because the galaxies' faint halos still lie
+    under the "sky". The level, 1000.6, is close to the truth (1000), but not certain, so
+    <i>Use this sky</i> stays off. The example has typed the true sky instead; for your own
+    images, type a value you trust (from a larger image, say) with a note on where it comes
+    from.</p>
+    <pre><code>sky 1 SEGMENT                        <span class="c"># the sky, by segmentation</span>
+sky 1 SEGMENT THRESH=1 GROW=3 TOMAP=12  <span class="c"># other settings; the cell map in buffer 12</span></code></pre>
+    <div class="note">The sky layer it makes, <code>skymask</code>, covers the galaxies too, so
+    it is never used in a fit: <code>pair</code> and <code>elliprof</code> refuse it.</div>
+  </li>
+
+  <li class="step" id="p-place">
+    <h3>Place the two galaxies</h3>
+    <p>Press <b>Pick A</b> and click galaxy A's centre, then B's (the next click is B's).
+    A click within 3 pixels of a found source takes the source's centre, and the card says
+    so; Alt-click places it exactly. Give each galaxy its own R0, R1 and number of ellipses:
+    B is smaller, so it gets a smaller R1. <i>Swap</i> exchanges A and B (A is fitted
+    first).</p>
+    <div class="question"><b>Question</b>Where does B's light end? Blink with a stronger
+    stretch, or plot a row through both centres (<code>print</code>, or the Inspector). How
+    far out can you trust each galaxy's ellipses?</div>
+  </li>
+
+  <li class="step" id="p-fit">
+    <h3>Fit the pair</h3>
+    <p>Press <b>Fit pair</b>. A is fitted first (with B's core left out), then B on the image
+    minus A; then four cycles of A on the image minus B and B on the image minus the new A.
+    The progress line counts the elliprof calls; the window stays alive, and <b>Stop</b>
+    ends the run after the current call.</p>
+    <pre><code>pair 1 SKY=1000 MASK=stars \
+       A: NAME=A X0=294.3 Y0=263.8 R0=3 R1=120 \
+       B: NAME=B X0=421.18 Y0=322.97 R0=3 R1=50 NR=20</code></pre>
+    <figure><img src="images/pair_fit.png" alt="Every fitted ellipse of A in cyan and of B in orange over the image, and the two intensity profiles in Results, Pair" loading="lazy"><figcaption>Every fitted ellipse of A (cyan) and B (orange); Results ▸ Pair plots the two profiles.</figcaption></figure>
+  </li>
+
+  <li class="step" id="p-read">
+    <h3>Read the result</h3>
+    <p>The status says how it ended: here <b>stable_valid_pair</b>. Four buffers hold A's
+    model, B's model, A + B and the <b>residual</b>, the image minus the sky and both models
+    on every pixel (masks are drawn over it; they never blank it). It opens grey, linear and
+    symmetric about zero.</p>
+    <figure><img src="images/pair_residual.png" alt="The residual: noise and stars, with the change per cycle plotted in Results, Pair, Cycles" loading="lazy"><figcaption>The residual, and the change of A, B and A + B from cycle to cycle (Cycles tab).</figcaption></figure>
+    <p><b>Blink the result</b> steps through image − sky, A + B, image − sky − B (galaxy A
+    alone) and image − sky − A (galaxy B alone) on one scale, with the arrow keys.</p>
+    <figure><img src="images/pair_views.png" alt="Galaxy A alone (the image minus the sky and B's model) and the ellipticity profiles of A and B" loading="lazy"><figcaption>A alone, and the ellipticities: A near 0.25 and B near 0.40, as made.</figcaption></figure>
+    <div class="question"><b>Question</b>Fit B alone with <code>elliprof</code>, with A's
+    core masked (the ELLIPROF tool). Compare its ellipticity and position angle with the
+    pair fit's, and with the truth in the header (<code>chead 1 B_</code>).</div>
+  </li>
+
+  <li class="step" id="p-keep">
+    <h3>Keep the result</h3>
+    <p><b>Export pair…</b> writes a folder with everything: the exact inputs of the run
+    (the image, the masks, the two cores), the requested and effective settings, every
+    elliprof call, the profiles, the ellipses as DS9 regions, the models and the residual
+    (64-bit), and a manifest of checksums, written last.</p>
+    <pre><code>pairexport 1 my_pair</code></pre>
+  </li>
+</ol>
+</section>
+
+<section id="p-how">
+  <h2>How it works</h2>
+  <pre>start:    A on the image            (B's core left out)
+          B on the image − A        (A's core left out)
+cycle k:  A on the image − B, then B on the image − A    (k = 1 … CYCLES)
+result:   A, B, A + B, and the residual: image − sky − A − B, on every pixel</pre>
+  <ul>
+    <li><b>One sky</b>, frozen: every call subtracts the same value once.</li>
+    <li><b>Cores</b>: while one galaxy is fitted, the other's core is left out, where its
+    model is least reliable: its Kron ellipse from the source finder, at most 0.65 of the
+    distance between the centres and 50 pixels (a circle when no source matches). The cores
+    never cover the other centre, and they do not change during the run.</li>
+    <li><b>Checks</b>: a fit counts only if it has every ellipse, finite values, ellipticities
+    below 0.95, no two ellipses of the same galaxy crossing (2 % tolerance), no lone jump of
+    the centre, axis ratio or angle, and its last ellipse at R1. Ellipses of A and B may
+    cross: they are different galaxies. A rejected fit is never used.</li>
+    <li><b>Bootstrap</b>: if a galaxy's first fit fails because its neighbour is too bright,
+    it starts from a smaller R1; that model only starts the cycles and is never a result.</li>
+    <li><b>Adaptive R1</b> (per galaxy, off by default): if the outer ellipses fail, a smaller
+    R1 is tried, at most three times; the R1 asked for, tried and used are all reported.</li>
+  </ul>
+</section>
+
+<section id="p-status">
+  <h2>How a fit ends</h2>
+  <table class="plain">
+    <tr><td><b>stable_valid_pair</b></td><td>Both fits passed in the last cycle, and A, B and A + B each changed by less than 2 %.</td></tr>
+    <tr><td><b>valid_pair_not_stable</b></td><td>Both passed, but something still changes; the reason says what (a stable sum whose parts trade light is not stable).</td></tr>
+    <tr><td><b>retained_after_failed_update</b></td><td>A fit failed in the last cycle; the result is the last cycle in which both passed.</td></tr>
+    <tr><td><b>incomplete_initialization</b></td><td>No cycle in which both galaxies passed.</td></tr>
+    <tr><td><b>cancelled</b></td><td>Stopped; the result is the last cycle in which both passed.</td></tr>
+  </table>
+  <div class="note">Passing the checks and a small change do not prove that the light was
+  separated uniquely, nor that the residual is ready for surface brightness fluctuations.
+  Look at the residual: rings, a bowl, a bright patch next to a dark one, and centre tracks
+  drifting towards the other galaxy are signs of a poor separation.</div>
+</section>
+
+<section id="p-exercises">
+  <h2>Exercises</h2>
+  <ol>
+    <li>Fit the pair with 1, 2 and 8 cycles (<code>CYCLES=</code>). When does the change
+    fall below 2 %? Does the profile of B change?</li>
+    <li>Make B's R1 70 pixels. What happens to its outer ellipses, and to the status? Try
+    again with <code>ADAPTIVE</code> after B's keywords.</li>
+    <li>Use a sky 10 counts too high (<code>SKY=1010</code>). How do the outer profiles and
+    the residual change?</li>
+    <li>Make a closer pair in Python: <code>astro_vista.synthetic.pair(separation=95)</code>.
+    How does the fit end?</li>
+  </ol>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>AstroVista Lite 1.0.1 · Ehsan Kourkchi · MIT licence</span>
+    <span><a href="index.html">Home</a> · <a href="commands.html">Commands &amp; recipes</a> · <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a></span>
+  </div>
+</footer>
+</body>
+</html>

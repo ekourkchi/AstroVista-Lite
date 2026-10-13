@@ -5,6 +5,22 @@ newest is at the top.
 
 ## Unreleased
 
+- **Pairs of galaxies.** `pair N SKY= ... A: ... B: ...` and Tools ▸ Pair fit: two
+  overlapping galaxies fitted in turn with ELLIPROF, each with the other's model taken
+  out; frozen sky and cores; a model is kept only when its fit passes every check; a
+  status that never mistakes a rejected update for convergence; optional adaptive R1;
+  partial bootstrap starts that are never part of a result. The models, an unmasked
+  residual, both sets of ellipses, the profiles and the change per cycle, in a worker
+  thread with Stop. `pairexport` writes the inputs, settings, calls and products.
+- **The sky by segmentation.** `sky N SEGMENT`: every source down to 0.5 sigma left out;
+  the level, cell medians, a fitted gradient, sampling and spatial uncertainties, and a
+  verdict on the support; measurements turn stale when the image or masks change.
+- Mask roles (`mask role NAME fit|sky|candidate`); sky layers are never used in a fit.
+- `elliprof`: `MODE=` (or `COS3X=`, `COS4X=`), `FIXCTR=`, `RLAW=`, `GAIN=`, `TIE=`,
+  `MINUS=` and `RAW`.
+- `window`: a cut-out of a buffer that keeps its WCS.
+- A command can go on over several lines, each but the last ending in `\`.
+- A synthetic pair example (File ▸ Open the pair example) and a lesson on the website.
 - A fuller README: supported systems, Python versions, installing with conda,
   troubleshooting.
 - A mask saved with the *Legacy bitmap* type always gets the `.dmask` ending.

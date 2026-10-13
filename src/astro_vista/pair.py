@@ -578,17 +578,14 @@ def _pa_difference(a: float, b: float) -> float:
 
 def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarray):
     """Whether a candidate fit passes: (ok, reason, kind, radius).  ``kind`` is "outer"
-    for a crossing or a rogue contour (which an adaptive R1 may retry) and "other"
-    otherwise; ``radius`` is the Rmaj where it failed."""
+    for a failure at one isophote (a value not finite or out of range, a crossing, a rogue
+    contour; an adaptive R1 may retry it if it is far enough out) and "other" otherwise;
+    ``radius`` is the Rmaj where it failed."""
     if fit.returncode != 0 or fit.profile is None:
         return False, f"elliprof failed: {fit.message or fit.returncode}", "other", None
     p = fit.profile
     if len(p) != comp.nr:
         return False, f"{len(p)} isophotes instead of NR={comp.nr}", "other", None
-    if fit.model is None or fit.model.shape != image_finite.shape:
-        return False, "no model of the image's size", "other", None
-    if not np.all(np.isfinite(fit.model[image_finite])):
-        return False, "the model is not finite where the image is", "other", None
     cols = {
         name: p[name].to_numpy(dtype=float) for name in ("Rmaj", "x0", "y0", "I0", "ellip", "alpha")
     }
@@ -615,6 +612,10 @@ def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarr
         return False, f"{what} at Rmaj {grid[row]:.1f}", "outer", float(grid[row])
     if not np.all(np.diff(r) > 0):
         return False, "Rmaj does not increase", "other", None
+    if fit.model is None or fit.model.shape != image_finite.shape:
+        return False, "no model of the image's size", "other", None
+    if not np.all(np.isfinite(fit.model[image_finite])):
+        return False, "the model is not finite where the image is", "other", None
     cos3x, _cos4x = comp.harmonics()
     if cos3x is not None and cos3x < 0 and SIXTH_ORDER_WARNING in fit.output:
         return False, "6th-order model wrong beyond a PA wrap (elliprof's warning)", "other", None

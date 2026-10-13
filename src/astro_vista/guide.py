@@ -797,6 +797,41 @@ TIPS = {
     "(dust lanes, spiral arms, companions).  <b>Into</b> chooses the buffer each goes into: "
     "Auto takes a free one; the list offers the free buffers, and <i>Show the occupied "
     "buffers too</i> lets a result replace what is in a buffer.",
+    # the pair fit
+    "pair_sky": "<b>The sky by segmentation.</b> Every source found down to 0.5 sigma (the "
+    "threshold) is left out, grown by 2 pixels, and the sky is measured on what is left: "
+    "its median, the medians of cells over the frame, a plane through them (the gradient), "
+    "and a verdict on how much sky there is. Only <i>usable support</i> can be used with one "
+    "click; otherwise type a value and say where it comes from. One sky is used for both "
+    "galaxies and every cycle.",
+    "pair_centre": "<b>The centre</b> of this galaxy, in ELLIPROF's coordinates (the first "
+    "pixel's centre is at 0.5). <i>Pick A</i> takes one click for A, then one for B. A click "
+    "within 3 pixels of a found source takes the source's centre, and the card says so; "
+    "Alt-click places the centre exactly where you click. The fit refines the centre of "
+    "every ellipse (unless <i>Centres</i> says otherwise).",
+    "pair_mode": "<b>Harmonics</b>: the cos 3θ and cos 4θ terms fitted along each ellipse and "
+    "put into the model (boxy or discy shapes). <i>6</i> replaces 3 by the 6th order; such a "
+    "model is wrong beyond a turn of the position angle through 0/180 degrees, and a fit "
+    "where elliprof warns of it fails. <i>m</i>: the median of each term over all ellipses.",
+    "pair_fixctr": "<b>Centres</b>: <i>Free</i> lets every ellipse find its own centre (the "
+    "default; a drift towards the other galaxy shows in the centre track); <i>Fixed</i> keeps "
+    "all at X0, Y0; <i>Median</i> sets all to the median of the fitted centres after each "
+    "iteration.",
+    "pair_core": "<b>The core of this galaxy</b> is left out while the <i>other</i> galaxy is "
+    "fitted, where this galaxy's model is least reliable. <i>Auto</i>: an ellipse of the "
+    "source found here (its Kron ellipse, at most 0.65 of the distance to the other centre "
+    "and 50 pixels), or a circle when no source matches. It never covers the other centre, "
+    "and it is fixed for the whole run.",
+    "pair_adaptive": "<b>Adaptive outer radius</b>: when the outer ellipses fail their checks "
+    "(crossing, a jump, an impossible value) beyond 0.65 R1, the galaxy is fitted again to a "
+    "smaller R1 (at most 3 times, never below half the R1 asked for). The radius asked for, "
+    "the last one tried and the one used are all reported.",
+    "pair_masks": "<b>Fitting masks</b>: the layers left out of every fit of A and of B. Only "
+    "layers of role <i>fit</i>, or without a role, are listed: a sky layer covers the "
+    "galaxies themselves and is never used in a fit.",
+    "pair_cycles": "<b>Cycles</b>: after the start (A, then B on the image minus A), each "
+    "cycle fits A on the image minus B, then B on the image minus the new A. 4 cycles make "
+    "10 elliprof calls. More cycles do not guarantee a stable result.",
     # the Source finder
     "THRESH_TYPE": "<b>How the threshold is given:</b> RELATIVE, in standard deviations "
     "of the background noise (3 means three times the noise); ABSOLUTE, in the image's own "
@@ -1035,9 +1070,85 @@ TIP_LIST = [
     "<code>rd 1 file.fits[sci]</code> opens one.",
 ]
 
+TOPICS["pair"] = (
+    "Fitting a pair of galaxies",
+    """
+<p>When two galaxies overlap, each one's light lies on the other's ellipses. Masking the
+neighbour is not enough: its halo reaches far beyond any mask, and pulls the ellipticity,
+the position angle and the profile of the galaxy being fitted towards it. The <b>Pair fit</b>
+tool fits both, in turn, each with the other's model taken out.</p>
+
+<h3>1. The sky, first</h3>
+<p><i>Measure sky</i> finds every source down to 0.5 sigma (stars, galaxies, halos), leaves
+them out, grown by 2 pixels, and measures the sky on what is left: the median, the medians
+of cells across the frame, a plane through the cells (the gradient, as an angle on the
+image from +x, not a position angle on the sky), an approximate sampling error and the
+spread between cells. These are kept apart: neither is the total error of the sky.</p>
+<p>The verdict says how much sky there is: <b>usable_support</b>,
+<b>candidate_inspect_support</b> (with the reasons: too few pixels, cells only along one
+edge or a line, cells that disagree, a gradient larger than the noise) or
+<b>no_estimate</b>. Enough sky is needed, but it is not proof: a halo too faint to detect
+can remain in the "sky". Leaving out everything above 0.5 sigma also reads pure noise a
+little low (about 0.2 sigma). Large galaxies often fill an image, and then there is no
+clean sky to measure; type a value instead (from a larger image, an earlier measurement…),
+with a note on where it comes from. Changing the image or the masks makes a measurement
+stale.</p>
+<p>The sky layer it makes (<code>skymask</code>, role <i>sky</i>) covers both galaxies, so
+it is never used in a fit.</p>
+
+<h3>2. The two galaxies</h3>
+<p><i>Pick A</i>, click A's centre, then B's. Give each its own R0 and R1 (semi-major
+axes, in pixels), number of ellipses, harmonics and centre fitting. The dashed circles show
+R0 and R1; they are guides, not fits.</p>
+
+<h3>3. The method</h3>
+<pre>start:    A on the image            (B's core left out)
+          B on the image - A        (A's core left out)
+cycle k:  A on the image - B, then B on the image - A    (k = 1 ... CYCLES)
+result:   A, B, A + B, and the residual: image - sky - A - B, on every pixel</pre>
+<p>Every call subtracts the same sky once. A fit counts only when it passes every check
+(the right number of ellipses, finite values, ellipticity below 0.95, ellipses of one
+galaxy that do not cross each other, no lone jump of the centre, the axis ratio or the
+angle, the last ellipse at R1). Ellipses of A and B may cross: they belong to different
+galaxies. A rejected fit is never used: the galaxy keeps its last good model. NITER counts
+the iterations inside each elliprof call; cycles count the turns of A and B. Four cycles
+make 10 elliprof calls.</p>
+<p>When a galaxy's first fit fails (its neighbour is too bright), it is started from a
+smaller R1 (0.7, 0.5 or 0.35 of it): such a <i>bootstrap</i> model only starts the cycles
+and is never part of a result.</p>
+
+<h3>4. How it ended</h3>
+<ul>
+<li><b>stable_valid_pair</b>: both fits passed in the last cycle, and A, B and A + B each
+changed by less than 2 %.</li>
+<li><b>valid_pair_not_stable</b>: both passed, but something still changes (the reason says
+what; a stable sum with changing parts is not stable).</li>
+<li><b>retained_after_failed_update</b>: a fit failed in the last cycle; the result is the
+last cycle in which both passed (a change of zero there means nothing).</li>
+<li><b>incomplete_initialization</b>: no cycle in which both passed.</li>
+<li><b>cancelled</b>: stopped; the result is the last cycle in which both passed.</li>
+</ul>
+<p>Results ▸ Pair plots the two profiles and the change per cycle. <i>Blink the result</i>
+steps through image − sky, A + B, image − sky − B and image − sky − A on one scale. Look at
+the residual: rings, a bowl, a bright patch next to a dark one, and centre tracks drifting
+towards the other galaxy are signs of a poor separation. Passing the checks and a small
+change do not prove a unique separation, nor that the residual is ready for SBF.</p>
+
+<h3>From the terminal</h3>
+<pre>sky 1 SEGMENT
+pair 1 SKY=1000 MASK=stars \\
+       A: NAME=A X0=294.3 Y0=263.8 R0=3 R1=120 \\
+       B: NAME=B X0=421.18 Y0=322.97 R0=3 R1=50 NR=20
+pairexport 1 my_pair</pre>
+<p>Shared settings come before <code>A:</code>; each galaxy's after its label.
+<code>help pair</code> lists them all. File ▸ Open the pair example loads a synthetic pair
+whose true answer is in its FITS header.</p>
+""",
+)
+
 # the topics in reading order (the guide window and the Help menu follow it)
 ORDER = (
-    "overview lesson recipes files images display blinking layers masks elliprof profile "
+    "overview lesson recipes files images display blinking layers masks elliprof profile pair "
     "sources arithmetic tags imagecommands contours inspect commands terminal listing saving keys "
     "glossary settings faq problems allcommands credits"
 ).split()

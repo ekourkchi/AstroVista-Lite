@@ -15,6 +15,7 @@
     <nav>
       <a href="index.html">Home</a>
       <a href="tutorial.html">Tutorial</a>
+      <a href="pairs.html">Pairs</a>
       <a class="here" href="terminal.html">Terminal</a>
       <a href="reference.html">Reference</a>
       <a href="commands.html">Recipes</a>
@@ -48,7 +49,9 @@ case-sensitive (<code>x0=567</code> is <code>X0=567</code>).</li>
 <code>WHERE='MAG_AUTO &lt; 22 and FWHM_IMAGE &lt; 3'</code>,
 <code>ch 1 OBJECT='UGC 12517'</code>.</li>
 <li><b>#</b> starts a comment, to the end of the line (unless it is inside quotes).</li>
-<li><b>One command per line.</b> A semicolon does not separate commands.</li>
+<li><b>One command per line.</b> A semicolon does not separate commands. A line that ends
+with <code>\</code> goes on on the next line (in the terminal, in command files and in the
+examples here): one command can be written over several lines.</li>
 <li><b>tag="name"</b> at the end of any line that makes a buffer names that buffer:
 <code>[2] = [1] - median([1]) tag="no sky"</code>.</li>
 </ul>

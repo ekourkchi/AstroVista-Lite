@@ -18,6 +18,7 @@ DOCS = Path(__file__).resolve().parent
 NAV = (
     ("index.html", "Home"),
     ("tutorial.html", "Tutorial"),
+    ("pairs.html", "Pairs"),
     ("terminal.html", "Terminal"),
     ("reference.html", "Reference"),
     ("commands.html", "Recipes"),

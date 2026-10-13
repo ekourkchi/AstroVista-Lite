@@ -22,6 +22,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
 from . import __version__, detection, guide, icons
+from . import pair as pairs
 from .docks import FoldableDock
 from .commands import SLOW, CommandError, Reply, Session, completions, verb_of
 from .images import image_hdus, is_bitmap_mask, is_fits, read_fits
@@ -39,6 +40,7 @@ from .panels import (
     SourcesPanel,
     scrolled,
 )
+from .pairpanel import PairPanel, PairResultsPanel
 from .viewer import Viewer, app_icon
 
 TITLE = "AstroVista Lite"
@@ -323,6 +325,33 @@ class Task(QtCore.QObject):
             self.done.emit(value)
 
 
+class PairWorker(QtCore.QObject):
+    """Runs a pair fit (pair.run) in a Python thread: NumPy and elliprof subprocesses only,
+    no Qt object made there.  Its signals arrive queued in the window's thread."""
+
+    progress = QtCore.Signal(object)
+    done = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+
+    def __init__(self, job, cancelled: Callable[[], bool], parent=None):
+        super().__init__(parent)
+        self._job = job
+        self._cancelled = cancelled
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, name="astrovista-pair", daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            result = pairs.run(
+                self._job.snap, progress=self.progress.emit, cancelled=self._cancelled
+            )
+        except Exception as e:  # shown to the user, not raised in the worker
+            self.failed.emit(f"{type(e).__name__}: {e}\n" + traceback.format_exc(limit=3))
+        else:
+            self.done.emit(result)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -334,6 +363,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.active_mask: Optional[str] = None  # the mask the mask tools draw on
         self._queue: List[str] = []
         self._busy = False
+        self._continued = ""  # the start of a command line continued with \\
+        self._residual_display = None  # (stretch, limits) to restore after a residual
+        self._residual_shown = None
+        self._pair_worker = None
         self._task = None
         self._running: Optional[str] = None  # the command being run, if any
         self._patch_cache = None  # (key, labels) for the Ctrl-hover outline
@@ -364,6 +397,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tools = QtWidgets.QTabWidget()
         self.tools.addTab(scrolled(self.elliprof), "ELLIPROF")
         self.tools.addTab(scrolled(self.finder), "Source finder")
+        self.pair_panel = PairPanel()
+        self.tools.addTab(scrolled(self.pair_panel), "Pair fit")
         self.tools.addTab(scrolled(self.display), "Display")
         self.tools.addTab(scrolled(self.contour_panel), "Contours")
         self.tools.setDocumentMode(True)  # flat tabs that the panel's title never covers
@@ -383,6 +418,8 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.plots, "Plots"),
         ):
             self.results.addTab(widget, name)
+        self.pair_results = PairResultsPanel()
+        self.results.addTab(self.pair_results, "Pair")
         # the right-hand panel: the inspector, the tools, their results and the header
         self.side = QtWidgets.QTabWidget()
         self.side.setDocumentMode(True)
@@ -504,6 +541,7 @@ class MainWindow(QtWidgets.QMainWindow):
         a = self._action
         self.a_open = a("&Open FITS image…", self.open_dialog, "📂", QtGui.QKeySequence.Open)
         self.a_example = a("Open &example (UGC 12517)", self.open_example, "★")
+        self.a_pair_example = a("Open the &pair example (synthetic)", self.open_pair_example)
         self.a_save = a("&Save buffer as FITS…", self.save_buffer, "💾", QtGui.QKeySequence.Save)
         self.a_run_file = a("&Run a command file…", self.run_file)
         self.a_save_commands = a("Save the commands as a file…", self.save_commands)
@@ -654,6 +692,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.a_open,
                 self.recent_menu.menuAction(),
                 self.a_example,
+                self.a_pair_example,
                 None,
                 self.a_save,
                 None,
@@ -854,6 +893,14 @@ class MainWindow(QtWidgets.QMainWindow):
         e.x0.valueChanged.connect(lambda _v: self._overlays())
         e.y0.valueChanged.connect(lambda _v: self._overlays())
         self.finder.run_requested.connect(self.run_detection)
+        pp = self.pair_panel
+        pp.sky_requested.connect(self.pair_sky)
+        pp.pick_requested.connect(self.pair_pick)
+        pp.run_requested.connect(self.run_pair)
+        pp.stop_requested.connect(self.stop_pair)
+        pp.export_requested.connect(self.export_pair)
+        pp.blink_requested.connect(self.blink_pair)
+        pp.changed.connect(self._overlays)
         self.finder.show_sources.toggled.connect(lambda on: self.layers.set_checked("sources", on))
 
         v = self.viewer
@@ -923,6 +970,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def run_command(self, line: str) -> None:
         """Run a command line (queued while another command runs)."""
         self.viewer.commit_pending()  # a shape waiting to be applied goes first
+        stripped = line.strip()
+        if stripped.endswith("\\") and not stripped.startswith("!"):  # continued
+            self._continued += stripped[:-1] + " "
+            self.console.echo(line)
+            return
+        if self._continued:
+            line, self._continued = self._continued + stripped, ""
         self._queue.append(line)
         self._next()
 
@@ -962,6 +1016,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         line = self._queue.pop(0)
         self.console.echo(line)
+        if verb_of(line) == "pair":
+            self._start_pair(line)
+            return
         if verb_of(line) in SLOW or self.session.is_shell(line):
             self._busy = True
             QtWidgets.QApplication.setOverrideCursor(Qt.BusyCursor)
@@ -989,6 +1046,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for action in (self.a_fit, self.a_detect):
             action.setEnabled(on)
         self.elliprof.run.setEnabled(on)
+        self.pair_panel.run.setEnabled(on)
         if on:
             self.finder.refresh()
         else:
@@ -1015,6 +1073,8 @@ class MainWindow(QtWidgets.QMainWindow):
             elif verb == "sources":
                 self.finder.status.setText(reply.text.splitlines()[0])
                 self.show_result(self.sources)
+            elif verb == "pair":
+                self.show_result(self.pair_results)
         self._next()
 
     def apply(self, reply: Reply) -> None:
@@ -1038,6 +1098,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.profile.set_result(s.fits.get(image.key) if image else None)
         if "sources" in reply.changed:
             self.sources.set_runs(s.runs)
+        if "sky" in reply.changed or "pairs" in reply.changed or "buffers" in reply.changed:
+            self._refresh_pair()
         if "masks" in reply.changed:
             if self.active_mask not in s.masks:
                 self.active_mask = next(reversed(s.masks), None) if s.masks else None
@@ -1100,6 +1162,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.show_buffer(min(self.session.buffers) if self.session.buffers else None)
 
     def show_buffer(self, n: Optional[int], keep_limits: bool = False) -> None:
+        if self._residual_display is not None and n != self._residual_shown:
+            stretch, mode = self._residual_display  # the display before the residual
+            self._residual_display = None
+            self.viewer.stretch_box.setCurrentText(stretch)
+            self.viewer.limit_mode.setCurrentText(mode)
         image = self.session.buffers.get(n) if n is not None else None
         previous = self.viewer.image
         same = previous is not None and image is not None and previous.key == image.key
@@ -1297,6 +1364,285 @@ class MainWindow(QtWidgets.QMainWindow):
             Path(path).write_text("\n".join(lines) + "\n")
             self.console.say(f"saved {len(lines)} commands in {path}")
 
+    # ---- the pair fit
+    def open_pair_example(self) -> None:
+        """Load the synthetic pair, its star mask, and the settings that fit it."""
+        folder = example_folder()
+        n = self.session.free_buffer()
+        self.run_command(f"rd {n} {shlex.quote(str(folder / 'pair.fits.gz'))}")
+        self.run_command(f"mask load stars {shlex.quote(str(folder / 'pair.dmask'))} {n}")
+        self.run_command("mask role stars fit")
+        self.run_command(f"sources {n}")
+        p = self.pair_panel
+        p.cards["A"].set_values(
+            {"name": "A", "x0": 294.3, "y0": 263.8, "r0": 3, "r1": 120, "nr": 25}
+        )
+        p.cards["B"].set_values(
+            {"name": "B", "x0": 421.18, "y0": 322.97, "r0": 3, "r1": 50, "nr": 20}
+        )
+        p.tick("stars")
+        p.set_sky_value(1000.0, "typed: the synthetic image's true sky (FITS header SKY)")
+        self.side.setCurrentWidget(self.tools)
+        for k in range(self.tools.count()):
+            if self.tools.widget(k).widget() is p:
+                self.tools.setCurrentIndex(k)
+        self.statusBar().showMessage(
+            "The synthetic pair is loaded with its true sky: press Measure sky to compare, "
+            "then Fit pair"
+        )
+
+    def pair_sky(self) -> None:
+        n = self._current_number()
+        if n is not None:
+            self.run_command(self.pair_panel.sky_command(n))
+
+    def pair_pick(self, cid: str, what: str) -> None:
+        if self.viewer.image is None:
+            return
+        card = self.pair_panel.cards[cid]
+        if what in ("r0", "r1"):
+            x0, y0 = card.centre()
+            if not (x0 or y0):
+                QtWidgets.QMessageBox.information(self, TITLE, f"Set {cid}'s centre first.")
+                return
+            self.viewer.radius_from = (x0, y0)
+        self.set_mode("pick")
+        self._pick_target = f"pair:{cid}:{what}"
+        self.statusBar().showMessage(
+            f"Click {cid}'s centre (Alt-click: exactly where you click)"
+            if what == "centre"
+            else f"Click at the distance {what.upper()} from {cid}'s centre"
+        )
+
+    def _pair_picked(self, x: float, y: float) -> None:
+        _p, cid, what = self._pick_target.split(":")
+        card = self.pair_panel.cards[cid]
+        if what in ("r0", "r1"):
+            cx, cy = card.centre()
+            r = round(float(np.hypot(x - cx, y - cy)), 2)
+            getattr(card, what).setValue(r)
+            self.statusBar().showMessage(f"{cid}: {what.upper()} = {r:g}")
+            self._pick_target = "centre"
+            self.viewer.radius_from = None
+            self.set_mode("pan")
+            return
+        run = self._run_on_shown()
+        exact = bool(QtWidgets.QApplication.keyboardModifiers() & Qt.AltModifier)
+        said = f"{cid}: centre {x:.2f}, {y:.2f}"
+        if run is not None and len(run) and not exact:
+            row = run.nearest(x, y)
+            sx = float(run.columns["X_IMAGE"][row]) - 0.5
+            sy = float(run.columns["Y_IMAGE"][row]) - 0.5
+            if np.hypot(sx - x, sy - y) <= 3.0:
+                x, y = sx, sy
+                said = f"{cid}: snapped to source {int(run.columns['NUMBER'][row])} at {x:.2f}, {y:.2f}"
+        card.set_centre(x, y)
+        self.statusBar().showMessage(said)
+        card.match.setText(said)
+        if cid == "A":  # then B's centre
+            self._pick_target = "pair:B:centre"
+            self.statusBar().showMessage(said + "   — now click B's centre")
+        else:  # both placed: picking ends
+            self._pick_target = "centre"
+            self.set_mode("pan")
+
+    def run_pair(self) -> None:
+        n = self._current_number()
+        if n is None:
+            return
+        p = self.pair_panel
+        if not p.sky_source.text() or p.sky_source.text() == "no sky yet":
+            QtWidgets.QMessageBox.information(
+                self,
+                TITLE,
+                "Choose the sky first: Measure sky, then Use this sky, or Enter a value.",
+            )
+            return
+        if p.sky_id:
+            stale = self.session.sky_stale(p.sky_id)
+            if stale:
+                QtWidgets.QMessageBox.information(
+                    self, TITLE, f"The sky measurement is stale ({stale}). Measure it again."
+                )
+                return
+        line = p.command(n)
+        note_text = getattr(p, "sky_note", "")
+        if not p.sky_id and note_text:
+            line += f"   # sky typed: {note_text}"
+        self.run_command(line)
+
+    def _start_pair(self, line: str) -> None:
+        """Read a pair command here, run it in a worker thread, and take its result back
+        here (the window stays alive; Stop ends it after the current elliprof call)."""
+        text = line.split(None, 1)[1] if len(line.split(None, 1)) > 1 else ""
+        try:
+            job = self.session.pair_prepare(text)
+        except CommandError as e:
+            self.console.say(str(e), error=True)
+            self.statusBar().showMessage(str(e).splitlines()[0])
+            self._queue.clear()
+            self._next()
+            return
+        self._busy = True
+        self._running = line
+        QtWidgets.QApplication.setOverrideCursor(Qt.BusyCursor)
+        self._enable_runs(False)
+        self.pair_panel.set_running(True)
+        self._pair_stop = False
+        worker = PairWorker(job, lambda: self._pair_stop, self)
+        worker.progress.connect(self._pair_progress)
+        worker.done.connect(lambda result: self._pair_done(line, job, result))
+        worker.failed.connect(lambda message: self._pair_failed(line, message))
+        self._pair_worker = worker
+        worker.start()
+        self.statusBar().showMessage(f"Running: {line}")
+
+    def _pair_progress(self, info: dict) -> None:
+        if info.get("phase") == "fit":
+            cycle = info["cycle"]
+            text = (
+                f"Pair • call {info['call']} of {info['calls']} • "
+                + ("start" if str(cycle).startswith("init") else f"cycle {cycle}")
+                + f" • fitting {info['component']} (R1 {info['r1']:.1f})"
+            )
+            if info.get("retry"):
+                text += f" • adaptive retry {info['retry']}"
+        else:
+            m = info.get("metrics", {})
+            text = f"Pair • cycle {info['cycle']} done: " + (
+                f"A {'ok' if m.get('A_ok') else 'failed'}, B {'ok' if m.get('B_ok') else 'failed'}"
+            )
+        if self._pair_stop:
+            text = "stopping after the current elliprof call… " + text
+        self.pair_panel.progress.setText(text)
+        self.statusBar().showMessage(text)
+
+    def stop_pair(self) -> None:
+        if getattr(self, "_pair_worker", None) is None:
+            return
+        self._pair_stop = True
+        self.pair_panel.progress.setText(
+            "stopping after the current elliprof call (at most its timeout)…"
+        )
+
+    def _pair_done(self, line: str, job, result) -> None:
+        self._pair_worker = None
+        self.pair_panel.set_running(False)
+        self.pair_panel.progress.setText("")
+        if job.snap.run_id != result.run_id:
+            return  # a result of another run: never shown
+        reply = self.session.pair_commit(job, result)
+        self.pair_panel.show_result(result)
+        self._finished(line, reply, None)
+        n = job.outputs.get("TORESID")
+        if result.complete and n in self.session.buffers:
+            self.show_residual(n)
+
+    def show_residual(self, n: int) -> None:
+        """Show a residual: grey, linear, symmetric about 0 (5 robust sigma each way)."""
+        self.show_buffer(n)
+        data = self.session.buffers[n].data
+        finite = data[np.isfinite(data)]
+        if not finite.size:
+            return
+        sigma = 1.4826 * float(np.median(np.abs(finite - np.median(finite)))) or 1.0
+        v = self.viewer
+        if self._residual_display is None:  # what to go back to for the next buffer
+            self._residual_display = (v.stretch_box.currentText(), v.limit_mode.currentText())
+        self._residual_shown = n
+        v.stretch_box.setCurrentText("Linear")
+        v.set_limits(-5 * sigma, 5 * sigma)
+
+    def _pair_failed(self, line: str, message: str) -> None:
+        self._pair_worker = None
+        self.pair_panel.set_running(False)
+        self.pair_panel.progress.setText("")
+        self._finished(line, None, message)
+
+    def _refresh_pair(self) -> None:
+        """The pair panel's sky card and the Pair results, for the image shown."""
+        image = self.viewer.image
+        p = self.pair_panel
+        if image is None:
+            p.show_sky(None, None)
+            self.pair_results.set_record(None)
+            return
+        sid = self.session.sky_of.get(image.key)
+        result = self.session.skies.get(sid) if sid else None
+        stale = self.session.sky_stale(sid) if result else None
+        p.show_sky(result, stale)
+        record = self.session.pairs.get(image.key)
+        if record is not self.pair_results.record:
+            text = pairs.summary(record.result, record.job.snap) if record else ""
+            self.pair_results.set_record(record, text)
+            p.show_result(record.result if record else None)
+
+    def _pair_drawing(self) -> dict:
+        """What the pair tool draws on the image shown: the cards' guides (centre, R0 and
+        R1, the cores), and the fitted ellipses and centre tracks of the last pair fit."""
+        image = self.viewer.image
+        p = self.pair_panel
+        out = {}
+        record = self.session.pairs.get(image.key)
+        shown_tool = (
+            self.side.currentWidget() is self.tools and self.tools.currentWidget().widget() is p
+        )
+        for cid, card in p.cards.items():
+            d = {}
+            if not card.visible.isChecked():
+                out[cid] = d
+                continue
+            x, y = card.centre()
+            if (x or y) and (shown_tool or record is None):
+                d["centre"] = (x, y)
+                d["guide"] = [
+                    (x, y, r, r, 0.0) for r in (card.r0.value(), card.r1.value()) if r > 0
+                ]
+            if record is not None:
+                snap, result = record.job.snap, record.result
+                core = snap.cores.get(cid)
+                if core is not None and core.shape != "none" and shown_tool:
+                    d["core"] = [(core.x, core.y, core.a, core.b, core.angle)]
+                commit = result.commits.get(cid)
+                if commit is not None:
+                    d["fit"] = commit.ellipses
+                    d["track"] = [(e[0], e[1]) for e in commit.ellipses]
+                    if not d.get("centre"):
+                        d["centre"] = (snap.components[cid].x0, snap.components[cid].y0)
+            out[cid] = d
+        return out
+
+    def export_pair(self) -> None:
+        n = self._current_number()
+        if n is None:
+            return
+        if self.session.pairs.get(self.session.buffers[n].key) is None:
+            QtWidgets.QMessageBox.information(self, TITLE, "Fit a pair to this image first.")
+            return
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "A folder for the pair fit", str(self.session.folder)
+        )
+        if folder:
+            target = Path(folder) / f"{self._stem()}_pair"
+            self.run_command(f"pairexport {n} {shlex.quote(str(target))}")
+
+    def blink_pair(self) -> None:
+        image = self.viewer.image
+        if image is None or image.key not in self.session.pairs:
+            return
+        record = self.session.pairs[image.key]
+        order = ("VIEWI", "TOMODEL", "VIEWA", "VIEWB")
+        frames = [record.job.outputs[k] for k in order if k in record.job.outputs]
+        frames = [n for n in frames if n in self.session.buffers]
+        if not frames:
+            return
+        self.viewer.set_blink_choice(frames)
+        self.show_buffer(frames[0])
+        self.statusBar().showMessage(
+            "Blinking image − sky, A + B, image − sky − B, image − sky − A on one scale: "
+            "the arrow keys step through them"
+        )
+
     # ---- the example
     def open_example(self, show_tool: bool = True) -> None:
         """Load the example; ``show_tool`` opens the ELLIPROF tab for it (not at the start,
@@ -1343,6 +1689,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.run_command(self.elliprof.command(n, model, resid))
 
     def _centre_picked(self, x: float, y: float) -> None:
+        if str(self._pick_target).startswith("pair:"):
+            self._pair_picked(x, y)
+            return
         if self._pick_target in ("r0", "r1"):
             cx, cy = self.viewer.radius_from
             r = round(float(np.hypot(x - cx, y - cy)), 2)
@@ -1747,6 +2096,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if image is not None and b.shape == image.shape and b.key != image.key
         ]
         self.elliprof.set_mask_layers([m.name for m in fitting], buffers)
+        self.pair_panel.set_mask_layers(fitting)
+        self._refresh_pair()
         self.viewer.show_masks([m for m in fitting if m.visible])
 
     # ---- the command line
@@ -2160,6 +2511,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.viewer.show_centre(None, None)
             self.viewer.show_radii(None, None, ())
+        self.viewer.show_pair(self._pair_drawing() if image is not None else {})
 
     def _show_position(self, x: float, y: float) -> None:
         image = self.viewer.image

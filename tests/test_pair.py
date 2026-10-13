@@ -567,3 +567,54 @@ def test_window_edges_and_errors():
     for bad in ("BOX=70,70,80,80", "BOX=1.5,0,10,10", "BOX=0,0,10", "BOX=0,0,10,10 OUT=1"):
         with pytest.raises(CommandError):
             s.execute(f"window 1 {bad}")
+
+
+# ---------------------------------------------------------------- the window
+def test_the_pair_tool_in_the_window():
+    from PySide6 import QtCore, QtWidgets
+
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    window.show()
+
+    def settle(seconds=60):
+        deadline = QtCore.QDeadlineTimer(int(seconds * 1000))
+        while (
+            window.busy() or getattr(window, "_pair_worker", None)
+        ) and not deadline.hasExpired():
+            app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        app.processEvents()
+
+    window.open_pair_example()
+    settle()
+    panel = window.pair_panel
+    assert "stars" in panel.ticked_layers()
+    # the sky: measured, shown, and its layer never offered for fitting
+    panel.sky_requested.emit()
+    settle()
+    assert panel.sky_map.result is not None
+    names = [panel.layers.item(k).data(QtCore.Qt.UserRole) for k in range(panel.layers.count())]
+    assert "skymask" not in names
+    # picking: A, then B, then picking ends
+    window.pair_pick("A", "centre")
+    window._centre_picked(294.0, 264.0)
+    assert window._pick_target == "pair:B:centre"
+    window._centre_picked(421.0, 323.0)
+    assert window._pick_target == "centre"
+    assert abs(panel.cards["B"].x0.value() - 421.0) < 3.5
+    panel.cards["A"].set_values({"x0": 294.3, "y0": 263.8, "r1": 120})
+    panel.cards["B"].set_values({"x0": 421.18, "y0": 322.97, "r1": 50, "nr": 20})
+    # the run, in the worker thread
+    panel.run_requested.emit()
+    settle(120)
+    image = window.viewer.image
+    record = window.session.pairs[image.key]
+    assert record.result.status == "stable_valid_pair"
+    assert window.pair_results.record is record
+    drawing = window._pair_drawing()
+    assert drawing["A"]["fit"] and drawing["B"]["fit"]
+    window.blink_pair()
+    assert len(window.viewer.blink_choice()) == 4
+    window.close()

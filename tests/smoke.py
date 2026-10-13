@@ -1,5 +1,6 @@
 """A whole session in the real window, as a user would have it: the example opened, the
-isophotes fitted, the sources found and masked, the fit repeated, and the results written.
+isophotes fitted, the sources found and masked, the fit repeated, the results written,
+and the synthetic pair fitted in its worker thread and exported.
 Run it under any Qt platform (CI runs it under X11 through xvfb):
 
     python tests/smoke.py OUTPUT_FOLDER
@@ -32,7 +33,7 @@ def main() -> int:
 
     def wait():
         deadline = QtCore.QDeadlineTimer(120000)
-        while window.busy() and not deadline.hasExpired():
+        while (window.busy() or window._pair_worker) and not deadline.hasExpired():
             app.processEvents(QtCore.QEventLoop.AllEvents, 50)
         for _ in range(5):
             app.processEvents()
@@ -65,6 +66,17 @@ def main() -> int:
     window.run_command("[9] = [1] - median([1])")
     wait()
     check(9 in window.session.buffers, "arithmetic on the buffers")
+    window.open_pair_example()
+    wait()
+    window.pair_panel.sky_requested.emit()
+    wait()
+    window.pair_panel.run_requested.emit()  # the pair fit, in its worker thread
+    wait()
+    record = window.session.pairs.get(window.viewer.image.key)
+    check(record is not None and record.result.complete, "the pair fit (worker thread)")
+    window.run_command(f"pairexport {window.shown} {out / 'pair'}")
+    wait()
+    check((out / "pair" / "manifest.json").exists(), "the pair fit exported")
     window.grab().save(str(out / "window.png"))
     window.close()
     print("every step worked")

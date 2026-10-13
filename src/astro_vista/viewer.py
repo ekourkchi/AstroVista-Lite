@@ -266,6 +266,26 @@ class Viewer(QtWidgets.QWidget):
         self.radii.setZValue(39)
         self.radii.setParentItem(self.group)
         self.radius_from = None  # while picking a radius: the centre it is measured from
+        # the pair fit: guides (dashed) and fitted ellipses of A (cyan) and B (orange)
+        self.pair_items = {}
+        for cid, colour in (("A", "#22d3ee"), ("B", "#ff9f1c")):
+            for kind, width, style, z in (
+                ("guide", 1.2, Qt.DashLine, 38),
+                ("core", 1.2, Qt.DotLine, 38),
+                ("fit", 1.2, Qt.SolidLine, 37),
+                ("failed", 1.6, Qt.SolidLine, 37),
+                ("track", 1.6, Qt.SolidLine, 39),
+            ):
+                item = Ellipses("#f85149" if kind == "failed" else colour, width, style)
+                item.setZValue(z)
+                item.setParentItem(self.group)
+                self.pair_items[(cid, kind)] = item
+            mark = pg.ScatterPlotItem(
+                size=11, symbol="+", pen=pg.mkPen(colour, width=1.8), brush=None
+            )
+            mark.setZValue(42)
+            mark.setParentItem(self.group)
+            self.pair_items[(cid, "centre")] = mark
         lay.addWidget(self.canvas, 1)
         self.compass = Compass(self.canvas)
         self.compass.hide()
@@ -744,6 +764,30 @@ class Viewer(QtWidgets.QWidget):
             self.radii.set_ellipses([])
         else:
             self.radii.set_ellipses([(x, y, r, r, 0.0) for r in radii if r > 0])
+
+    def show_pair(self, drawing: dict) -> None:
+        """Draw the pair fit: ``drawing[cid]`` holds "centre" (x, y) or None, "guide",
+        "core", "fit", "failed" (lists of ellipses) and "track" (a list of points)."""
+        for cid in ("A", "B"):
+            d = drawing.get(cid) or {}
+            for kind in ("guide", "core", "fit", "failed"):
+                self.pair_items[(cid, kind)].set_ellipses(d.get(kind) or [])
+            path = QtGui.QPainterPath()
+            points = d.get("track") or []
+            if len(points) > 1:
+                path.moveTo(*points[0])
+                for x, y in points[1:]:
+                    path.lineTo(x, y)
+            self.pair_items[(cid, "track")].set_path(path)
+            c = d.get("centre")
+            self.pair_items[(cid, "centre")].setData([c[0]] if c else [], [c[1]] if c else [])
+
+    def set_blink_choice(self, numbers) -> None:
+        """Blink these buffers (in the order of the menu), on one scale."""
+        for action in self._buffer_actions():
+            action.setChecked(action.data() in numbers)
+        self.same_scale.setChecked(True)
+        self._blink_label()
 
     def show_masks(self, layers) -> None:
         """Draw the mask layers (Mask objects) in their colours and opacities."""

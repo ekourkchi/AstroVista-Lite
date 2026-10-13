@@ -146,8 +146,10 @@ class Session(ImageCommands):
         self._redo: List[tuple] = []
         self.skies: Dict[str, skies.SkyResult] = {}  # sky measurements by their id
         self.sky_of: Dict[str, str] = {}  # the latest sky measurement of each image
+        self.sky_buffer: Dict[str, tuple] = {}  # the buffer (number, image) each measured
         self.pairs: Dict[str, "PairRecord"] = {}  # the latest pair fit of each image
         self._pair_runs = 0
+        self._continued = ""  # the start of a line continued with \\
 
     # ---- helpers
     def buffer(self, text) -> Image:
@@ -220,6 +222,11 @@ class Session(ImageCommands):
         """Run a command line.  TAG= (or tag="..." after arithmetic) names the buffers it
         makes; every buffer made remembers the line that made it."""
         line = line.strip()
+        if line.endswith("\\") and not line.startswith("!"):  # continued on the next line
+            self._continued += line[:-1] + " "
+            return Reply("…", show=None)
+        if self._continued:
+            line, self._continued = self._continued + line, ""
         tag = None
         m = re.search(r"""\s+tag\s*=\s*("[^"]*"|'[^']*'|\S+)""", line, flags=re.I)
         if m and not line.startswith("!"):  # tag= anywhere on the line
@@ -713,6 +720,7 @@ class Session(ImageCommands):
         result.settings["layer_checksums"] = {m.name: _mask_sum(m) for m in layers}
         self.skies[result.id] = result
         self.sky_of[image.key] = result.id
+        self.sky_buffer[result.id] = (n, image)
         self._remember(target)
         self.masks[target] = Mask(
             target,
@@ -746,11 +754,17 @@ class Session(ImageCommands):
             reply.changed |= {"buffers", "data"}
         return reply
 
-    def sky_stale(self, sky_id: str, image: Image) -> Optional[str]:
-        """Why a sky measurement no longer fits ``image`` (None when it still does)."""
+    def sky_stale(self, sky_id: str, image: Optional[Image] = None) -> Optional[str]:
+        """Why a sky measurement no longer fits ``image`` (by default the buffer it was
+        measured on; None when it still does)."""
         result = self.skies.get(sky_id)
         if result is None:
             return "no such measurement"
+        if image is None:
+            n, measured = self.sky_buffer.get(sky_id, (None, None))
+            if n not in self.buffers or self.buffers[n] is not measured:
+                return f"buffer {n}, which was measured, holds another image now"
+            image = measured
         if image.shape != result.support.shape or skies.checksum(image.data) != result.image_id:
             return "the image has changed since the sky was measured"
         for name, value in result.settings.get("layer_checksums", {}).items():
@@ -875,7 +889,11 @@ class Session(ImageCommands):
                 outputs[key] = m
                 taken.add(m)
         if "VIEWS" in shared:
-            for key, kind in (("VIEWA", "pair image - sky - B"), ("VIEWB", "pair image - sky - A")):
+            for key, kind in (
+                ("VIEWI", "pair image - sky"),
+                ("VIEWA", "pair image - sky - B"),
+                ("VIEWB", "pair image - sky - A"),
+            ):
                 m = self.output_buffer(n, kind)
                 while m in taken:
                     m = self.free_buffer(m)
@@ -959,6 +977,7 @@ class Session(ImageCommands):
                 "TOMODELB": (f"{image.name} pair B model ({snap.components['B'].label})", b),
                 "TOMODEL": (f"{image.name} pair A+B model", result.total),
                 "TORESID": (f"{image.name} pair residual", result.residual),
+                "VIEWI": (f"{image.name} pair image - sky", snap.image - snap.settings.sky),
                 "VIEWA": (f"{image.name} pair image - sky - B", snap.image - snap.settings.sky - b),
                 "VIEWB": (f"{image.name} pair image - sky - A", snap.image - snap.settings.sky - a),
             }

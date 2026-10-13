@@ -1099,6 +1099,7 @@ def test_right_panel_tabs_and_upright_crosshair():
         "Profile",
         "Sources",
         "Plots",
+        "Pair",
     ]
     assert window.docks["Terminal"].widget() is window.console  # the terminal alone
     window.open_example()
@@ -1864,7 +1865,14 @@ def test_every_command_on_the_website_runs(tmp_path):
     from astro_vista.app import EXAMPLE_FILES, example_folder
 
     docs = Path(__file__).resolve().parent.parent / "docs"
-    names = ("index.html", "tutorial.html", "commands.html", "terminal.html", "reference.html")
+    names = (
+        "index.html",
+        "tutorial.html",
+        "commands.html",
+        "terminal.html",
+        "reference.html",
+        "pairs.html",  # last: it reads the pair into buffer 1
+    )
     pages = [docs / name for name in names]
     assert all(page.exists() for page in pages)
     # the files the pages read: the example under the names they use
@@ -1877,6 +1885,9 @@ def test_every_command_on_the_website_runs(tmp_path):
     ).writeto(tmp_path / "frame.fits")
     fits.writeto(tmp_path / "edges.fits", np.ones(data.shape, np.uint8))
     (tmp_path / "session.txt").write_text("stats 1\n")
+    pair = fits.getdata(example_folder() / "pair.fits.gz")
+    fits.writeto(tmp_path / "pair.fits", pair)
+    shutil.copy(example_folder() / "pair.dmask", tmp_path / "pair.dmask")
     s = Session()
     s.folder = tmp_path
     s.execute("rd 1 galaxy.fits")
