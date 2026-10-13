@@ -289,22 +289,28 @@ class ElidedLabel(QtWidgets.QLabel):
 
 
 class Task(QtCore.QObject):
-    """Runs a function in a worker thread and reports back in the window's thread.
+    """Runs a command's function and reports back in the window's thread.
 
-    The worker is a Python thread, not a Qt thread pool task: a Python function handed to
-    QRunnable.create can run without Python's interpreter lock (PySide6 6.12 on Linux),
-    which corrupts reference counts and crashes Python 3.10 and 3.11.  The signals are
-    delivered in the window's thread, where this object lives (a queued connection)."""
+    Data commands run in the window's thread, from the event loop, so that no Python code
+    runs beside Qt's: PySide6 (6.11, and more often 6.12) can let the two overlap without
+    Python's interpreter lock, which corrupts reference counts and crashes Python 3.10 and
+    3.11 on Linux.  Shell commands (``threaded``) run in a Python thread, so that the window
+    stays alive to stop them with Ctrl+C; their signals arrive queued in the window's
+    thread, where this object lives."""
 
     done = QtCore.Signal(object)
     failed = QtCore.Signal(str)
 
-    def __init__(self, function: Callable, parent=None):
+    def __init__(self, function: Callable, parent=None, threaded: bool = False):
         super().__init__(parent)
         self._function = function
+        self._threaded = threaded
 
     def start(self) -> None:
-        threading.Thread(target=self._run, name="astrovista-task", daemon=True).start()
+        if self._threaded:
+            threading.Thread(target=self._run, name="astrovista-task", daemon=True).start()
+        else:  # at the next turn of the event loop, once "Running: ..." is shown
+            QtCore.QTimer.singleShot(0, self, self._run)
 
     def _run(self) -> None:
         try:
@@ -329,6 +335,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._queue: List[str] = []
         self._busy = False
         self._task = None
+        self._running: Optional[str] = None  # the command being run, if any
         self._patch_cache = None  # (key, labels) for the Ctrl-hover outline
         self._pick_target = "centre"  # what the pick tool picks: centre, r0 or r1
 
@@ -960,7 +967,9 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QApplication.setOverrideCursor(Qt.BusyCursor)
             self.statusBar().showMessage(f"Running: {line}")
             self._enable_runs(False)
-            self._task = Task(lambda: self.session.execute(line), self)
+            self._running = line
+            shell = self.session.is_shell(line)
+            self._task = Task(lambda: self.session.execute(line), self, threaded=shell)
             self._task.done.connect(lambda reply: self._finished(line, reply, None))
             self._task.failed.connect(lambda message: self._finished(line, None, message))
             self._task.start()
@@ -988,6 +997,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _finished(self, line: str, reply: Optional[Reply], error: Optional[str]) -> None:
         self._busy = False
         self._task = None
+        self._running = None
         QtWidgets.QApplication.restoreOverrideCursor()
         self._enable_runs(True)
         if error is not None:
@@ -1206,7 +1216,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if ext is None:
                 return
             name += f"[{ext}]"
-        queued = {int(m.group(1)) for q in self._queue if (m := re.match(r"rd (\d+) ", q))}
+        waiting = self._queue + ([self._running] if self._running else [])
+        queued = {int(m.group(1)) for q in waiting if (m := re.match(r"rd (\d+) ", q))}
         n = self.session.free_buffer()
         while n in queued:
             n += 1
