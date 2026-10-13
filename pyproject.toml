@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "AstroVista"
-version = "1.0.0"
+version = "1.0.1"
 description = "AstroVista Lite: isophote fitting, source finding, masks and image arithmetic for astronomical images, simple enough for teaching"
 readme = "README.md"
 license = "MIT"

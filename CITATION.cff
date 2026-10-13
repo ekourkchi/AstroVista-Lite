@@ -6,7 +6,7 @@ type: software
 authors:
   - family-names: Kourkchi
     given-names: Ehsan
-version: 1.0.0
+version: 1.0.1
 repository-code: "https://github.com/ekourkchi/AstroVista-Lite"
 url: "https://github.com/ekourkchi/AstroVista-Lite"
 keywords:
