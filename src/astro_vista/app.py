@@ -343,8 +343,12 @@ class PairWorker(QtCore.QObject):
 
     def _run(self) -> None:
         try:
-            result = pairs.run(
-                self._job.snap, progress=self.progress.emit, cancelled=self._cancelled
+            measured = self._job.measurement
+            result = pairs.run_sky(
+                self._job.snap,
+                measured.support if measured is not None else None,
+                progress=self.progress.emit,
+                cancelled=self._cancelled,
             )
         except Exception as e:  # shown to the user, not raised in the worker
             self.failed.emit(f"{type(e).__name__}: {e}\n" + traceback.format_exc(limit=3))
@@ -364,6 +368,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._queue: List[str] = []
         self._busy = False
         self._continued = ""  # the start of a command line continued with \\
+        self._when_done: List[Callable[[], None]] = []  # run once the queue is empty
         self._residual_display = None  # (stretch, limits) to restore after a residual
         self._residual_shown = None
         self._pair_worker = None
@@ -542,6 +547,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_open = a("&Open FITS image…", self.open_dialog, "📂", QtGui.QKeySequence.Open)
         self.a_example = a("Open &example (UGC 12517)", self.open_example, "★")
         self.a_pair_example = a("Open the &pair example (synthetic)", self.open_pair_example)
+        self.a_pair_folder = a("Open a pair &folder…", lambda: self.open_pair_folder())
         self.a_save = a("&Save buffer as FITS…", self.save_buffer, "💾", QtGui.QKeySequence.Save)
         self.a_run_file = a("&Run a command file…", self.run_file)
         self.a_save_commands = a("Save the commands as a file…", self.save_commands)
@@ -693,6 +699,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.recent_menu.menuAction(),
                 self.a_example,
                 self.a_pair_example,
+                self.a_pair_folder,
                 None,
                 self.a_save,
                 None,
@@ -895,6 +902,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.finder.run_requested.connect(self.run_detection)
         pp = self.pair_panel
         pp.sky_requested.connect(self.pair_sky)
+        pp.sky_mask_toggled.connect(self.pair_sky_mask)
         pp.pick_requested.connect(self.pair_pick)
         pp.run_requested.connect(self.run_pair)
         pp.stop_requested.connect(self.stop_pair)
@@ -1076,6 +1084,23 @@ class MainWindow(QtWidgets.QMainWindow):
             elif verb == "pair":
                 self.show_result(self.pair_results)
         self._next()
+        if not self._busy and not self._queue:
+            todo, self._when_done = self._when_done, []
+            for fn in todo:
+                fn()
+
+    def after_commands(self, fn: Callable[[], None]) -> None:
+        """Call ``fn`` once the commands queued now have run (now, if none is)."""
+        if self._busy or self._queue:
+            self._when_done.append(fn)
+        else:
+            fn()
+
+    def show_pair_tool(self) -> None:
+        self.side.setCurrentWidget(self.tools)
+        for k in range(self.tools.count()):
+            if self.tools.widget(k).widget() is self.pair_panel:
+                self.tools.setCurrentIndex(k)
 
     def apply(self, reply: Reply) -> None:
         """Bring the window up to date with the session after a command."""
@@ -1382,19 +1407,75 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         p.tick("stars")
         p.set_sky_value(1000.0, "typed: the synthetic image's true sky (FITS header SKY)")
-        self.side.setCurrentWidget(self.tools)
-        for k in range(self.tools.count()):
-            if self.tools.widget(k).widget() is p:
-                self.tools.setCurrentIndex(k)
+        self.after_commands(self.show_pair_tool)
         self.statusBar().showMessage(
             "The synthetic pair is loaded with its true sky: press Measure sky to compare, "
             "then Fit pair"
         )
 
+    def open_pair_folder(self, folder: Optional[Path] = None) -> None:
+        """Open a pair's folder: its FITS image, its .dmask masks (as fitting layers), the
+        sources, and the two centres of its DS9 region file, with starting radii."""
+        if folder is None:
+            chosen = QtWidgets.QFileDialog.getExistingDirectory(
+                self, "A folder with a FITS image, .dmask masks and a region file of A and B"
+            )
+            if not chosen:
+                return
+            folder = Path(chosen)
+        try:
+            info = pairs.read_folder(folder)
+        except pairs.PairError as e:
+            QtWidgets.QMessageBox.information(self, TITLE, str(e))
+            return
+        n = self.session.free_buffer()
+        self.run_command(f"rd {n} {shlex.quote(info.rd_name)}")
+        names = []
+        for path in info.masks:
+            name = re.sub(r"\W", "_", path.stem)
+            self.run_command(f"mask load {name} {shlex.quote(str(path))} {n}")
+            self.run_command(f"mask role {name} fit")
+            names.append(name)
+        self.run_command(f"sources {n}" + (f" MASK={','.join(names)}" if names else ""))
+        p = self.pair_panel
+        p.tick(*names)
+        if len(info.centres) == 2:
+            from astropy.io import fits
+
+            with fits.open(info.image, memmap=True) as f:
+                shape = (f[info.hdu] if info.hdu else f[0]).data.shape
+            r1 = pairs.suggested_r1(info.centres, shape)
+            for cid, (x, y, name) in info.centres.items():
+                p.cards[cid].set_values(
+                    {"name": name or cid, "x0": x, "y0": y, "r0": 3, "r1": r1[cid], "nr": 25}
+                )
+                p.cards[cid].adaptive.setChecked(True)
+        p.sky_source.setText("no sky yet")
+        self.after_commands(self.show_pair_tool)
+        said = f"{info.image.name}: " + (
+            "A and B placed from the region file, with starting radii to check; "
+            if len(info.centres) == 2
+            else ""
+        )
+        said += f"{len(names)} mask(s) loaded; measure the sky, then Fit pair"
+        for text in info.notes:
+            said += f" ({text})"
+        self.statusBar().showMessage(said)
+        self.console.say(said)
+
     def pair_sky(self) -> None:
         n = self._current_number()
         if n is not None:
             self.run_command(self.pair_panel.sky_command(n))
+            if self.pair_panel.show_mask.isChecked():
+                self.run_command("mask show skymask")
+
+    def pair_sky_mask(self, on: bool) -> None:
+        """Show or hide the sky-exclusion layer of the last sky measurement."""
+        if "skymask" in self.session.masks:
+            self.run_command(f"mask {'show' if on else 'hide'} skymask")
+        elif on:
+            self.statusBar().showMessage("No sky mask yet: press Measure sky")
 
     def pair_pick(self, cid: str, what: str) -> None:
         if self.viewer.image is None:
@@ -1512,6 +1593,11 @@ class MainWindow(QtWidgets.QMainWindow):
             text = f"Pair • cycle {info['cycle']} done: " + (
                 f"A {'ok' if m.get('A_ok') else 'failed'}, B {'ok' if m.get('B_ok') else 'failed'}"
             )
+        if info.get("sky_iteration"):
+            text = (
+                f"Sky fit {info['sky_iteration']} of at most {info['sky_iterations']} "
+                f"(factor {info['sky_factor']:.5f}) • " + text
+            )
         if self._pair_stop:
             text = "stopping after the current elliprof call… " + text
         self.pair_panel.progress.setText(text)
@@ -1533,6 +1619,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return  # a result of another run: never shown
         reply = self.session.pair_commit(job, result)
         self.pair_panel.show_result(result)
+        if result.sky_iterations:  # the factor of the fit kept
+            self.pair_panel.factor.setValue(job.snap.settings.sky_factor)
         self._finished(line, reply, None)
         n = job.outputs.get("TORESID")
         if result.complete and n in self.session.buffers:
@@ -1570,12 +1658,28 @@ class MainWindow(QtWidgets.QMainWindow):
         sid = self.session.sky_of.get(image.key)
         result = self.session.skies.get(sid) if sid else None
         stale = self.session.sky_stale(sid) if result else None
-        p.show_sky(result, stale)
+        values = None
+        if result is not None and sid in self.session.sky_buffer:
+            measured = self.session.sky_buffer[sid][1]
+            if measured.data.shape == result.support.shape:
+                values = measured.data[result.support]
+        p.show_sky(result, stale, values)
         record = self.session.pairs.get(image.key)
         if record is not self.pair_results.record:
             text = pairs.summary(record.result, record.job.snap) if record else ""
-            self.pair_results.set_record(record, text)
+            residual = None
+            if record is not None and record.result.residual is not None:
+                measured = record.job.measurement
+                if measured is not None:
+                    use = measured.support & ~record.job.snap.fit_mask
+                    residual = record.result.residual[use]
+            self.pair_results.set_record(record, text, residual)
             p.show_result(record.result if record else None)
+            p.show_residual_sky(
+                record.result.sky_check if record else None,
+                residual,
+                record.result.sky_iterations if record else (),
+            )
 
     def _pair_drawing(self) -> dict:
         """What the pair tool draws on the image shown: the cards' guides (centre, R0 and
@@ -2700,6 +2804,11 @@ def make_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--example", action="store_true", help="open the UGC 12517 example")
     parser.add_argument("--run", metavar="FILE", help="run a command file at the start")
+    parser.add_argument(
+        "--pair",
+        metavar="FOLDER",
+        help="open a pair's folder (FITS image, .dmask masks, a region file of A and B)",
+    )
     parser.add_argument("--version", action="version", version=f"astrovista {__version__}")
     return parser
 
@@ -2713,6 +2822,8 @@ def open_arguments(window: "MainWindow", args) -> None:
         window.load_mask_file(Path(name))
     if args.example:
         window.open_example(show_tool=False)
+    if args.pair:
+        window.open_pair_folder(Path(args.pair))
     if args.run:
         window.run_command(f"run {shlex.quote(args.run)}")
 

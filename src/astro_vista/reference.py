@@ -183,8 +183,8 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
             _c(
                 "sky",
                 "sky N [MASK=a,b]   ·   sky N SEGMENT [THRESH=0.5] [MINAREA=12] [GROW=2] "
-                "[CELLS=8] [BACK_SIZE=0] [PAD=v] [MASK=a,b] [TOMASK=skymask] [TOMAP=M] "
-                "[TOPLANE=M]",
+                "[CELLS=8] [BACK_SIZE=0] [FWHM=0] [PAD=v] [MASK=a,b] [TOMASK=skymask] "
+                "[TOMAP=M] [TOPLANE=M]",
                 "The sky level of buffer N. Alone: the median of the pixels the masks leave, "
                 "clipped at 3 standard deviations until it settles. With SEGMENT: every source "
                 "found down to THRESH standard deviations is left out (grown by GROW pixels), "
@@ -192,9 +192,10 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "medians of CELLS × CELLS boxes, a plane fitted to them (the gradient, as an "
                 "angle on the image from +x), an approximate sampling error and the spatial "
                 "spread, kept apart. The verdict: usable_support, candidate_inspect_support "
-                "(with its reasons) or no_estimate. Enough sky is needed, not proof: a halo too "
-                "faint to be detected can remain. The pixels left out become the mask layer "
-                "TOMASK, of role sky, which is never used in a fit.",
+                "(with its reasons) or no_estimate. The verdict is advice: the median is kept "
+                "whenever there are sky pixels, for you to judge. Enough sky is needed, not "
+                "proof: a halo too faint to be detected can remain. The pixels left out become "
+                "the mask layer TOMASK, of role sky, which is never used in a fit.",
                 (
                     ("MASK=", "mask layers to leave out as well"),
                     ("SEGMENT", "find and leave out every source first"),
@@ -209,6 +210,7 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "0: one level, iterated (default); > 0: a background mesh of that "
                         "size, as SExtractor's BACK_SIZE (it takes part of a large halo for sky)",
                     ),
+                    ("FWHM=", "a Gaussian detection filter of that FWHM, pixels (0: 3 × 3)"),
                     ("PAD=", "a value that marks pixels without data (0 around a mosaic)"),
                     ("TOMASK=", "the name of the sky layer (skymask)"),
                     ("TOMAP=, TOPLANE=", "buffers for the cell medians and the fitted plane"),
@@ -549,6 +551,13 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "incomplete_initialization or cancelled. help pair lists every keyword.",
                 (
                     ("SKY=", "the sky, the same for every call (required)"),
+                    ("SKYFACTOR=", "the sky used is SKYFACTOR × SKY (1; 0.5 to 1.5)"),
+                    (
+                        "SKYITER=",
+                        "refit up to this many times, each with the factor + m / SKY, m the "
+                        "clipped median of image − sky − A − B on the sky pixels of the image's "
+                        "sky measurement; the fit with the smallest |m| is kept (0: off)",
+                    ),
                     (
                         "MASK=, MASKFILE=, MASKBUF=",
                         "what to leave out of every fit (sky layers are refused)",

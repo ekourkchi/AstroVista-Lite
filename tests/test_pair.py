@@ -570,6 +570,127 @@ def test_window_edges_and_errors():
 
 
 # ---------------------------------------------------------------- the window
+# ---------------------------------------------------------------- the sky factor
+class FlatFitter(FakeFitter):
+    """A fake elliprof whose models are zero: the residual is the image minus the sky."""
+
+    def __call__(self, data, *args, **kw):
+        fit = super().__call__(data, *args, **kw)
+        fit.model[:] = 0.0
+        return fit
+
+
+def test_the_residual_sky_gives_the_next_factor():
+    rng = np.random.default_rng(3)
+    residual = rng.normal(-4.0, 1.0, (200, 200))
+    support = np.ones(residual.shape, bool)
+    level = sky.residual_level(residual, support, base=200.0, factor=1.1)
+    assert abs(level["median"] + 4.0) < 0.05
+    assert abs(level["next_factor"] - (1.1 + level["median"] / 200.0)) < 1e-12
+    assert abs(level["next_sky"] - (220.0 + level["median"])) < 1e-9
+    assert sky.residual_level(residual, np.zeros_like(support))["pixels"] == 0
+
+
+def test_skyfactor_multiplies_the_base_and_is_bounded():
+    s = pair.settings_from({"SKY": "1000", "SKYFACTOR": "0.98", "SKYITER": "3"})
+    assert s.sky == pytest.approx(980.0) and s.sky_base == 1000.0 and s.sky_iter == 3
+    with pytest.raises(pair.PairError):
+        pair.settings_from({"SKY": "1000", "SKYFACTOR": "2"})
+    with pytest.raises(pair.PairError):
+        pair.settings_from({"SKY": "1000", "SKYITER": "-1"})
+
+
+def test_sky_iterations_refit_until_the_residual_sky_is_zero():
+    snap = tiny_snapshot(cycles=1)
+    snap = pair.with_sky(snap, 1.0)
+    snap.settings.sky_base, snap.settings.sky_iter = 105.0, 6
+    snap = pair.with_sky(snap, 1.0)  # sky 105: 5 too high for an image of 100
+    f = FlatFitter()
+    result = pair.run_sky(snap, np.ones(snap.image.shape, bool), fitter=f)
+    rows = result.sky_iterations
+    assert len(rows) >= 2 and rows[0]["factor"] == 1.0
+    assert rows[0]["median"] == pytest.approx(-5.0, abs=0.1)
+    chosen = [r for r in rows if r.get("chosen")]
+    assert len(chosen) == 1
+    assert chosen[0]["sky"] == pytest.approx(100.0, abs=0.1)
+    assert abs(chosen[0]["median"]) < abs(rows[0]["median"])
+    assert pair.chosen_factor(result, snap.settings) == chosen[0]["factor"]
+    # each pair fit gave every elliprof call its own sky
+    skies_used = sorted({round(c["kw"]["sky"], 6) for c in f.calls})
+    assert len(skies_used) == len(rows)
+    # without SKYITER it is one ordinary run
+    plain = pair.run_sky(tiny_snapshot(cycles=1), np.ones((60, 120), bool), fitter=FlatFitter())
+    assert plain.sky_iterations == []
+
+
+def test_skyiter_needs_a_sky_measurement_and_replays_the_factor_kept(tmp_path):
+    s = Session()
+    s.execute(f"rd 1 {EXAMPLE / 'pair.fits'}")
+    line = (
+        "pair 1 SKY=1003 SKYITER=3 A: X0=294.3 Y0=263.8 R0=3 R1=120 "
+        "B: X0=421.18 Y0=322.97 R0=3 R1=50 NR=20"
+    )
+    with pytest.raises(CommandError, match="SKYITER needs"):
+        s.execute(line)
+    s.execute(f"mask load stars {EXAMPLE / 'pair.dmask'} 1")
+    s.execute("mask role stars fit")
+    s.execute("sources 1")
+    s.execute("sky 1 SEGMENT MASK=stars")
+    reply = s.execute(line.replace("SKYITER=3", "SKYITER=3 MASK=stars"))
+    record = s.pairs[s.buffers[1].key]
+    result, snap = record.result, record.job.snap
+    rows = result.sky_iterations
+    assert rows and any(r.get("chosen") for r in rows), reply.text
+    kept = next(r for r in rows if r.get("chosen"))
+    assert snap.settings.sky_factor == kept["factor"]  # the snapshot is the fit kept
+    assert abs(kept["median"]) <= abs(rows[0]["median"])
+    assert "clipped_median" in result.sky_check and "skyfactor" in reply.values
+    s.execute(f"pairexport 1 {tmp_path / 'out'}")
+    commands = (tmp_path / "out" / "commands.txt").read_text()
+    pair_lines = [x for x in commands.splitlines() if x.startswith("pair 1")]
+    assert pair_lines and all("SKYITER" not in x for x in pair_lines)
+    assert all(f"SKYFACTOR={kept['factor']:.10g}" in x for x in pair_lines)
+
+
+def test_the_sky_filter_and_a_level_without_support_verdict():
+    assert sky.gaussian_kernel(2.0).shape == (5, 5)
+    assert sky.gaussian_kernel(2.0).sum() == pytest.approx(1.0, rel=1e-6)
+    scene = synthetic.blank(n_stars=10)
+    r = sky.measure(scene.data, "blank", fwhm=2.0)
+    assert r.settings["FWHM"] == 2.0 and "Gaussian" in r.detection["filter"]
+    assert abs(r.level - scene.sky) < 1.0
+    # little support: the verdict says so, but the level is kept for the user to judge
+    halo = synthetic.halo()
+    h = sky.measure(halo.data, "halo", thresh=0.05)
+    if h.state == "no_estimate" and h.support.sum() >= 100:
+        assert np.isfinite(h.level)
+
+
+def test_a_pair_folder_is_read(tmp_path):
+    from astropy.io import fits
+
+    from astro_vista.masks import Mask, save
+
+    fits.PrimaryHDU(np.zeros((40, 60), np.float32)).writeto(tmp_path / "g.fits")
+    m = np.zeros((40, 60), bool)
+    m[:3] = True
+    save(Mask("m", m), tmp_path / "g.dmask")
+    (tmp_path / "centers.reg").write_text(
+        "# Region file format: DS9 version 4.1\nimage\n"
+        "point(11.000000,21.000000) # point=cross text={B: small}\n"
+        "point(41.0,21.0) # point=cross text={A: big}\n"
+    )
+    folder = pair.read_folder(tmp_path)
+    assert folder.image.name == "g.fits" and folder.hdu is None
+    assert [p.name for p in folder.masks] == ["g.dmask"]
+    assert folder.centres["A"] == (40.5, 20.5, "big")  # ELLIPROF's coordinates
+    assert folder.centres["B"] == (10.5, 20.5, "small")
+    r1 = pair.suggested_r1(folder.centres, (40, 60))
+    assert r1["A"] == pytest.approx(min(0.9 * 19.5, 0.6 * 30), abs=0.06)  # edge, separation
+    with pytest.raises(pair.PairError):
+        pair.read_folder(tmp_path / "nothing")
+
+
 def test_the_pair_tool_in_the_window():
     from PySide6 import QtCore, QtWidgets
 
@@ -617,4 +738,22 @@ def test_the_pair_tool_in_the_window():
     assert drawing["A"]["fit"] and drawing["B"]["fit"]
     window.blink_pair()
     assert len(window.viewer.blink_choice()) == 4
+    # the sky: its histogram, the user's decision, the factor and the residual sky
+    assert panel.sky_hist.isVisibleTo(panel)
+    panel.show_mask.setChecked(True)
+    settle()
+    assert window.session.masks["skymask"].visible
+    panel._use_measured()
+    assert panel.sky.value() == pytest.approx(panel._measurement.level, abs=1e-4)
+    panel.factor.setValue(0.999)
+    panel.sky_iter.setValue(2)
+    command = panel.command(1)
+    assert "SKYFACTOR=0.999" in command and "SKYITER=2" in command
+    panel.run_requested.emit()
+    settle(180)
+    record = window.session.pairs[image.key]
+    assert record.result.sky_iterations
+    assert panel.factor.value() == pytest.approx(record.job.snap.settings.sky_factor, abs=1e-5)
+    assert panel.resid_hist.isVisibleTo(panel)
+    assert window.pair_results.sky_table.rowCount() == len(record.result.sky_iterations)
     window.close()

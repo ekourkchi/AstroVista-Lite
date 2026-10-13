@@ -221,12 +221,14 @@ students. AstroVista Lite makes it quick:
 - **Pairs of overlapping galaxies** (Tools ▸ Pair fit, or `pair`): the sky measured by
   segmentation first (`sky N SEGMENT`: every source down to 0.5 sigma left out; the level,
   cells, gradient, uncertainties and a verdict on the support), then ELLIPROF on each
-  galaxy in turn with the other's model taken out, for a set number of cycles. A model is
+  galaxy in turn with the other's model taken out, for a set number of cycles; the sky
+  can then be refined by a factor from the residual on the sky pixels. A model is
   kept only when its fit passes every check; the result says whether the pair settled.
   The models of A, B and A + B, the residual on every pixel, both sets of ellipses,
   profiles and the change per cycle; `pairexport` writes it all to a folder. A synthetic
   pair with a known answer ships as an example (File ▸ Open the pair example; the
-  [lesson](https://ekourkchi.github.io/AstroVista-Lite/pairs.html)).
+  [lesson](https://ekourkchi.github.io/AstroVista-Lite/pairs.html)); File ▸ Open a pair
+  folder opens your own (an image, its masks and a region file of the two centres).
 - **Mask roles**: a layer can be for fits, for the sky only, or a candidate; sky layers
   are never used in a fit.
 - **The Source finder**: the stars and galaxies in the image, measured (position, shape,

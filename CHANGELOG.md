@@ -15,6 +15,17 @@ newest is at the top.
 - **The sky by segmentation.** `sky N SEGMENT`: every source down to 0.5 sigma left out;
   the level, cell medians, a fitted gradient, sampling and spatial uncertainties, and a
   verdict on the support; measurements turn stale when the image or masks change.
+- **The sky factor.** The sky subtracted is `SKYFACTOR` × `SKY`. After a pair fit, the
+  residual on the sky pixels (its median, sigma and histogram) suggests the next factor,
+  factor + median / base; `SKYITER=n` refits up to n times and keeps the fit with the
+  smallest residual median. The Pair fit panel shows the sky pixels' histogram, keeps
+  every segmentation setting open (with `FWHM=`, a Gaussian detection filter, and a
+  threshold down to 0.01 sigma), shows the sky mask on request, and lets the user take the
+  measured median whatever the verdict (which is kept with the fit). Results ▸ Pair ▸ Sky
+  lists the fits.
+- File ▸ Open a pair folder (and `astrovista --pair FOLDER`): a FITS image, its `.dmask`
+  masks and a DS9 region file with the centres of A and B, opened together, with starting
+  radii to check.
 - Mask roles (`mask role NAME fit|sky|candidate`); sky layers are never used in a fit.
 - `elliprof`: `MODE=` (or `COS3X=`, `COS4X=`), `FIXCTR=`, `RLAW=`, `GAIN=`, `TIE=`,
   `MINUS=` and `RAW`.

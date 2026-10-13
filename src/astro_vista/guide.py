@@ -798,12 +798,18 @@ TIPS = {
     "Auto takes a free one; the list offers the free buffers, and <i>Show the occupied "
     "buffers too</i> lets a result replace what is in a buffer.",
     # the pair fit
-    "pair_sky": "<b>The sky by segmentation.</b> Every source found down to 0.5 sigma (the "
-    "threshold) is left out, grown by 2 pixels, and the sky is measured on what is left: "
-    "its median, the medians of cells over the frame, a plane through them (the gradient), "
-    "and a verdict on how much sky there is. Only <i>usable support</i> can be used with one "
-    "click; otherwise type a value and say where it comes from. One sky is used for both "
-    "galaxies and every cycle.",
+    "pair_sky": "<b>The sky by segmentation.</b> Every source found down to the threshold "
+    "(0.5 sigma by default; lower is more conservative) is left out, grown by 2 pixels, and "
+    "the sky is measured on what is left: its median (the histogram shows the pixels), the "
+    "medians of cells over the frame, a plane through them (the gradient), and a verdict on "
+    "how much sky there is. The verdict is advice: <i>Use this sky</i> takes the median as "
+    "the base level whatever it says, and the verdict is kept with the fit. One sky is used "
+    "for both galaxies and every cycle.",
+    "pair_skyfactor": "<b>The sky factor.</b> The sky subtracted is factor x base. After a "
+    "fit, the median m of the residual (image - sky - A - B) on the sky pixels suggests the "
+    "next factor, factor + m / base: <i>Use the next factor</i>, then fit again, or let "
+    "<i>Refine the factor</i> do it up to N times and keep the fit with the smallest |m|. "
+    "ELLIPROF's models reach beyond R1, so their outer light is part of the residual.",
     "pair_centre": "<b>The centre</b> of this galaxy, in ELLIPROF's coordinates (the first "
     "pixel's centre is at 0.5). <i>Pick A</i> takes one click for A, then one for B. A click "
     "within 3 pixels of a found source takes the source's centre, and the card says so; "
@@ -1079,22 +1085,31 @@ the position angle and the profile of the galaxy being fitted towards it. The <b
 tool fits both, in turn, each with the other's model taken out.</p>
 
 <h3>1. The sky, first</h3>
-<p><i>Measure sky</i> finds every source down to 0.5 sigma (stars, galaxies, halos), leaves
-them out, grown by 2 pixels, and measures the sky on what is left: the median, the medians
+<p><i>Measure sky</i> finds every source down to the threshold (0.5 sigma by default; a lower
+threshold masks more, which is conservative), leaves them out, grown by 2 pixels, and
+measures the sky on what is left: the median (the histogram shows those pixels), the medians
 of cells across the frame, a plane through the cells (the gradient, as an angle on the
 image from +x, not a position angle on the sky), an approximate sampling error and the
 spread between cells. These are kept apart: neither is the total error of the sky.</p>
 <p>The verdict says how much sky there is: <b>usable_support</b>,
 <b>candidate_inspect_support</b> (with the reasons: too few pixels, cells only along one
 edge or a line, cells that disagree, a gradient larger than the noise) or
-<b>no_estimate</b>. Enough sky is needed, but it is not proof: a halo too faint to detect
-can remain in the "sky". Leaving out everything above 0.5 sigma also reads pure noise a
-little low (about 0.2 sigma). Large galaxies often fill an image, and then there is no
-clean sky to measure; type a value instead (from a larger image, an earlier measurement…),
-with a note on where it comes from. Changing the image or the masks makes a measurement
-stale.</p>
+<b>no_estimate</b>. The verdict is advice: <i>Use this sky</i> takes the median as the
+base level whatever it says, and the verdict is kept with the fit. Enough sky is needed,
+but it is not proof: a halo too faint to detect can remain in the "sky". Leaving out
+everything above 0.5 sigma also reads pure noise a little low (about 0.2 sigma). Large
+galaxies often fill an image; you can also type a value (from a larger image, an earlier
+measurement…), with a note on where it comes from. Changing the image or the masks makes a
+measurement stale.</p>
 <p>The sky layer it makes (<code>skymask</code>, role <i>sky</i>) covers both galaxies, so
-it is never used in a fit.</p>
+it is never used in a fit. <i>Show the sky mask</i> draws it on the image.</p>
+<p><b>The sky factor.</b> The sky subtracted is <i>factor × base</i>. After a fit, step 5
+shows the residual (image − sky − A − B) on the sky pixels, with its histogram: its median
+m suggests the next factor, factor + m / base (<i>Use the next factor</i>, then fit again).
+<i>Refine the factor</i> does this up to N times and keeps the fit with the smallest |m|;
+Results ▸ Pair ▸ Sky lists every fit. ELLIPROF's models reach beyond R1, so their outer
+light is part of that residual: the factor makes the sky and the models' halos together
+match the sky pixels.</p>
 
 <h3>2. The two galaxies</h3>
 <p><i>Pick A</i>, click A's centre, then B's. Give each its own R0 and R1 (semi-major
@@ -1141,8 +1156,11 @@ pair 1 SKY=1000 MASK=stars \\
        B: NAME=B X0=421.18 Y0=322.97 R0=3 R1=50 NR=20
 pairexport 1 my_pair</pre>
 <p>Shared settings come before <code>A:</code>; each galaxy's after its label.
-<code>help pair</code> lists them all. File ▸ Open the pair example loads a synthetic pair
-whose true answer is in its FITS header.</p>
+<code>help pair</code> lists them all; <code>SKYFACTOR=</code> and <code>SKYITER=</code> are
+the sky factor. File ▸ Open the pair example loads a synthetic pair whose true answer is in
+its FITS header. File ▸ Open a pair folder opens a folder holding a FITS image, its
+<code>.dmask</code> masks and a DS9 region file with the two centres (points labelled
+<code>A:</code> and <code>B:</code>), with starting radii to check.</p>
 """,
 )
 

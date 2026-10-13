@@ -272,6 +272,7 @@ class PairPanel(QtWidgets.QWidget):
     """The settings of a pair fit, and the sky it uses."""
 
     sky_requested = QtCore.Signal()
+    sky_mask_toggled = QtCore.Signal(bool)  # show the sky-exclusion layer on the image
     pick_requested = QtCore.Signal(str, str)  # "A" or "B"; "centre", "r0" or "r1"
     run_requested = QtCore.Signal()
     stop_requested = QtCore.Signal()
@@ -293,46 +294,68 @@ class PairPanel(QtWidgets.QWidget):
 
         # ---- the sky
         form.addRow(heading("1. Sky"))
-        measure = QtWidgets.QPushButton("Measure sky (0.5σ segmentation)")
-        measure.setToolTip(
-            "Every source found down to the threshold is left out (with the ticked fitting "
-            "layers), and the sky is measured on the rest (sky N SEGMENT)"
-        )
-        measure.clicked.connect(self.sky_requested)
-        form.addRow(tip(measure, "pair_sky"))
         self.sky_more = QtWidgets.QGroupBox("Segmentation settings")
         self.sky_more.setCheckable(True)
-        self.sky_more.setChecked(False)
+        self.sky_more.setChecked(True)
         more = QtWidgets.QFormLayout(self.sky_more)
         self.thresh = number(
-            0.05, 50, 0.5, decimals=2, step=0.1, tip="THRESH: sigma above the level"
+            0.01,
+            50,
+            0.5,
+            decimals=3,
+            step=0.05,
+            tip="THRESH: sigma above the level; lower masks more (conservative)",
         )
         self.minarea = whole(1, 10000, 12, tip="MINAREA: connected pixels above the threshold")
         self.grow = number(0, 100, 2, decimals=1, tip="GROW: pixels added around every source")
         self.cells = whole(2, 64, 8, tip="CELLS: boxes per side for the cells and the plane")
         self.back_size = whole(0, 4096, 0, tip="BACK_SIZE: 0 = one level, iterated; > 0 a mesh")
+        self.fwhm = number(
+            0, 20, 0, decimals=1, step=0.5, tip="FWHM: Gaussian detection filter; 0 = 3 x 3"
+        )
         for label, box in (
             ("Threshold (σ)", self.thresh),
             ("Min. area", self.minarea),
             ("Grow (px)", self.grow),
-            ("Cells per side", self.cells),
+            ("Filter FWHM (px)", self.fwhm),
             ("Mesh (BACK_SIZE)", self.back_size),
+            ("Cells per side", self.cells),
         ):
             more.addRow(label, box)
         self.sky_more.toggled.connect(self._fold_sky)
-        self._fold_sky(False)
         form.addRow(self.sky_more)
+        measure = QtWidgets.QPushButton("Measure sky")
+        measure.setToolTip(
+            "Every source found down to the threshold is left out (with the ticked fitting "
+            "layers), and the sky is the median of the rest (sky N SEGMENT)"
+        )
+        measure.clicked.connect(self.sky_requested)
+        self.show_mask = QtWidgets.QCheckBox("Show the sky mask")
+        self.show_mask.setToolTip("Draw the pixels left out of the sky (the layer skymask)")
+        self.show_mask.toggled.connect(self.sky_mask_toggled)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(tip(measure, "pair_sky"), 2)
+        row.addWidget(self.show_mask, 1)
+        form.addRow(row)
         self.sky_card = QtWidgets.QLabel()
         self.sky_card.setWordWrap(True)
         self.sky_card.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.sky_card.setTextFormat(Qt.RichText)
         form.addRow(self.sky_card)
+        self.sky_hist = SkyHistogram()
+        self.sky_hist.setToolTip(
+            "The sky pixels (those the mask leaves): their median in red, ± 1 σ dotted"
+        )
+        form.addRow(self.sky_hist)
         self.sky_map = SkyMap()
         self.sky_map.set_result(None)
         form.addRow(self.sky_map)
         self.use_sky = QtWidgets.QPushButton("Use this sky")
         self.use_sky.setEnabled(False)
-        self.use_sky.setToolTip("Only a measurement with usable support, still up to date")
+        self.use_sky.setToolTip(
+            "The median of the sky pixels as the base level: your decision; the verdict is "
+            "advice and is kept with the fit"
+        )
         self.use_sky.clicked.connect(self._use_measured)
         enter = QtWidgets.QPushButton("Enter a value…")
         enter.setToolTip("Type a sky level, with a note on where it comes from")
@@ -341,11 +364,32 @@ class PairPanel(QtWidgets.QWidget):
         row.addWidget(self.use_sky)
         row.addWidget(enter)
         form.addRow(row)
-        self.sky = number(-1e12, 1e12, 0, decimals=4, tip="the sky, frozen for the whole pair fit")
+        self.sky = number(-1e12, 1e12, 0, decimals=4, tip="SKY: the base level")
         self.sky.setReadOnly(True)
         self.sky_source = note("no sky yet")
-        form.addRow("Sky", self.sky)
+        form.addRow("Base level", self.sky)
         form.addRow(self.sky_source)
+        self.factor = number(
+            0.5, 1.5, 1.0, decimals=5, step=0.001, tip="SKYFACTOR: the sky used = factor × base"
+        )
+        form.addRow("Sky factor", tip(self.factor, "pair_skyfactor"))
+        self.sky_used = note()
+        form.addRow(self.sky_used)
+        self.sky_iter = whole(
+            0, 50, 0, tip="SKYITER: refit, each time with the factor from the residual sky"
+        )
+        self.sky_iter.setSpecialValueText("off")
+        form.addRow("Refine the factor", tip(self.sky_iter, "pair_skyfactor"))
+        form.addRow(
+            note(
+                "Refine: after each pair fit, the median m of image − sky − A − B on the sky "
+                "pixels gives factor + m / base; up to this many fits, the one with the "
+                "smallest |m| kept."
+            )
+        )
+        self.sky.valueChanged.connect(self._sky_used_line)
+        self.factor.valueChanged.connect(self._sky_used_line)
+        self._sky_used_line()
         self.sky_id = ""  # the measurement the sky comes from ("" = typed)
         self._measurement = None
 
@@ -438,6 +482,23 @@ class PairPanel(QtWidgets.QWidget):
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.RichText)
         form.addRow(self.status)
+        # ---- the residual sky
+        form.addRow(heading("5. Residual sky"))
+        self.resid_card = note("after a fit: the residual on the sky pixels")
+        self.resid_card.setTextFormat(Qt.RichText)
+        form.addRow(self.resid_card)
+        self.resid_hist = SkyHistogram()
+        self.resid_hist.setToolTip(
+            "image − sky − A − B on the sky pixels: its median in red, zero dashed. The "
+            "models extend beyond R1, so their outer light counts."
+        )
+        form.addRow(self.resid_hist)
+        self.next_factor = QtWidgets.QPushButton("Use the next factor")
+        self.next_factor.setEnabled(False)
+        self.next_factor.setToolTip("Set the factor to factor + median / base; then Fit pair")
+        self.next_factor.clicked.connect(self._use_next_factor)
+        form.addRow(self.next_factor)
+        self._next = None
         row = QtWidgets.QHBoxLayout()
         self.blink = QtWidgets.QPushButton("Blink the result")
         self.blink.setToolTip(
@@ -467,15 +528,29 @@ class PairPanel(QtWidgets.QWidget):
         self.calls.setText(f"{n} elliprof calls: 2 to start, then A and B in each cycle")
 
     # ---- the sky
+    def _sky_used_line(self) -> None:
+        f = self.factor.value()
+        self.sky_used.setText(
+            f"sky used: {f:.5f} × {self.sky.value():.6g} = {f * self.sky.value():.6g}"
+        )
+
     def sky_command(self, n: int) -> str:
         parts = [f"sky {n} SEGMENT"]
-        defaults = {"THRESH": 0.5, "MINAREA": 12, "GROW": 2.0, "CELLS": 8, "BACK_SIZE": 0}
+        defaults = {
+            "THRESH": 0.5,
+            "MINAREA": 12,
+            "GROW": 2.0,
+            "CELLS": 8,
+            "BACK_SIZE": 0,
+            "FWHM": 0.0,
+        }
         values = {
             "THRESH": self.thresh.value(),
             "MINAREA": self.minarea.value(),
             "GROW": self.grow.value(),
             "CELLS": self.cells.value(),
             "BACK_SIZE": self.back_size.value(),
+            "FWHM": self.fwhm.value(),
         }
         parts += [f"{k}={v:g}" for k, v in values.items() if v != defaults[k]]
         layers = self.ticked_layers()
@@ -483,10 +558,15 @@ class PairPanel(QtWidgets.QWidget):
             parts.append("MASK=" + ",".join(layers))
         return " ".join(parts)
 
-    def show_sky(self, result, stale: Optional[str]) -> None:
-        """Show a sky measurement (None: none) and whether it still fits the image."""
+    def show_sky(self, result, stale: Optional[str], values=None) -> None:
+        """Show a sky measurement (None: none), whether it still fits the image, and the
+        histogram of its sky pixels (``values``)."""
         self._measurement = result
         self.sky_map.set_result(result)
+        if result is None or values is None:
+            self.sky_hist.show_values([], float("nan"), float("nan"))
+        else:
+            self.sky_hist.show_values(values, result.level, result.sigma)
         if result is None:
             self.sky_card.setText("")
             self.use_sky.setEnabled(False)
@@ -495,11 +575,12 @@ class PairPanel(QtWidgets.QWidget):
         lines = [f"<b style='color:{colour}'>{result.state}</b> · measurement {result.id}"]
         if stale:
             lines.append(f"<span style='color:#f85149'>stale: {stale}</span>")
-        if result.state != "no_estimate":
+        if np.isfinite(result.level):
             lines.append(
-                f"level {result.level:.6g} (median), clipped mean {result.mean:.6g}, "
+                f"<b>median {result.level:.6g}</b>, clipped mean {result.mean:.6g}, "
                 f"σ {result.sigma:.4g}"
             )
+        if result.state != "no_estimate":
             lines.append(
                 f"sampling ±{result.sampling_error:.3g} (approximate); spatial: cell range "
                 f"{result.cell_range:.3g}"
@@ -517,18 +598,24 @@ class PairPanel(QtWidgets.QWidget):
         for reason in result.reasons:
             lines.append(f"• {reason}")
         lines.append(
-            "<i>Usable support is needed, not proof: a halo too faint to detect can remain.</i>"
+            "<i>The verdict is advice. Usable support is needed, not proof: a halo too faint "
+            "to detect can remain.</i>"
         )
         self.sky_card.setText("<br>".join(lines))
-        self.use_sky.setEnabled(result.state == "usable_support" and not stale)
+        self.use_sky.setEnabled(bool(np.isfinite(result.level)) and not stale)
 
     def _use_measured(self) -> None:
         r = self._measurement
         if r is None:
             return
         self.sky.setValue(r.level)
+        self.factor.setValue(1.0)
         self.sky_id = r.id
-        self.sky_source.setText(f"measured: {r.id} ({r.state})")
+        s = r.settings
+        self.sky_source.setText(
+            f"measured: median of the sky pixels, {s['THRESH']:g}σ segmentation; {r.id} "
+            f"({r.state})"
+        )
 
     def _enter_sky(self) -> None:
         value, ok = QtWidgets.QInputDialog.getDouble(
@@ -542,14 +629,47 @@ class PairPanel(QtWidgets.QWidget):
         if not ok:
             return
         self.sky.setValue(value)
+        self.factor.setValue(1.0)
         self.sky_id = ""
         self.sky_note = why.strip()
         self.sky_source.setText("typed" + (f": {why.strip()}" if why.strip() else ""))
 
     def set_sky_value(self, value: float, note_text: str) -> None:
         self.sky.setValue(value)
+        self.factor.setValue(1.0)
         self.sky_id = ""
         self.sky_source.setText(note_text)
+
+    def show_residual_sky(self, check: Optional[dict], values=None, iterations=()) -> None:
+        """After a fit: the residual on the sky pixels, its histogram, the next factor."""
+        self._next = None
+        self.next_factor.setEnabled(False)
+        if not check or "clipped_median" not in check:
+            self.resid_card.setText(
+                "after a fit: the residual on the sky pixels (it needs a current sky "
+                "measurement of the image)"
+            )
+            self.resid_hist.show_values([], float("nan"), float("nan"))
+            return
+        m, s = check["clipped_median"], check["clipped_sigma"]
+        text = (
+            f"median <b>{m:+.4g}</b> (σ {s:.4g}, {check['clipped_pixels']} px; "
+            f"{m / s:+.3f} σ) with factor {check.get('clipped_factor', 1.0):.5f}"
+            if s
+            else f"median {m:+.4g}"
+        )
+        if "clipped_next_factor" in check:
+            self._next = check["clipped_next_factor"]
+            text += f"<br>next factor {self._next:.5f} → sky {check['clipped_next_sky']:.6g}"
+            self.next_factor.setEnabled(0.5 <= self._next <= 1.5)
+        if iterations:
+            text += f"<br>{len(iterations)} pair fits refined the factor (Results ▸ Pair ▸ Sky)"
+        self.resid_card.setText(text)
+        self.resid_hist.show_values(values if values is not None else [], m, s, zero=True)
+
+    def _use_next_factor(self) -> None:
+        if self._next is not None:
+            self.factor.setValue(self._next)
 
     # ---- masks
     def set_mask_layers(self, layers) -> None:
@@ -590,6 +710,10 @@ class PairPanel(QtWidgets.QWidget):
     # ---- the command
     def command(self, n: int) -> str:
         parts = [f"pair {n}", f"SKY={self.sky.value():.10g}"]
+        if self.factor.value() != 1.0:
+            parts.append(f"SKYFACTOR={self.factor.value():.6g}")
+        if self.sky_iter.value():
+            parts.append(f"SKYITER={self.sky_iter.value()}")
         layers = self.ticked_layers()
         if layers:
             parts.append("MASK=" + ",".join(layers))
@@ -644,6 +768,55 @@ class PairPanel(QtWidgets.QWidget):
         self.status.setText(text)
 
 
+class SkyHistogram(pg.PlotWidget):
+    """A histogram of sky pixels (or of the residual on them), median ± 5 sigma, with the
+    median in red, ± 1 sigma dotted and, for a residual, zero dashed."""
+
+    def __init__(self, parent=None, height: int = 150):
+        super().__init__(parent)
+        self.setMinimumHeight(height)
+        self.setMaximumHeight(height + 60)
+        self.showGrid(x=True, y=False, alpha=0.2)
+        self.getAxis("left").enableAutoSIPrefix(False)
+        self.getAxis("bottom").enableAutoSIPrefix(False)
+        self.getAxis("left").setStyle(showValues=False)
+        self.setMouseEnabled(x=True, y=False)
+        self.setVisible(False)
+
+    def show_values(self, values, median: float, sigma: float, zero: bool = False) -> None:
+        self.clear()
+        values = np.asarray(values, float)
+        values = values[np.isfinite(values)]
+        if values.size < 10 or not (np.isfinite(median) and np.isfinite(sigma) and sigma > 0):
+            self.setVisible(False)
+            return
+        lo, hi = median - 5 * sigma, median + 5 * sigma
+        if zero:
+            lo, hi = min(lo, -1 * sigma), max(hi, 1 * sigma)
+        counts, edges = np.histogram(values, bins=60, range=(lo, hi))
+        self.plot(
+            edges,
+            counts,
+            stepMode="center",
+            fillLevel=0,
+            brush=pg.mkBrush(63, 185, 80, 110),
+            pen=pg.mkPen("#3fb950", width=1),
+        )
+        self.addItem(pg.InfiniteLine(median, angle=90, pen=pg.mkPen("#f85149", width=2)))
+        for s in (-sigma, sigma):
+            self.addItem(
+                pg.InfiniteLine(median + s, angle=90, pen=pg.mkPen("#f85149", style=Qt.DotLine))
+            )
+        if zero:
+            self.addItem(
+                pg.InfiniteLine(
+                    0.0, angle=90, pen=pg.mkPen("#c9d1d9", width=1.5, style=Qt.DashLine)
+                )
+            )
+        self.setXRange(lo, hi, padding=0)
+        self.setVisible(True)
+
+
 class PairResultsPanel(QtWidgets.QWidget):
     """A pair fit's results: the profiles of A and B, the change from cycle to cycle, and
     the summary."""
@@ -687,6 +860,18 @@ class PairResultsPanel(QtWidgets.QWidget):
         cl.addWidget(self.cycle_plot, 2)
         cl.addWidget(self.cycle_table, 1)
         self.tabs.addTab(cycles, "Cycles")
+        sky = QtWidgets.QWidget()
+        sl = QtWidgets.QVBoxLayout(sky)
+        sl.setContentsMargins(0, 0, 0, 0)
+        self.sky_note = QtWidgets.QLabel()
+        self.sky_note.setWordWrap(True)
+        self.resid_hist = SkyHistogram(height=200)
+        self.resid_hist.setMaximumHeight(16777215)
+        self.sky_table = plain_table()
+        sl.addWidget(self.sky_note)
+        sl.addWidget(self.resid_hist, 2)
+        sl.addWidget(self.sky_table, 1)
+        self.tabs.addTab(sky, "Sky")
         lay.addWidget(self.tabs, 1)
         self.summary = QtWidgets.QPlainTextEdit()
         self.summary.setReadOnly(True)
@@ -695,11 +880,44 @@ class PairResultsPanel(QtWidgets.QWidget):
         self.quantity.currentTextChanged.connect(lambda _t: self.draw())
         self.quarter.toggled.connect(lambda _t: self.draw())
 
-    def set_record(self, record, summary: str = "") -> None:
+    def set_record(self, record, summary: str = "", residual=None) -> None:
         self.record = record
         self.summary.setPlainText(summary)
         self.draw()
         self._cycles()
+        self._sky(residual)
+
+    def _sky(self, residual) -> None:
+        """The residual on the sky pixels, and the sky-factor fits."""
+        check = self.record.result.sky_check if self.record else {}
+        if "clipped_median" in check and residual is not None:
+            m, s = check["clipped_median"], check["clipped_sigma"]
+            self.sky_note.setText(
+                f"image − sky − A − B on the {check['clipped_pixels']} sky pixels: median "
+                f"{m:+.4g} (red), σ {s:.4g}; zero dashed"
+            )
+            self.resid_hist.show_values(residual, m, s, zero=True)
+        else:
+            self.sky_note.setText("No residual on sky pixels: measure the sky of this image first.")
+            self.resid_hist.show_values([], float("nan"), float("nan"))
+        rows = self.record.result.sky_iterations if self.record else []
+        headers = ["fit", "factor", "sky", "median", "σ", "status", ""]
+        self.sky_table.setColumnCount(len(headers))
+        self.sky_table.setHorizontalHeaderLabels(headers)
+        self.sky_table.setRowCount(len(rows))
+        for i, e in enumerate(rows):
+            cells = [
+                str(e["iteration"]),
+                f"{e['factor']:.5f}",
+                f"{e['sky']:.6g}",
+                "" if e.get("median") is None else f"{e['median']:+.4g}",
+                "" if e.get("sigma") is None else f"{e['sigma']:.4g}",
+                e["status"],
+                ("kept" if e.get("chosen") else "") + (f" {e['note']}" if e.get("note") else ""),
+            ]
+            for j, text in enumerate(cells):
+                self.sky_table.setItem(i, j, QtWidgets.QTableWidgetItem(text))
+        self.sky_table.setVisible(bool(rows))
 
     def draw(self) -> None:
         self.plot.clear()

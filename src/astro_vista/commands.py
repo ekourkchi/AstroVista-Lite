@@ -51,16 +51,19 @@ HELP = {
     "of buffer N, leaving out masked and non-finite pixels",
     "sky": "sky N [MASK=a,b]  -  the sky level of buffer N: a 3-sigma clipped median of the "
     "pixels the masks leave.   sky N SEGMENT [THRESH=0.5] [MINAREA=12] [GROW=2] [CELLS=8] "
-    "[BACK_SIZE=0] [PAD=v] [MASK=a,b] [TOMASK=skymask] [TOMAP=M] [TOPLANE=M]  -  every source "
-    "found down to THRESH sigma is left out (the layer TOMASK, role sky), and the sky is "
-    "measured on the rest: level, cells, gradient, uncertainties and a verdict on the support",
+    "[BACK_SIZE=0] [FWHM=0] [PAD=v] [MASK=a,b] [TOMASK=skymask] [TOMAP=M] [TOPLANE=M]  -  every "
+    "source found down to THRESH sigma is left out (the layer TOMASK, role sky), and the sky "
+    "is measured on the rest: level, cells, gradient, uncertainties and a verdict on the "
+    "support (advice: the level is kept for you to judge).  FWHM= filters the detection with "
+    "a Gaussian of that FWHM (0: a 3 x 3 kernel); BACK_SIZE= detects on a background mesh",
     "elliprof": "elliprof N X0= Y0= R0= R1= NR= [NITER=10] [SKY=] [RMSTAR] [MASKFILE=file] "
     "[MASK=a,b] [MASKBUF=M,...] [TOMODEL=M] [TORESID=M] [RAW] [MINUS=M,...] [MODE=3,4] "
     "[COS3X=] [COS4X=] [FIXCTR=0|1|2] [RLAW=] [GAIN=] [TIE=]  -  fit elliptical isophotes to "
     "buffer N; MASK= names mask layers, MASKBUF= buffers used as masks (0 or NaN masked); "
     "MINUS= subtracts buffers first; RAW keeps every pixel of the residual",
-    "pair": "pair N SKY=s [MASK=a,b] [CYCLES=4] [NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] "
-    "[TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
+    "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [MASK=a,b] [CYCLES=4] [NITER=10] "
+    "[CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= Y0= R0= "
+    "R1= [NR=25] [NAME=] [MODE=] "
     "[FIXCTR=0] [CORE=] [ADAPTIVE]  B: X0= Y0= R0= R1= ...  -  fit two overlapping galaxies: "
     "ELLIPROF on A and on B in turn, each with the other's model taken out (help pair)",
     "pairexport": "pairexport N folder  -  write the last pair fit of buffer N's image to a "
@@ -694,6 +697,7 @@ class Session(ImageCommands):
             "grow": number(keys.get("GROW", skies.DEFAULTS["GROW"]), "GROW"),
             "cells": integer(keys.get("CELLS", skies.DEFAULTS["CELLS"]), "CELLS"),
             "back_size": integer(keys.get("BACK_SIZE", 0), "BACK_SIZE"),
+            "fwhm": number(keys.get("FWHM", 0), "FWHM"),
             "pad": number(keys["PAD"], "PAD") if "PAD" in keys else None,
         }
         outputs = {k: integer(keys[k], k) for k in ("TOMAP", "TOPLANE") if k in keys}
@@ -911,10 +915,19 @@ class Session(ImageCommands):
         )
         sky_id, sigma = "", None
         candidate = self.skies.get(self.sky_of.get(image.key, ""))
-        if candidate is not None and candidate.state != "no_estimate":
-            if abs(candidate.level - settings.sky) <= 1e-9 * max(1.0, abs(settings.sky)):
-                if self.sky_stale(candidate.id, image) is None:
-                    sky_id, sigma = candidate.id, candidate.sigma
+        if candidate is not None and self.sky_stale(candidate.id, image) is not None:
+            candidate = None  # its support no longer fits the image
+        base = settings.sky_base
+        if candidate is not None and np.isfinite(candidate.level):
+            if abs(candidate.level - base) <= 1e-4 + 1e-9 * abs(base):  # the panel's 4 decimals
+                sky_id, sigma = candidate.id, candidate.sigma
+        if candidate is not None and candidate.support.sum() < 100:
+            candidate = None
+        if settings.sky_iter and candidate is None:
+            raise CommandError(
+                "SKYITER needs the sky support of a current sky measurement of this image "
+                f"(sky {n} SEGMENT)"
+            )
         self._pair_runs += 1
         provenance = {
             "file": str(image.path) if image.path else None,
@@ -958,18 +971,42 @@ class Session(ImageCommands):
             )
         except pairs.PairError as e:
             raise CommandError(str(e))
-        return PairJob(n, image, snap, outputs, "pair " + text.strip())
+        job = PairJob(n, image, snap, outputs, "pair " + text.strip())
+        job.measurement = candidate
+        return job
 
     def pair_commit(self, job: "PairJob", result: pairs.PairResult) -> Reply:
         """Put a finished pair run into the session (in the window's thread)."""
         image, snap, n = job.image, job.snap, job.number
         if job.number not in self.buffers or self.buffers[n] is not image:
             pass  # the buffer was replaced meanwhile: the result keeps its own snapshot
-        sky_result = self.skies.get(snap.sky_id) if snap.sky_id else None
-        if result.residual is not None and sky_result is not None:
-            result.sky_check = skies.check(sky_result, result.residual)
+        if result.sky_iterations:  # the fit chosen: its snapshot has its sky factor
+            job.snap = snap = pairs.with_sky(snap, pairs.chosen_factor(result, snap.settings))
+        measured = job.measurement
+        if result.residual is not None and measured is not None:
+            result.sky_check = skies.check(measured, result.residual)
+            s = snap.settings
+            level = skies.residual_level(
+                result.residual, measured.support & ~snap.fit_mask, s.sky_base, s.sky_factor
+            )
+            result.sky_check.update({f"clipped_{k}": v for k, v in level.items()})
         self.pairs[image.key] = PairRecord(job, result)
         reply = Reply(pairs.summary(result, snap), {"pairs"})
+        check = result.sky_check
+        if "clipped_median" in check:
+            reply.text += (
+                f"\nresidual on the sky support: clipped median {check['clipped_median']:+.4g}"
+                f", sigma {check['clipped_sigma']:.4g} ({check['clipped_pixels']} px)"
+            )
+            if "clipped_next_factor" in check:
+                reply.text += (
+                    f"; next sky factor {check['clipped_next_factor']:.5f} (sky "
+                    f"{check['clipped_next_sky']:.6g})"
+                )
+                reply.values = {
+                    "skymedian": check["clipped_median"],
+                    "skyfactor": check["clipped_next_factor"],
+                }
         if result.complete:
             a, b = result.commits["A"].model, result.commits["B"].model
             views = {
@@ -996,7 +1033,8 @@ class Session(ImageCommands):
         if not text.strip():
             raise CommandError(PAIR_HELP)
         job = self.pair_prepare(text)
-        result = pairs.run(job.snap)
+        support = job.measurement.support if job.measurement is not None else None
+        result = pairs.run_sky(job.snap, support)
         return self.pair_commit(job, result)
 
     def c_pair(self, words, keys) -> Reply:  # reached only through _pair_line
@@ -1023,7 +1061,13 @@ class Session(ImageCommands):
                     f"# then window 1 BOX=... (LTV1={ltv[0]}, LTV2={ltv[1]}: the window's "
                     "offset in the original)"
                 )
-            replay.append(re.sub(r"^pair\s+\S+", "pair 1", record.job.line))
+            line = re.sub(r"^pair\s+\S+", "pair 1", record.job.line)
+            if result.sky_iterations:  # the factor chosen, without iterating again
+                line = re.sub(r"\s(SKYFACTOR|SKYITER)=\S+", "", line, flags=re.I)
+                line = re.sub(
+                    r"(\sSKY=\S+)", rf"\1 SKYFACTOR={snap.settings.sky_factor:.10g}", line, count=1
+                )
+            replay.append(line)
         try:
             pairs.export(
                 result,
@@ -1468,13 +1512,13 @@ class Session(ImageCommands):
 KEYWORDS = {
     "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
     "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE=",
-    "pair": "SKY= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
+    "pair": "SKY= SKYFACTOR= SKYITER= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
     "stats": "MASK=",
-    "sky": "MASK= SEGMENT THRESH= MINAREA= GROW= CELLS= BACK_SIZE= PAD= TOMASK= TOMAP= TOPLANE=",
+    "sky": "MASK= SEGMENT THRESH= MINAREA= GROW= CELLS= BACK_SIZE= FWHM= PAD= TOMASK= TOMAP= TOPLANE=",
 }
 KEYWORDS.update(IMAGE_KEYWORDS)
 MASK_ACTIONS = (
@@ -1654,6 +1698,10 @@ PAIR_HELP = """Fitting a pair of galaxies
   pair N SKY=s [shared keywords]  A: [A's keywords]  B: [B's keywords]
 Shared (before A:)
   SKY=          the sky, frozen for the whole run (required; sky N SEGMENT measures it)
+  SKYFACTOR=1   the sky used is SKYFACTOR x SKY (0.5 to 1.5)
+  SKYITER=0     refit up to this many times, each time with the factor + m / SKY, where m
+                is the clipped median of image - sky - A - B on the sky support of the
+                image's sky measurement; the fit with the smallest |m| is the result
   MASK=a,b      fitting layers (role fit, or no role; sky layers are refused)
   MASKFILE= MASKBUF=   as for elliprof
   CYCLES=4      A then B, this many times after the initialisation (2 + 2 x CYCLES calls)
@@ -1685,6 +1733,7 @@ class PairJob:
         self.snap = snap
         self.outputs = outputs
         self.line = line
+        self.measurement = None  # the image's current sky measurement (its support)
 
 
 class PairRecord:

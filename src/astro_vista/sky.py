@@ -11,7 +11,12 @@ pixels grown a little; the sky is measured on what is left (the "support"):
   spatial variation of the cells;
 - a verdict on the support (``no_estimate``, ``candidate_inspect_support``,
   ``usable_support``).  Enough support is necessary, not sufficient: no verdict proves that
-  a smooth halo, too faint to be detected, is absent.
+  a smooth halo, too faint to be detected, is absent.  The verdict advises; the level is
+  kept whenever there are support pixels, and the user decides whether to use it.
+
+After a fit, :func:`residual_level` measures the residual (image - sky - models) on the same
+support; its median m gives the next sky factor, f' = f + m / base (the sky is f x base), as
+in the manual practice of refining the sky by its residual histogram.
 
 The detection follows one path: a level and a noise (iterated, see measure), then
 SEP on the image minus that level, with that sigma as the noise (so the threshold is
@@ -30,7 +35,7 @@ import numpy as np
 
 from . import masks as maskops
 
-DEFAULTS = {"THRESH": 0.5, "MINAREA": 12, "GROW": 2.0, "CELLS": 8}
+DEFAULTS = {"THRESH": 0.5, "MINAREA": 12, "GROW": 2.0, "CELLS": 8, "FWHM": 0.0}
 # what makes a cell usable: this fraction of its pixels in the support, and this many
 CELL_FRACTION = 0.30
 CELL_PIXELS = 200
@@ -104,13 +109,14 @@ class SkyResult:
     def summary(self) -> str:
         """The report, as the terminal shows it."""
         lines = []
-        if self.state == "no_estimate":
+        if not np.isfinite(self.level):
             lines.append(f"{self.image_name}: no sky estimate ({self.state})")
         else:
             lines.append(
                 f"{self.image_name}: sky {self.level:.6g} (median; clipped mean {self.mean:.6g}, "
                 f"sigma {self.sigma:.4g}) [{self.state}]"
             )
+        if self.state != "no_estimate":
             lines.append(
                 f"  uncertainty: sampling ±{self.sampling_error:.3g} (approximate: assumes "
                 f"independent cells, leaves out any halo bias); spatial: cell range "
@@ -289,17 +295,19 @@ def measure(
     pad: Optional[float] = None,
     layers: str = "",
     back_size: int = 0,
+    fwhm: float = 0.0,
 ) -> SkyResult:
     """Measure the sky of ``data`` (see the module's description).  ``exclude`` (True =
     left out) adds the user's own exclusions; ``pad`` is a value that marks pixels with no
     data (such as 0 around a mosaic).  ``back_size`` > 0 detects instead on the image minus
     a SEP background mesh of that size, with the mesh's global RMS as the noise, in one
     pass (as SExtractor does with BACK_SIZE): a mesh takes part of a large halo for
-    background, so fewer of its pixels are masked."""
+    background, so fewer of its pixels are masked.  ``fwhm`` > 0 filters the detection with
+    a Gaussian of that FWHM (pixels) instead of SEP's default 3 x 3 kernel."""
     import sep
 
-    if thresh <= 0 or minarea < 1 or grow < 0 or cells < 2:
-        raise ValueError("THRESH > 0, MINAREA >= 1, GROW >= 0 and CELLS >= 2 are needed")
+    if thresh <= 0 or minarea < 1 or grow < 0 or cells < 2 or fwhm < 0:
+        raise ValueError("THRESH > 0, MINAREA >= 1, GROW >= 0, CELLS >= 2 and FWHM >= 0 are needed")
     data = np.asarray(data)
     shape = data.shape
     valid = np.isfinite(data)
@@ -313,6 +321,7 @@ def measure(
         "PAD": pad,
         "MASK": layers,
         "BACK_SIZE": int(back_size),
+        "FWHM": float(fwhm),
     }
     first_level, _mean, _sigma = clipped(data[valid])
     first_sigma = local_noise(data, valid)
@@ -326,7 +335,12 @@ def measure(
         "would be biased low: the support has lost the upper tail of the noise)",
         "threshold": f"{thresh:g} x sigma above the level (err = sigma)",
         "minarea": int(minarea),
-        "filter": "SEP default 3x3 kernel, matched",
+        "filter": (
+            f"Gaussian, FWHM {fwhm:g} px, {gaussian_kernel(fwhm).shape[0]} x "
+            f"{gaussian_kernel(fwhm).shape[0]}, matched"
+            if fwhm > 0
+            else "SEP default 3x3 kernel, matched"
+        ),
         "deblending": "none (deblend_cont=1): only the union of the segments is used",
         "clean": False,
         "grow": f"a disc of {grow:g} px around every segment (0: none)",
@@ -375,7 +389,7 @@ def measure(
                 err=float(noise),
                 mask=blocked,
                 minarea=int(minarea),
-                filter_kernel=sep.default_kernel,
+                filter_kernel=gaussian_kernel(fwhm) if fwhm > 0 else sep.default_kernel,
                 filter_type="matched",
                 deblend_nthresh=1,
                 deblend_cont=1.0,
@@ -415,6 +429,36 @@ def measure(
     return result
 
 
+def gaussian_kernel(fwhm: float) -> np.ndarray:
+    """A normalised Gaussian detection kernel of ``fwhm`` pixels, 2 ceil(fwhm) + 1 wide (5 x 5
+    for FWHM 2, as SExtractor's gauss_2.0_5x5)."""
+    half = max(1, int(np.ceil(fwhm)))
+    y, x = np.mgrid[-half : half + 1, -half : half + 1]
+    s = fwhm / 2.3548
+    k = np.exp(-(x * x + y * y) / (2 * s * s))
+    return np.ascontiguousarray(k / k.sum(), dtype=np.float32)
+
+
+def residual_level(
+    residual: np.ndarray, support: np.ndarray, base: float = float("nan"), factor: float = 1.0
+) -> Dict[str, float]:
+    """The residual (image - sky - models) on the sky support: its 3-sigma clipped median,
+    mean and sigma, and, with the base level and the factor of the sky used (sky = factor x
+    base), the next factor f + median / base and the sky it gives."""
+    use = support & np.isfinite(residual)
+    values = residual[use]
+    out = {"pixels": int(values.size)}
+    if values.size < 10:
+        return out
+    median, mean, sigma = clipped(values)
+    out.update(median=median, mean=mean, sigma=sigma, factor=float(factor))
+    if np.isfinite(base) and base != 0:
+        out["base"] = float(base)
+        out["next_factor"] = float(factor + median / base)
+        out["next_sky"] = float(factor * base + median)
+    return out
+
+
 def _identity(result: SkyResult) -> str:
     h = hashlib.sha1()
     h.update(result.image_id.encode())
@@ -436,7 +480,8 @@ def _judge(result: SkyResult, shape) -> None:
             f"{100 * fraction:.2f} % of the valid pixels and {len(usable)} usable cells "
             "left (at least 0.5 % and 4 are needed)"
         )
-        result.level = result.mean = float("nan")
+        if result.support.sum() < 100:
+            result.level = result.mean = float("nan")
         return
     medians = np.array([c.median for c in usable])
     if result.plane is not None:

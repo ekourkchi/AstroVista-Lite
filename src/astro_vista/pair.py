@@ -24,7 +24,7 @@ import math
 import re
 import shlex
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -89,7 +89,7 @@ class Component:
 
 @dataclass
 class Settings:
-    sky: float
+    sky: float  # the sky every call subtracts: sky_factor x sky_base
     cycles: int = 4
     niter: int = 10
     rlaw: int = 2
@@ -100,6 +100,9 @@ class Settings:
     early_stop: bool = False
     timeout: float = 300.0
     bootstrap: bool = True  # a failed first fit may start from a smaller R1 (never a result)
+    sky_base: Optional[float] = None  # SKY=, the level the factor multiplies
+    sky_factor: float = 1.0  # SKYFACTOR=
+    sky_iter: int = 0  # SKYITER=: refit with the factor updated from the residual sky
 
 
 @dataclass
@@ -224,6 +227,9 @@ class PairResult:
     diagnostics: Dict[str, ArrayFit] = field(default_factory=dict)  # rejected fits
     bootstraps: Dict[str, float] = field(default_factory=dict)  # partial first fits' R1
     sky_check: dict = field(default_factory=dict)
+    # SKYITER: one entry per pair fit (factor, sky, residual median, status); the result is
+    # the fit marked "chosen"
+    sky_iterations: List[dict] = field(default_factory=list)
     seconds: float = 0.0
     run_id: int = 0
 
@@ -302,6 +308,8 @@ SHARED = {
     "TOMODELB",
     "VIEWS",
     "BOOTSTRAP",
+    "SKYFACTOR",
+    "SKYITER",
 }
 OWN = {"NAME", "X0", "Y0", "R0", "R1", "NR", "MODE", "COS3X", "COS4X", "FIXCTR", "CORE", "ADAPTIVE"}
 FLAGS = {"RMSTAR", "STOP", "ADAPTIVE", "VIEWS"}
@@ -361,8 +369,13 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
 
 
 def settings_from(shared: Dict[str, str]) -> Settings:
+    base = _num(shared, "SKY", " (the frozen sky: measure it with sky N SEGMENT)")
+    factor = _num(shared, "SKYFACTOR", "", 1.0)
     s = Settings(
-        sky=_num(shared, "SKY", " (the frozen sky: measure it with sky N SEGMENT)"),
+        sky=base * factor,
+        sky_base=base,
+        sky_factor=factor,
+        sky_iter=_num(shared, "SKYITER", "", 0, int),
         cycles=_num(shared, "CYCLES", "", 4, int),
         niter=_num(shared, "NITER", "", 10, int),
         rlaw=_num(shared, "RLAW", "", 2, int),
@@ -380,6 +393,10 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         raise PairError("NITER must be 1 to 1000")
     if s.timeout <= 0:
         raise PairError("TIMEOUT must be positive")
+    if not 0.5 <= factor <= 1.5:
+        raise PairError("SKYFACTOR must be 0.5 to 1.5")
+    if not 0 <= s.sky_iter <= 50:
+        raise PairError("SKYITER must be 0 to 50")
     return s
 
 
@@ -882,6 +899,93 @@ def run(
     return _finish(result, snap, start, checkpoint, committed)
 
 
+def with_sky(snap: Snapshot, factor: float) -> Snapshot:
+    """The snapshot with the sky factor x base (everything else shared, not copied)."""
+    s = snap.settings
+    base = s.sky_base if s.sky_base is not None else s.sky
+    return replace(snap, settings=replace(s, sky=factor * base, sky_factor=factor))
+
+
+def run_sky(
+    snap: Snapshot,
+    support: Optional[np.ndarray] = None,
+    progress: Optional[Callable[[dict], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+    fitter: Fitter = fit_array,
+) -> PairResult:
+    """The pair fit, refitted with the sky factor updated from the residual sky.
+
+    With SKYITER=n (and the sky support of a measurement), the pair is fitted up to n times:
+    after each fit, the 3-sigma clipped median m of image - sky - A - B on the support gives
+    the next factor, f + m / base.  It stops early once |m| is below 0.01 sigma of the
+    residual.  The result is the complete fit with the smallest |m|; every fit is listed in
+    ``sky_iterations``.  Without SKYITER (or support) it is :func:`run`."""
+    from . import sky as skies
+
+    s = snap.settings
+    if s.sky_iter <= 0 or support is None:
+        return run(snap, progress, cancelled, fitter)
+    base = s.sky_base if s.sky_base is not None else s.sky
+    use = support & ~snap.fit_mask
+    factor = s.sky_factor
+    history: List[dict] = []
+    best: Optional[Tuple[float, PairResult, int]] = None
+    last = None
+    for k in range(s.sky_iter):
+        current = with_sky(snap, factor)
+
+        def say(info, k=k, factor=factor):
+            if progress is not None:
+                info.update(sky_iteration=k + 1, sky_iterations=s.sky_iter, sky_factor=factor)
+                progress(info)
+
+        result = run(current, say, cancelled, fitter)
+        last = result
+        entry = {
+            "iteration": k + 1,
+            "factor": factor,
+            "sky": current.settings.sky,
+            "status": result.status,
+            "calls": len(result.calls),
+            "seconds": result.seconds,
+        }
+        if result.residual is None:
+            entry["note"] = "no complete pair: nothing to measure"
+            history.append(entry)
+            break
+        level = skies.residual_level(result.residual, use, base, factor)
+        entry.update({key: level.get(key) for key in ("median", "sigma", "pixels")})
+        entry["next_factor"] = level.get("next_factor")
+        history.append(entry)
+        if "median" not in level:
+            break
+        if best is None or abs(level["median"]) < best[0]:
+            best = (abs(level["median"]), result, k)
+        if result.status == "cancelled" or (cancelled is not None and cancelled()):
+            break
+        if abs(level["median"]) < 0.01 * max(level["sigma"], 1e-300):
+            entry["note"] = "converged: |median| below 0.01 sigma"
+            break
+        nxt = level.get("next_factor")
+        if nxt is None or not 0.5 <= nxt <= 1.5:
+            entry["note"] = "the next factor would leave 0.5 to 1.5: stopped"
+            break
+        factor = nxt
+    chosen = best[1] if best is not None else last
+    if best is not None:
+        history[best[2]]["chosen"] = True
+    chosen.sky_iterations = history
+    return chosen
+
+
+def chosen_factor(result: PairResult, settings: Settings) -> float:
+    """The sky factor of the fit a result shows."""
+    for entry in result.sky_iterations:
+        if entry.get("chosen"):
+            return float(entry["factor"])
+    return settings.sky_factor
+
+
 def _metrics(snap, committed, prev_a, prev_b, prev_t) -> dict:
     ev = snap.eval
     a, b = committed["A"].model, committed["B"].model
@@ -975,7 +1079,10 @@ def summary(result: PairResult, snap: Snapshot) -> str:
         if c.coverage_uncertain:
             text += " (coverage: uncertain)"
         lines.append(text)
-    sky = f"sky {snap.settings.sky:.6g} (frozen"
+    s = snap.settings
+    sky = f"sky {s.sky:.6g} (frozen"
+    if s.sky_base is not None and s.sky_factor != 1.0:
+        sky += f"; factor {s.sky_factor:.5f} x base {s.sky_base:.6g}"
     sky += f", measurement {snap.sky_id})" if snap.sky_id else ", typed value)"
     if result.sky_check:
         sc = result.sky_check
@@ -985,6 +1092,23 @@ def summary(result: PairResult, snap: Snapshot) -> str:
                 f"{sc['median']:.3g}"
             )
     lines.append(sky)
+    if result.sky_iterations:
+        total = sum(e["seconds"] for e in result.sky_iterations)
+        lines.append(
+            f"sky factor: {len(result.sky_iterations)} pair fits in {total:.1f} s (residual "
+            "image - sky - A - B on the sky support, 3-sigma clipped; the models extend beyond "
+            "R1, so their outer light counts):"
+        )
+        for e in result.sky_iterations:
+            text = f"  {e['iteration']}: factor {e['factor']:.5f}, sky {e['sky']:.6g}"
+            if e.get("median") is not None:
+                text += f", residual median {e['median']:+.4g} (sigma {e['sigma']:.4g})"
+            text += f", {e['status']}"
+            if e.get("chosen"):
+                text += "   <- the result"
+            if e.get("note"):
+                text += f"; {e['note']}"
+            lines.append(text)
     for cid, r1 in result.bootstraps.items():
         lines.append(
             f"note: {cid} was started from a partial bootstrap fit (R1 {r1:.1f}); it only "
@@ -1078,6 +1202,7 @@ def export(
             for cid, c in result.commits.items()
         },
         "sky_check_on_frozen_support": result.sky_check,
+        "sky_factor_iterations": result.sky_iterations,
     }
     text("result.json", json.dumps(result_doc, indent=2, default=float) + "\n")
 
@@ -1109,6 +1234,8 @@ def export(
             "input": snap.provenance,
             "sky": {
                 "value": s.sky,
+                "base": s.sky_base,
+                "factor": s.sky_factor,
                 "measurement": snap.sky_id or "typed",
                 "fixed_across_cycles": True,
             },
@@ -1158,7 +1285,10 @@ def export(
     ]
     if snap.provenance.get("source_run"):  # the cores came from the source finder's run
         lines.append(snap.provenance["source_run"]["command"].strip())
-    lines.append(replay_line(requested, "MASK=m0"))
+    if result.sky_iterations:  # replay the fit chosen, with its factor, without iterating
+        lines.append(replay_line(requested, f"MASK=m0 SKYFACTOR={s.sky_factor:.10g}"))
+    else:
+        lines.append(replay_line(requested, "MASK=m0"))
     if replay:
         lines += ["", "# the route from the original files"] + replay
     text("commands.txt", "\n".join(lines) + "\n")
@@ -1210,12 +1340,119 @@ def export(
     return folder
 
 
+# ---------------------------------------------------------------- a pair's folder
+@dataclass
+class Folder:
+    """What a pair's folder holds: the image (with its HDU), legacy masks, two centres."""
+
+    image: Path
+    hdu: Optional[str] = None  # "SCI", "1", ... (None: the primary)
+    masks: List[Path] = field(default_factory=list)
+    centres: Dict[str, Tuple[float, float, str]] = field(default_factory=dict)  # native
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def rd_name(self) -> str:
+        return f"{self.image}[{self.hdu}]" if self.hdu else str(self.image)
+
+
+_POINT = re.compile(
+    r"point\(\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*\)(?:.*text=\{([^}]*)\})?", re.I
+)
+
+
+def read_regions(path: Path) -> Dict[str, Tuple[float, float, str]]:
+    """The centres of A and B from a DS9 region file in image coordinates: points whose
+    text starts "A:" and "B:" (else the first two points), converted to ELLIPROF's
+    coordinates (x - 0.5, y - 0.5)."""
+    points = []
+    for line in Path(path).read_text(errors="replace").splitlines():
+        m = _POINT.search(line)
+        if m:
+            points.append((float(m.group(1)) - 0.5, float(m.group(2)) - 0.5, m.group(3) or ""))
+    out = {}
+    for x, y, text in points:
+        m = re.match(r"\s*([AB])\s*:\s*(.*)", text)
+        if m and m.group(1) not in out:
+            out[m.group(1)] = (x, y, m.group(2).strip())
+    if len(out) < 2 and len(points) >= 2:
+        out = {cid: (x, y, text.strip()) for cid, (x, y, text) in zip("AB", points)}
+    return out
+
+
+def read_folder(folder) -> Folder:
+    """A pair's folder: one FITS image (or the one metadata.json names), its .dmask masks,
+    and a DS9 region file with the two centres.  Raises PairError if there is no image."""
+    from astropy.io import fits
+
+    folder = Path(folder).expanduser()
+    if not folder.is_dir():
+        raise PairError(f"{folder} is not a folder")
+    images = sorted(p for p in folder.iterdir() if p.suffix.lower() in (".fits", ".fit", ".fz"))
+    notes = []
+    meta = {}
+    if (folder / "metadata.json").exists():
+        try:
+            meta = json.loads((folder / "metadata.json").read_text())
+        except (OSError, ValueError):
+            notes.append("metadata.json could not be read")
+    named = Path(str(meta.get("science_file", ""))).name
+    if named and (folder / named).exists():
+        image = folder / named
+    elif len(images) == 1:
+        image = images[0]
+    elif not images:
+        raise PairError(f"no FITS image in {folder}")
+    else:
+        raise PairError(
+            f"{len(images)} FITS images in {folder}: open one with File > Open, and the "
+            "masks and centres by hand"
+        )
+    hdu = meta.get("hdu")
+    if isinstance(hdu, str) and hdu.strip():
+        hdu = hdu.strip()
+    elif isinstance(hdu, int) and hdu > 0:
+        hdu = str(hdu)
+    else:
+        hdu = None
+        with fits.open(image, memmap=True) as f:
+            if f[0].data is None or getattr(f[0].data, "ndim", 0) != 2:
+                for k, h in enumerate(f[1:], 1):
+                    if h.is_image and h.data is not None and h.data.ndim == 2:
+                        hdu = h.name if h.name else str(k)
+                        break
+    masks = sorted(folder.glob("*.dmask"))
+    centres = {}
+    regions = sorted(folder.glob("*.reg"))
+    if regions:
+        centres = read_regions(regions[0])
+        if len(centres) < 2:
+            notes.append(f"{regions[0].name} has fewer than two points: place A and B by hand")
+    else:
+        notes.append("no region file: place A and B by hand")
+    return Folder(image, hdu, masks, centres, notes)
+
+
+def suggested_r1(centres, shape) -> Dict[str, float]:
+    """Starting outer radii (to check, not results): at most 0.9 of the distance to the
+    nearest edge, and 0.6 (A) or 0.4 (B) of the distance between the centres."""
+    (ax, ay, _), (bx, by, _) = centres["A"], centres["B"]
+    d = math.hypot(ax - bx, ay - by)
+    ny, nx = shape
+    out = {}
+    for cid, (x, y, _n), share in (("A", centres["A"], 0.6), ("B", centres["B"], 0.4)):
+        edge = min(x, y, nx - x, ny - y)
+        out[cid] = round(max(10.0, min(0.9 * edge, share * d)), 1)
+    return out
+
+
 def replay_line(line: str, mask: str) -> str:
     """A pair command for buffer 1 with its masks replaced by ``mask`` (a shared keyword,
     so it goes before A:)."""
     parts = re.split(r"(\s[Aa]:\s)", line, maxsplit=1)
     head, sep_, rest = (parts + ["", ""])[:3]
-    head = re.sub(r"\s(MASK|MASKBUF|MASKFILE)=(\"[^\"]*\"|'[^']*'|\S+)", "", head, flags=re.I)
+    drop = "MASK|MASKBUF|MASKFILE" + ("|SKYFACTOR|SKYITER" if "SKYFACTOR=" in mask else "")
+    head = re.sub(rf"\s({drop})=(\"[^\"]*\"|'[^']*'|\S+)", "", head, flags=re.I)
     head = re.sub(r"^pair\s+\S+", "pair 1", head.strip())
     return f"{head} {mask}{sep_}{rest}".strip()
 

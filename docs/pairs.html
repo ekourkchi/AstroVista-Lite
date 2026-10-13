@@ -69,20 +69,32 @@ sources 1</code></pre>
 
   <li class="step" id="p-sky">
     <h3>Measure the sky</h3>
-    <p>Press <b>Measure sky (0.5σ segmentation)</b>. Every source found down to half the
-    noise (stars, both galaxies and their halos) is left out, grown by two pixels, and the
-    sky is measured on the rest: its median, the medians of 8 × 8 cells across the frame
-    (the map: dark is low, hatched cells have too little sky), a plane through them (the
-    arrow: the gradient) and the uncertainties, kept apart.</p>
-    <figure><img src="images/pair_sky.png" alt="The sky card: candidate_inspect_support, level 1000.64, the cell map with the galaxies' cells hatched and a gradient arrow" loading="lazy"></figure>
+    <p>Press <b>Measure sky</b>. Every source found down to the threshold (half the noise by
+    default: stars, both galaxies and their halos) is left out, grown by two pixels, and the
+    sky is measured on the rest: its median (the histogram shows those pixels), the medians
+    of 8 × 8 cells across the frame (the map: dark is low, hatched cells have too little
+    sky), a plane through them (the arrow: the gradient) and the uncertainties, kept apart.
+    The segmentation settings are all open: a lower threshold, a larger mesh
+    (<code>BACK_SIZE</code>) or a detection filter (<code>FWHM</code>) mask more or less.
+    <b>Show the sky mask</b> draws what is left out.</p>
+    <figure><img src="images/pair_sky.png" alt="The sky mask drawn over the pair, the segmentation settings, the sky card (candidate_inspect_support, median 1000.64) and the histogram of the sky pixels" loading="lazy"></figure>
     <p>Here the verdict is <b>candidate_inspect_support</b>: half the cells disagree with
     the plane by more than their noise allows, because the galaxies' faint halos still lie
-    under the "sky". The level, 1000.6, is close to the truth (1000), but not certain, so
-    <i>Use this sky</i> stays off. The example has typed the true sky instead; for your own
-    images, type a value you trust (from a larger image, say) with a note on where it comes
+    under the "sky". The level, 1000.6, is close to the truth (1000), but not certain. The
+    verdict is advice: <i>Use this sky</i> takes the median as the base level all the same,
+    and the verdict goes with the fit. The example has typed the true sky instead; you can
+    also type a value you trust (from a larger image, say) with a note on where it comes
     from.</p>
+    <p><b>The sky factor.</b> The sky subtracted is <i>factor × base</i>. After a fit, step 5
+    of the panel shows the residual, image − sky − A − B, on the sky pixels, with its
+    histogram: its median <i>m</i> suggests the next factor, <i>factor + m / base</i>
+    (<b>Use the next factor</b>, then fit again). <b>Refine the factor</b> does this up to
+    N times and keeps the fit with the smallest |<i>m</i>|; Results ▸ Pair ▸ Sky lists every
+    fit. ELLIPROF's models reach beyond R1, so their outer light is part of that residual.</p>
     <pre><code>sky 1 SEGMENT                        <span class="c"># the sky, by segmentation</span>
-sky 1 SEGMENT THRESH=1 GROW=3 TOMAP=12  <span class="c"># other settings; the cell map in buffer 12</span></code></pre>
+sky 1 SEGMENT THRESH=1 GROW=3 TOMAP=12  <span class="c"># other settings; the cell map in buffer 12</span>
+sky 1 SEGMENT THRESH=0.05 BACK_SIZE=500 FWHM=2  <span class="c"># mask more: low threshold, a mesh, a filter</span>
+mask show skymask                    <span class="c"># what is left out of the sky</span></code></pre>
     <div class="note">The sky layer it makes, <code>skymask</code>, covers the galaxies too, so
     it is never used in a fit: <code>pair</code> and <code>elliprof</code> refuse it.</div>
   </li>
@@ -184,6 +196,9 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
     again with <code>ADAPTIVE</code> after B's keywords.</li>
     <li>Use a sky 10 counts too high (<code>SKY=1010</code>). How do the outer profiles and
     the residual change?</li>
+    <li>Start from a sky 3 counts too high and let the factor refine it:
+    <code>pair 1 SKY=1003 SKYITER=5 MASK=stars A: … B: …</code> (after <code>sky 1
+    SEGMENT</code>). Where does it end, and how close is it to the true 1000?</li>
     <li>Make a closer pair in Python: <code>astro_vista.synthetic.pair(separation=95)</code>.
     How does the fit end?</li>
   </ol>
