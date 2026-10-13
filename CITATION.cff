@@ -6,6 +6,8 @@ type: software
 authors:
   - family-names: Kourkchi
     given-names: Ehsan
+    orcid: "https://orcid.org/0000-0002-5514-3354"
+    affiliation: "University of California, Davis; Utah Valley University"
 version: 1.0.1
 repository-code: "https://github.com/ekourkchi/AstroVista-Lite"
 url: "https://github.com/ekourkchi/AstroVista-Lite"

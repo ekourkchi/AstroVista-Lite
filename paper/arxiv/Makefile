@@ -1,6 +1,7 @@
 # Build the arXiv manuscript, and the bundle to upload to arXiv.
 #   make            main.pdf
 #   make arxiv      astrovista-lite-arxiv.tar.gz (with main.bbl: arXiv does not run BibTeX)
+#   make overleaf   astrovista-lite-overleaf.zip (sources, bibliography and AASTeX, for Overleaf)
 #   make figures    regenerate the figures and numbers (../make_figures.py)
 # AASTeX 7 (aastex701.cls, aasjournalv7.bst) is fetched from CTAN when it is missing.
 
@@ -31,7 +32,12 @@ arxiv: main.pdf
 	tar czf astrovista-lite-arxiv.tar.gz main.tex main.bbl $(AASTEX) figures/*.pdf figures/*.png
 	@echo "upload astrovista-lite-arxiv.tar.gz to arXiv"
 
-clean:
-	rm -f main.aux main.bbl main.blg main.log main.out main.pdf paper.bib $(AASTEX) astrovista-lite-arxiv.tar.gz
+overleaf: paper.bib $(AASTEX) figures/profiles.pdf
+	rm -f astrovista-lite-overleaf.zip
+	zip -q astrovista-lite-overleaf.zip main.tex paper.bib $(AASTEX) figures/*.pdf figures/*.png
+	@echo "upload astrovista-lite-overleaf.zip to Overleaf (New Project > Upload Project)"
 
-.PHONY: arxiv clean figures
+clean:
+	rm -f main.aux main.bbl main.blg main.log main.out main.pdf paper.bib $(AASTEX) astrovista-lite-arxiv.tar.gz astrovista-lite-overleaf.zip
+
+.PHONY: arxiv clean figures overleaf

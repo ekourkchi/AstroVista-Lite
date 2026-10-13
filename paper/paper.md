@@ -10,11 +10,14 @@ tags:
   - education
 authors:
   - name: Ehsan Kourkchi
-    orcid: 0000-0000-0000-0000  # TODO: the author's ORCID
-    affiliation: 1
+    orcid: 0000-0002-5514-3354
+    corresponding: true
+    affiliation: "1, 2"
 affiliations:
-  - name: TODO, the author's institution, city, country
+  - name: Department of Electrical and Computer Engineering, University of California, Davis, CA 95616, USA
     index: 1
+  - name: Department of Physics and Astronomy, Utah Valley University, Orem, UT 84058, USA
+    index: 2
 date: 13 October 2026
 bibliography: paper.bib
 ---
