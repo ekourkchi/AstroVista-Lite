@@ -1,7 +1,10 @@
 """Fitting a pair of overlapping galaxies: ELLIPROF on each in turn, with the other's
 current model taken out.
 
-    initialisation:  A on I (B's core left out), then B on I - A (A's core left out)
+    initialisation:  A on I (B's core, or B's BLOCK, left out), then B on I - A (A's core
+                     left out), each at its START radius (R1 by default)
+    growth step g:   A on I - B, then B on I - A, with R1 grown from START to R1
+                     (g = 1 .. STEPS); a galaxy whose growth fails stays at its last radius
     cycle k:         A on I - B, then B on I - A          (k = 1 .. CYCLES)
     result:          A, B, A + B and the residual I - S - A - B on every pixel
 
@@ -76,6 +79,12 @@ class Component:
     fixctr: int = 0
     core: Optional[float] = None  # the semi-major axis of the core centred on this galaxy
     adaptive: bool = False
+    block: Optional[float] = None  # BLOCK: left out around this galaxy for the other's 1st fit
+    start: Optional[float] = None  # START: the R1 of its first fit (then grown to R1)
+
+    @property
+    def first_r1(self) -> float:
+        return self.start if self.start else self.r1
 
     @property
     def label(self) -> str:
@@ -103,6 +112,7 @@ class Settings:
     sky_base: Optional[float] = None  # SKY=, the level the factor multiplies
     sky_factor: float = 1.0  # SKYFACTOR=
     sky_iter: int = 0  # SKYITER=: refit with the factor updated from the residual sky
+    steps: int = 0  # STEPS=: growth steps from each galaxy's START to its R1
 
 
 @dataclass
@@ -166,11 +176,16 @@ class Snapshot:
     sky_sigma: Optional[float] = None
     provenance: dict = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
+    blocks: Dict[str, Core] = field(default_factory=dict)  # keyed by owner; BLOCK only
 
-    def mask_for(self, cid: str) -> np.ndarray:
-        """The pixels left out while fitting component ``cid``: M0 and the other's core."""
+    def mask_for(self, cid: str, first: bool = False) -> np.ndarray:
+        """The pixels left out while fitting component ``cid``: M0 and the other's core
+        (and, for ``cid``'s first fit, the other's block)."""
         other = "B" if cid == "A" else "A"
-        return self.fit_mask | self.cores[other].masked
+        mask = self.fit_mask | self.cores[other].masked
+        if first and other in self.blocks:
+            mask = mask | self.blocks[other].masked
+        return mask
 
 
 # ---------------------------------------------------------------- results
@@ -227,6 +242,8 @@ class PairResult:
     diagnostics: Dict[str, ArrayFit] = field(default_factory=dict)  # rejected fits
     bootstraps: Dict[str, float] = field(default_factory=dict)  # partial first fits' R1
     sky_check: dict = field(default_factory=dict)
+    growth: List[dict] = field(default_factory=list)  # one entry per growth step
+    notes_growth: List[str] = field(default_factory=list)  # galaxies that stopped growing
     # SKYITER: one entry per pair fit (factor, sky, residual median, status); the result is
     # the fit marked "chosen"
     sky_iterations: List[dict] = field(default_factory=list)
@@ -310,8 +327,24 @@ SHARED = {
     "BOOTSTRAP",
     "SKYFACTOR",
     "SKYITER",
+    "STEPS",
 }
-OWN = {"NAME", "X0", "Y0", "R0", "R1", "NR", "MODE", "COS3X", "COS4X", "FIXCTR", "CORE", "ADAPTIVE"}
+OWN = {
+    "NAME",
+    "X0",
+    "Y0",
+    "R0",
+    "R1",
+    "NR",
+    "MODE",
+    "COS3X",
+    "COS4X",
+    "FIXCTR",
+    "CORE",
+    "ADAPTIVE",
+    "BLOCK",
+    "START",
+}
 FLAGS = {"RMSTAR", "STOP", "ADAPTIVE", "VIEWS"}
 
 
@@ -355,6 +388,8 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
             fixctr=_num(k, "FIXCTR", where, 0, int),
             core=_num(k, "CORE", where) if "CORE" in k else None,
             adaptive="ADAPTIVE" in k,
+            block=_num(k, "BLOCK", where) if "BLOCK" in k else None,
+            start=_num(k, "START", where) if "START" in k else None,
         )
         if not 0 < c.r0 < c.r1:
             raise PairError(f"0 < R0 < R1 is needed{where}")
@@ -364,6 +399,10 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
             raise PairError(f"FIXCTR must be 0, 1 or 2{where}")
         if c.core is not None and c.core < 0:
             raise PairError(f"CORE must be 0 or more{where}")
+        if c.block is not None and c.block < 0:
+            raise PairError(f"BLOCK must be 0 or more{where}")
+        if c.start is not None and not c.r0 < c.start <= c.r1:
+            raise PairError(f"R0 < START <= R1 is needed{where}")
         out[cid] = c
     return out
 
@@ -376,6 +415,7 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         sky_base=base,
         sky_factor=factor,
         sky_iter=_num(shared, "SKYITER", "", 0, int),
+        steps=_num(shared, "STEPS", "", 0, int),
         cycles=_num(shared, "CYCLES", "", 4, int),
         niter=_num(shared, "NITER", "", 10, int),
         rlaw=_num(shared, "RLAW", "", 2, int),
@@ -397,6 +437,8 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         raise PairError("SKYFACTOR must be 0.5 to 1.5")
     if not 0 <= s.sky_iter <= 50:
         raise PairError("SKYITER must be 0 to 50")
+    if not 0 <= s.steps <= 20:
+        raise PairError("STEPS must be 0 to 20")
     return s
 
 
@@ -488,6 +530,40 @@ def make_core(
     return Core(owner.id, kind, owner.x0, owner.y0, a, a * q, angle, reason, masked)
 
 
+def make_block(
+    owner: Component, target: Component, match: Match, shape, fit_mask, invalid
+) -> Optional[Core]:
+    """BLOCK: the region centred on ``owner`` left out of ``target``'s first fit (an
+    ellipse shaped as the owner's source match, else a circle); like a core, it never
+    newly covers the target's centre pixel."""
+    if not owner.block:
+        return None
+    q, angle = (match.q, match.theta) if match.ok else (1.0, 0.0)
+    a = float(owner.block)
+    reason = f"BLOCK={owner.block:g}, " + (f"shaped as {match.reason}" if match.ok else "a circle")
+    ny, nx = shape
+    i, j = int(math.floor(target.x0)), int(math.floor(target.y0))
+    if 0 <= i < nx and 0 <= j < ny and not fit_mask[j, i] and not invalid[j, i]:
+        d_pix = _elliptical_distance(i + 0.5 - owner.x0, j + 0.5 - owner.y0, q, angle)
+        if a >= d_pix:
+            a = max(d_pix * (1 - 1e-6) - 1e-6, 0.0)
+            reason += f"; reduced to {a:.2f} to leave {target.id}'s centre pixel usable"
+    masked = np.zeros(shape, bool)
+    if a > 0:
+        maskops.ellipse(masked, owner.x0, owner.y0, a, a * q, angle, True)
+    return Core(
+        owner.id,
+        "ellipse" if q < 1 else "circle",
+        owner.x0,
+        owner.y0,
+        a,
+        a * q,
+        angle,
+        reason,
+        masked,
+    )
+
+
 def prepare(
     image: np.ndarray,
     image_name: str,
@@ -528,6 +604,11 @@ def prepare(
         "A": make_core(a, b, matches["A"], shape, m0, invalid, settings.corecap),
         "B": make_core(b, a, matches["B"], shape, m0, invalid, settings.corecap),
     }
+    blocks = {}
+    for owner, target in ((a, b), (b, a)):
+        block = make_block(owner, target, matches[owner.id], shape, m0, invalid)
+        if block is not None:
+            blocks[owner.id] = block
     ev = np.zeros(shape, bool)
     for c in (a, b):
         maskops.circle(ev, c.x0, c.y0, c.r1, True)
@@ -552,6 +633,7 @@ def prepare(
         sky_sigma=sky_sigma,
         provenance=dict(provenance or {}),
         notes=notes,
+        blocks=blocks,
     )
 
 
@@ -711,7 +793,7 @@ def run(
     finite = np.isfinite(image)
     result = PairResult(status="incomplete_initialization", run_id=snap.run_id)
     start = time.perf_counter()
-    total_calls = 2 + 2 * s.cycles
+    total_calls = 2 + 2 * (s.steps + s.cycles)
     counter = {"n": 0}
 
     def say(**info):
@@ -729,11 +811,12 @@ def run(
         cycle: str,
         adaptive: Optional[bool] = None,
         bootstrap: bool = False,
+        first: bool = False,
     ):
         """A candidate for ``cid`` (with adaptive-R1 retries): a Commit, or None."""
         comp = comps[cid]
         cos3x, cos4x = comp.harmonics()
-        mask = snap.mask_for(cid)
+        mask = snap.mask_for(cid, first=first)
         usable = finite & ~mask
         r1 = r1_start
         adaptive = comp.adaptive if adaptive is None else adaptive
@@ -803,24 +886,72 @@ def run(
         return None
 
     def initialise(cid: str, conditional: np.ndarray):
-        """The first model of ``cid``: at its R1, or else a partial bootstrap fit at 0.7,
-        0.5 or 0.35 of it (only to start the cycles; never part of a result)."""
-        first = fit_component(cid, conditional, comps[cid].r1, "init")
-        if first is not None or not s.bootstrap:
-            return first
+        """The first model of ``cid``: at its START (R1 by default), or else a partial
+        bootstrap fit at 0.7, 0.5 or 0.35 of it (only to start the cycles; never part of a
+        result)."""
+        r_first = comps[cid].first_r1
+        grows = s.steps > 0 and r_first < comps[cid].r1
+        c0 = fit_component(
+            cid, conditional, r_first, "init", adaptive=False if grows else None, first=True
+        )
+        if c0 is not None and grows:
+            c0.requested_r1 = r_first  # grown later, step by step
+        if c0 is not None or not s.bootstrap:
+            return c0
         failure = result.failures.get(cid, "")
         for fraction in (0.7, 0.5, 0.35):
-            r1 = fraction * comps[cid].r1
+            r1 = fraction * r_first
             if r1 <= 1.5 * comps[cid].r0:
                 break
             c = fit_component(
-                cid, conditional, r1, "init (bootstrap)", adaptive=False, bootstrap=True
+                cid,
+                conditional,
+                r1,
+                "init (bootstrap)",
+                adaptive=False,
+                bootstrap=True,
+                first=True,
             )
             if c is not None:
                 result.bootstraps[cid] = r1
                 return c
         result.failures[cid] = failure + " (no bootstrap fit at 0.7, 0.5 or 0.35 R1 passed either)"
         return None
+
+    def grow(committed: Dict[str, Commit], checkpoint):
+        """STEPS growth steps: each galaxy's R1 grows geometrically from its START to its
+        R1, A then B, each on the image minus the other's committed model.  A galaxy whose
+        growth fit fails keeps its model and stays at its last radius (refitted there)."""
+        reached = {cid: committed[cid].r1_call for cid in "AB"}
+        frozen: Dict[str, str] = {}
+        for g in range(1, s.steps + 1):
+            tag = f"g{g}"
+            row = {"step": g}
+            for cid in ("A", "B"):
+                comp = comps[cid]
+                other = "B" if cid == "A" else "A"
+                begin = comp.first_r1
+                target = begin * (comp.r1 / begin) ** (g / s.steps)
+                r1 = reached[cid] if cid in frozen else max(target, reached[cid])
+                cand = fit_component(cid, image - committed[other].model, r1, tag, adaptive=False)
+                if cand is not None:
+                    committed[cid] = cand
+                    reached[cid] = r1
+                elif cid not in frozen:
+                    frozen[cid] = result.failures.get(cid, "")
+                row[f"{cid}_r1"] = r1
+                row[f"{cid}_ok"] = cand is not None
+            row["frozen"] = sorted(frozen)
+            result.growth.append(row)
+            say(phase="grow", cycle=tag, row=row)
+            if row["A_ok"] and row["B_ok"]:
+                if not (committed["A"].bootstrap or committed["B"].bootstrap):
+                    checkpoint = (tag, dict(committed))
+        for cid, why in frozen.items():
+            result.notes_growth.append(
+                f"{cid} stopped growing at R1 {reached[cid]:.1f} (asked {comps[cid].r1:g}): {why}"
+            )
+        return checkpoint
 
     committed: Dict[str, Commit] = {}
     checkpoint: Optional[Tuple[str, Dict[str, Commit]]] = None
@@ -840,6 +971,8 @@ def run(
         committed["B"] = b0
         if not (a0.bootstrap or b0.bootstrap):
             checkpoint = ("0", dict(committed))
+        if s.steps:
+            checkpoint = grow(committed, checkpoint)
         last_ok = {"A": True, "B": True}
         for k in range(1, s.cycles + 1):
             tag = str(k)
@@ -1046,6 +1179,17 @@ def _clean_arguments(arguments: List[str]) -> List[str]:
 # ---------------------------------------------------------------- telling the result
 def summary(result: PairResult, snap: Snapshot) -> str:
     lines = []
+    for cid, block in snap.blocks.items():
+        lines.append(
+            f"block: {block.reason} (around {cid}, left out of "
+            f"{'B' if cid == 'A' else 'A'}'s first fit)"
+        )
+    for g in result.growth:
+        lines.append(
+            f"growth step {g['step']}: A R1 {g['A_r1']:.1f} {'ok' if g['A_ok'] else 'failed'}, "
+            f"B R1 {g['B_r1']:.1f} {'ok' if g['B_ok'] else 'failed'}"
+        )
+    lines += [f"note: {n}" for n in result.notes_growth]
     for m in result.metrics:
         parts = []
         for k in ("dA", "dB", "dT"):
@@ -1203,6 +1347,9 @@ def export(
         },
         "sky_check_on_frozen_support": result.sky_check,
         "sky_factor_iterations": result.sky_iterations,
+        "growth_steps": result.growth,
+        "growth_notes": result.notes_growth,
+        "blocks": {cid: b.describe() for cid, b in snap.blocks.items()},
     }
     text("result.json", json.dumps(result_doc, indent=2, default=float) + "\n")
 
@@ -1222,6 +1369,8 @@ def export(
                 "center_fit": {0: "free", 1: "fixed", 2: "median"}[c.fixctr],
                 "outer_policy": "adaptive" if c.adaptive else "fixed",
                 "core_semi_major_override": c.core,
+                "block_semi_major": c.block,
+                "start_r1": c.start,
             }
             if effective and cid in result.commits:
                 d["effective_r1"] = result.commits[cid].r1_call
@@ -1248,6 +1397,7 @@ def export(
                 "timeout_seconds": s.timeout,
             },
             "pair": {
+                "growth_steps": s.steps,
                 "cycles": s.cycles,
                 "early_stopping": s.early_stop,
                 "stability_relative": STABILITY,
@@ -1338,6 +1488,255 @@ def export(
     atomic("manifest.json", lambda p: p.write_text(json.dumps(manifest, indent=2) + "\n"))
     text("transaction.json", json.dumps({"export": "complete"}) + "\n")
     return folder
+
+
+# ---------------------------------------------------------------- the report
+def residual_rings(result: PairResult, snap: Snapshot, bins: int = 10) -> Dict[str, List[dict]]:
+    """For each galaxy: the residual in elliptical rings (the shape of its outer half),
+    from R0 to 1.5 x its effective R1, as medians of the model and of the residual, on the
+    side facing the other galaxy and on the side away from it.  Fitting exclusions and the
+    other galaxy's core are left out."""
+    out: Dict[str, List[dict]] = {}
+    if result.residual is None:
+        return out
+    ny, nx = snap.image.shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    xs, ys = xx + 0.5, yy + 0.5
+    for cid, commit in result.commits.items():
+        other = "B" if cid == "A" else "A"
+        p = commit.profile
+        half = p[p["Rmaj"] >= p["Rmaj"].median()]
+        e = float(np.clip(half["ellip"].median(), 0, 0.9))
+        angle = math.radians(float(half["alpha"].median()) - 90.0)
+        comp, far = snap.components[cid], snap.components[other]
+        dx, dy = xs - comp.x0, ys - comp.y0
+        u = dx * math.cos(angle) + dy * math.sin(angle)
+        v = -dx * math.sin(angle) + dy * math.cos(angle)
+        r = np.hypot(u, v / (1 - e))
+        toward = dx * (far.x0 - comp.x0) + dy * (far.y0 - comp.y0) > 0
+        good = np.isfinite(result.residual) & ~snap.fit_mask & ~snap.cores[other].masked
+        edges = np.geomspace(max(comp.r0, 2.0), 1.5 * commit.r1_call, bins + 1)
+        rows = []
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            ring = good & (r >= lo) & (r < hi)
+            if ring.sum() < 20:
+                continue
+            model = commit.model[ring]
+            res = result.residual[ring]
+            row = {
+                "r_in": float(lo),
+                "r_out": float(hi),
+                "pixels": int(ring.sum()),
+                "model": float(np.median(model)),
+                "residual": float(np.median(res)),
+                "beyond_r1": bool(lo >= commit.r1_call),
+            }
+            for side, sel in (("facing", toward[ring]), ("away", ~toward[ring])):
+                row[side] = float(np.median(res[sel])) if sel.sum() >= 10 else None
+            rows.append(row)
+        out[cid] = rows
+    return out
+
+
+def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) -> str:
+    """A plain-text report of a pair fit, to copy and paste: what was asked, what every
+    call did, where each galaxy grew to, the sky, the residual around each galaxy, and
+    hints about what may have gone wrong.  The hints are heuristics, not verdicts."""
+    from . import __version__
+
+    s = snap.settings
+    L: List[str] = []
+    add = L.append
+    add(f"# AstroVista Lite {__version__} pair report, {time.strftime('%Y-%m-%d %H:%M')}")
+    prov = snap.provenance or {}
+    add(f"image: {snap.image_name}  {snap.image.shape[1]} x {snap.image.shape[0]}")
+    if prov.get("file"):
+        add(f"file: {prov['file']}")
+    if line:
+        add(f"command: {line}")
+    add("")
+    add(f"## status: {result.status}")
+    if result.stability_reason:
+        add(f"reason: {result.stability_reason}")
+    add(
+        f"result = checkpoint of cycle {result.checkpoint_cycle}; {len(result.calls)} calls, "
+        f"{result.seconds:.1f} s"
+    )
+    add("")
+    add("## settings")
+    add(
+        f"sky used {s.sky:.6g} = factor {s.sky_factor:.5f} x base "
+        f"{(s.sky_base if s.sky_base is not None else s.sky):.6g}; measurement "
+        f"{snap.sky_id or 'none (typed)'}"
+    )
+    add(
+        f"cycles {s.cycles}, growth steps {s.steps}, niter {s.niter}, rlaw {s.rlaw}, "
+        f"corecap {s.corecap:g}, bootstrap {'on' if s.bootstrap else 'off'}"
+    )
+    add(f"fitting mask: {snap.fit_mask_label or '(none)'}, {int(snap.fit_mask.sum())} px")
+    for cid, c in snap.components.items():
+        add(
+            f"{cid} {c.label}: X0 {c.x0:g} Y0 {c.y0:g} R0 {c.r0:g} R1 {c.r1:g} NR {c.nr} "
+            f"start {c.start or c.r1:g} block {c.block or 0:g} mode {c.mode or 'default'} "
+            f"fixctr {c.fixctr} adaptive {'yes' if c.adaptive else 'no'}"
+        )
+    for owner, core in snap.cores.items():
+        add(f"core of {owner}: {core.shape} a {core.a:.1f} b {core.b:.1f}; {core.reason}")
+    for owner, block in snap.blocks.items():
+        add(f"block of {owner}: a {block.a:.1f} b {block.b:.1f}; {block.reason}")
+    for cid, m in snap.matches.items():
+        add(
+            f"source match {cid}: {m.reason}"
+            + (f" (Kron a {m.a:.1f}, q {m.q:.2f})" if m.ok else "")
+        )
+    for n in snap.notes:
+        add(f"note: {n}")
+    if measured is not None:
+        add(
+            f"sky measurement {measured.id}: {measured.state}, median {measured.level:.6g}, "
+            f"sigma {measured.sigma:.4g}, support {100 * measured.support_fraction:.1f} % "
+            f"(threshold {measured.settings['THRESH']:g} sigma, grow "
+            f"{measured.settings['GROW']:g}, mesh {measured.settings.get('BACK_SIZE', 0)})"
+        )
+    add("")
+    if result.growth:
+        add("## growth")
+        for g in result.growth:
+            add(
+                f"step {g['step']}: A R1 {g['A_r1']:.1f} {'ok' if g['A_ok'] else 'FAILED'}; "
+                f"B R1 {g['B_r1']:.1f} {'ok' if g['B_ok'] else 'FAILED'}"
+            )
+        for n in result.notes_growth:
+            add(f"- {n}")
+        add("")
+    add("## cycles (relative change of A, B, A+B)")
+    for m in result.metrics:
+        ch = ", ".join(
+            f"{k[1]} {'n/a' if m.get(k) is None else f'{100 * m[k]:.2f}%'}"
+            for k in ("dA", "dB", "dT")
+        )
+        add(
+            f"cycle {m['cycle']}: A {'ok' if m['A_ok'] else 'FAILED'}, "
+            f"B {'ok' if m['B_ok'] else 'FAILED'}; {ch}"
+        )
+    add("")
+    add("## calls")
+    add("n  stage           gal  R1      pass  s     reason")
+    for k, c in enumerate(result.calls, 1):
+        add(
+            f"{k:<3}{c.cycle:<16}{c.component:<5}{c.r1:<8.1f}{'yes' if c.passed else 'NO':<6}"
+            f"{c.seconds:<6.2f}{c.reason}"
+        )
+    add("")
+    add("## profiles of the result")
+    for cid, c in result.commits.items():
+        p = c.profile
+        comp = snap.components[cid]
+        drift = np.hypot(p["x0"] - comp.x0, p["y0"] - comp.y0)
+        pa = (p["alpha"] - 90.0) % 180.0
+        add(
+            f"{cid}: model of {c.tag}; R1 effective {c.r1_call:.1f} (asked {comp.r1:g}); "
+            f"Rmaj {p['Rmaj'].iloc[0]:.1f}..{p['Rmaj'].iloc[-1]:.1f}; I0 "
+            f"{p['I0'].iloc[0]:.4g}..{p['I0'].iloc[-1]:.4g}; ellip "
+            f"{p['ellip'].min():.3f}..{p['ellip'].max():.3f}; PA {pa.min():.1f}..{pa.max():.1f}; "
+            f"centre drift max {drift.max():.2f} px; outer support "
+            f"{100 * min(x['usable'] for x in c.support):.0f} %"
+            + ("; coverage uncertain" if c.coverage_uncertain else "")
+        )
+    for cid, why in result.failures.items():
+        add(f"last failure of {cid}: {why}")
+    for cid, r1 in result.bootstraps.items():
+        add(f"{cid} started from a bootstrap fit at R1 {r1:.1f}")
+    add("")
+    sc = result.sky_check
+    sigma = None
+    if "clipped_median" in sc:
+        sigma = sc.get("clipped_sigma")
+        add("## sky")
+        add(
+            f"residual on the sky pixels: median {sc['clipped_median']:+.4g}, sigma "
+            f"{sc['clipped_sigma']:.4g}, {sc['clipped_pixels']} px"
+            + (
+                f"; next factor {sc['clipped_next_factor']:.5f} (sky {sc['clipped_next_sky']:.6g})"
+                if "clipped_next_factor" in sc
+                else ""
+            )
+        )
+    for e in result.sky_iterations:
+        add(
+            f"sky fit {e['iteration']}: factor {e['factor']:.5f} sky {e['sky']:.6g} median "
+            f"{e.get('median') if e.get('median') is None else format(e['median'], '+.4g')} "
+            f"{e['status']}{' KEPT' if e.get('chosen') else ''}"
+        )
+    rings = residual_rings(result, snap)
+    hints: List[str] = []
+    if rings:
+        add("")
+        add(
+            "## residual rings (medians; % of the galaxy's own model; facing = side toward the other galaxy)"
+        )
+    for cid, rows in rings.items():
+        add(f"{cid}:  r_in  r_out   pixels   model      resid     %     facing    away")
+        for r in rows:
+            pct = 100 * r["residual"] / r["model"] if r["model"] > 0 else float("nan")
+            f_ = "" if r["facing"] is None else f"{r['facing']:+.4g}"
+            a_ = "" if r["away"] is None else f"{r['away']:+.4g}"
+            add(
+                f"   {r['r_in']:6.1f} {r['r_out']:6.1f} {r['pixels']:8d} {r['model']:9.4g} "
+                f"{r['residual']:+9.4g} {pct:+6.1f} {f_:>9} {a_:>9}"
+                + ("  (beyond R1)" if r["beyond_r1"] else "")
+            )
+            scale = max(abs(r["model"]), 3 * (sigma or 0))
+            if r["model"] > 3 * (sigma or 0) and abs(r["residual"]) > 0.1 * scale:
+                hints.append(
+                    f"{cid}: ring {r['r_in']:.0f}-{r['r_out']:.0f} px is {pct:+.0f} % of the model"
+                    + (" (beyond R1: the model's extrapolation)" if r["beyond_r1"] else "")
+                )
+            if r["facing"] is not None and r["away"] is not None and r["model"] > 0:
+                if abs(r["facing"] - r["away"]) > 0.1 * scale:
+                    hints.append(
+                        f"{cid}: at {r['r_in']:.0f}-{r['r_out']:.0f} px the side facing the other "
+                        f"galaxy differs from the far side by {r['facing'] - r['away']:+.4g} "
+                        "(the other's light not fully removed, or over-removed)"
+                    )
+    if sigma and abs(sc["clipped_median"]) > 0.5 * sigma:
+        hints.append(
+            f"sky: the residual on the sky pixels is {sc['clipped_median'] / sigma:+.1f} sigma: "
+            + (
+                "the sky (or the models' outer light) is too high"
+                if sc["clipped_median"] < 0
+                else "the sky is too low"
+            )
+            + "; try the sky factor (Use the next factor, or Refine)"
+        )
+    for n in result.notes_growth:
+        hints.append(n)
+    for cid, c in result.commits.items():
+        comp = snap.components[cid]
+        if c.r1_call < 0.9 * comp.r1:
+            hints.append(f"{cid} ended at R1 {c.r1_call:.1f} of {comp.r1:g} asked")
+        p = c.profile
+        far = snap.components["B" if cid == "A" else "A"]
+        d0 = math.hypot(comp.x0 - far.x0, comp.y0 - far.y0)
+        d_last = math.hypot(p["x0"].iloc[-1] - far.x0, p["y0"].iloc[-1] - far.y0)
+        drift = np.hypot(p["x0"] - comp.x0, p["y0"] - comp.y0)
+        k = int(np.argmax(drift.to_numpy()))
+        if drift.iloc[k] > max(2.0, 0.05 * float(p["Rmaj"].iloc[k])):
+            hints.append(
+                f"{cid}: the fitted centre moves {drift.iloc[k]:.1f} px from X0, Y0 (at Rmaj "
+                f"{p['Rmaj'].iloc[k]:.1f}): check the centre, or fix it (Centres: fixed)"
+            )
+        if d0 - d_last > 2.0:
+            hints.append(
+                f"{cid}: the outer centres drift {d0 - d_last:.1f} px toward the other galaxy "
+                "(try fixed centres, a larger block or core, or a smaller R1)"
+            )
+    if result.status != "stable_valid_pair" and result.failures:
+        hints += [f"failure: {k}: {v}" for k, v in result.failures.items()]
+    add("")
+    add("## hints (heuristics)")
+    L += [f"- {h}" for h in hints] or ["- none"]
+    return "\n".join(L)
 
 
 # ---------------------------------------------------------------- a pair's folder

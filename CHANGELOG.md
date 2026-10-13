@@ -23,6 +23,13 @@ newest is at the top.
   threshold down to 0.01 sigma), shows the sky mask on request, and lets the user take the
   measured median whatever the verdict (which is kept with the fit). Results ▸ Pair ▸ Sky
   lists the fits.
+- **Block and grow.** `B: BLOCK=r` leaves a region around B out of A's first fit, so the
+  larger galaxy is fitted alone first; `START=r` and `STEPS=n` start each galaxy at a small
+  R1 and grow both, step by step, to their R1s (a galaxy whose growth fails stays at its
+  last good radius). A pair folder opens with B blocked and three growth steps.
+- **The pair report.** Copy report (and `pairreport N [file]`): the settings, every call
+  and why it failed, growth and cycles, the sky, the residual in rings around each galaxy
+  (facing the other galaxy and away from it) and hints, as plain text to paste anywhere.
 - File ▸ Open a pair folder (and `astrovista --pair FOLDER`): a FITS image, its `.dmask`
   masks and a DS9 region file with the centres of A and B, opened together, with starting
   radii to check.

@@ -571,12 +571,29 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ("VIEWS", "also the image − sky − B and image − sky − A"),
                     ("STOP, BOOTSTRAP=0", "stop once stable; no partial first fits"),
                     (
+                        "STEPS=",
+                        "growth steps: each galaxy's R1 grows from its START to its R1 (0: off)",
+                    ),
+                    (
                         "A: … B: …",
-                        "each galaxy: X0= Y0= R0= R1= NR=25 NAME= MODE= FIXCTR= CORE= ADAPTIVE",
+                        "each galaxy: X0= Y0= R0= R1= NR=25 NAME= MODE= FIXCTR= CORE= ADAPTIVE "
+                        "START= (first R1) BLOCK= (left out around it during the other's first "
+                        "fit)",
                     ),
                 ),
                 "pair 1 SKY=3246 MASK=u12517j CYCLES=2 A: NAME=UGC12517 X0=567 Y0=562 R0=9 "
                 "R1=200 NR=20 B: X0=362.1 Y0=498.4 R0=2 R1=25 NR=10",
+            ),
+            _c(
+                "pairreport",
+                "pairreport N [file]",
+                "A plain-text report of the last pair fit of buffer N's image: the settings, "
+                "the cores and blocks, every elliprof call with why it failed, the growth "
+                "steps and cycles, the sky, the residual in rings around each galaxy (on the "
+                "side facing the other galaxy and away from it) and hints about what may "
+                "have gone wrong. Copy report in the Pair fit tool puts it on the clipboard.",
+                (),
+                "pairreport 1\npairreport 1 n6768_report.txt",
             ),
             _c(
                 "pairexport",

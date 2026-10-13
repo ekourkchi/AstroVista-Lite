@@ -156,6 +156,21 @@ class GalaxyCard(QtWidgets.QGroupBox):
             b.clicked.connect(lambda _c=False, k=key: self.pick_requested.emit(k))
             row.addWidget(b)
             form.addRow(key.upper(), tip(row, key))
+        self.start = number(
+            0, 1e5, 0, tip="START: the R1 of the first fit, grown to R1 in the growth steps"
+        )
+        self.start.setSpecialValueText("R1 (no growth)")
+        form.addRow("Start R1", tip(self.start, "pair_grow"))
+        other_id = "B" if cid == "A" else "A"
+        self.block = number(
+            0,
+            1e5,
+            0,
+            decimals=1,
+            tip=f"BLOCK: left out around {cid} while {other_id} is fitted the first time",
+        )
+        self.block.setSpecialValueText("core only")
+        form.addRow("Block (px)", tip(self.block, "pair_block"))
         self.nr = whole(2, 100, 25, tip="NR: the number of isophotes from R0 to R1")
         self.coarse = note()
         row = QtWidgets.QHBoxLayout()
@@ -200,7 +215,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
         row.addWidget(self.adaptive)
         row.addWidget(self.visible)
         form.addRow(tip(row, "pair_adaptive"))
-        for box in (self.x0, self.y0, self.r0, self.r1):
+        for box in (self.x0, self.y0, self.r0, self.r1, self.start, self.block):
             box.valueChanged.connect(lambda _v: self.changed.emit())
         self.nr.valueChanged.connect(self._nr)
         self.visible.toggled.connect(lambda _v: self.changed.emit())
@@ -237,6 +252,10 @@ class GalaxyCard(QtWidgets.QGroupBox):
             parts.append("CORE=0")
         if self.adaptive.isChecked():
             parts.append("ADAPTIVE")
+        if self.r0.value() < self.start.value() < self.r1.value():
+            parts.append(f"START={self.start.value():g}")
+        if self.block.value() > 0:
+            parts.append(f"BLOCK={self.block.value():g}")
         return " ".join(parts)
 
     def values(self) -> dict:
@@ -252,11 +271,13 @@ class GalaxyCard(QtWidgets.QGroupBox):
             "core_mode": self.core_mode.currentIndex(),
             "core": self.core.value(),
             "adaptive": self.adaptive.isChecked(),
+            "start": self.start.value(),
+            "block": self.block.value(),
         }
 
     def set_values(self, v: dict) -> None:
         self.name.setText(v.get("name", ""))
-        for key in ("x0", "y0", "r0", "r1", "core"):
+        for key in ("x0", "y0", "r0", "r1", "core", "start", "block"):
             if key in v:
                 getattr(self, key).setValue(float(v[key]))
         if "nr" in v:
@@ -278,6 +299,7 @@ class PairPanel(QtWidgets.QWidget):
     stop_requested = QtCore.Signal()
     export_requested = QtCore.Signal()
     blink_requested = QtCore.Signal()
+    report_requested = QtCore.Signal()
     changed = QtCore.Signal()  # something drawn on the image changed
 
     def __init__(self, parent=None):
@@ -423,6 +445,9 @@ class PairPanel(QtWidgets.QWidget):
 
         # ---- the run
         form.addRow(heading("4. Run"))
+        self.steps = whole(0, 20, 0, tip="STEPS: grow each galaxy's R1 from Start R1 to R1")
+        self.steps.setSpecialValueText("off")
+        form.addRow("Growth steps", tip(self.steps, "pair_grow"))
         self.cycles = whole(1, 50, 4, tip="CYCLES: A then B, this many times after the start")
         self.niter = whole(1, 1000, 10, tip="NITER: iterations inside each elliprof call")
         form.addRow("Cycles (A → B)", tip(self.cycles, "pair_cycles"))
@@ -430,6 +455,7 @@ class PairPanel(QtWidgets.QWidget):
         self.calls = note()
         form.addRow(self.calls)
         self.cycles.valueChanged.connect(self._summary_line)
+        self.steps.valueChanged.connect(self._summary_line)
         self.advanced = QtWidgets.QGroupBox("Advanced")
         self.advanced.setCheckable(True)
         self.advanced.setChecked(False)
@@ -512,6 +538,13 @@ class PairPanel(QtWidgets.QWidget):
         row.addWidget(self.blink)
         row.addWidget(self.export)
         form.addRow(row)
+        self.report = QtWidgets.QPushButton("Copy report")
+        self.report.setToolTip(
+            "Copy a plain-text report of the last pair fit (settings, every call, growth, "
+            "cycles, sky, residual rings around each galaxy and hints) to paste anywhere"
+        )
+        self.report.clicked.connect(self.report_requested)
+        form.addRow(self.report)
         self._summary_line()
 
     # ---- folding
@@ -524,8 +557,10 @@ class PairPanel(QtWidgets.QWidget):
             w.setVisible(on)
 
     def _summary_line(self) -> None:
-        n = 2 + 2 * self.cycles.value()
-        self.calls.setText(f"{n} elliprof calls: 2 to start, then A and B in each cycle")
+        n = 2 + 2 * (self.steps.value() + self.cycles.value())
+        self.calls.setText(
+            f"{n} elliprof calls: 2 to start, then A and B in each growth step and cycle"
+        )
 
     # ---- the sky
     def _sky_used_line(self) -> None:
@@ -717,6 +752,8 @@ class PairPanel(QtWidgets.QWidget):
         layers = self.ticked_layers()
         if layers:
             parts.append("MASK=" + ",".join(layers))
+        if self.steps.value():
+            parts.append(f"STEPS={self.steps.value()}")
         if self.cycles.value() != 4:
             parts.append(f"CYCLES={self.cycles.value()}")
         if self.niter.value() != 10:

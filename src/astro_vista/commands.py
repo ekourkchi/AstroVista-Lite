@@ -61,11 +61,14 @@ HELP = {
     "[COS3X=] [COS4X=] [FIXCTR=0|1|2] [RLAW=] [GAIN=] [TIE=]  -  fit elliptical isophotes to "
     "buffer N; MASK= names mask layers, MASKBUF= buffers used as masks (0 or NaN masked); "
     "MINUS= subtracts buffers first; RAW keeps every pixel of the residual",
-    "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [MASK=a,b] [CYCLES=4] [NITER=10] "
-    "[CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= Y0= R0= "
-    "R1= [NR=25] [NAME=] [MODE=] "
-    "[FIXCTR=0] [CORE=] [ADAPTIVE]  B: X0= Y0= R0= R1= ...  -  fit two overlapping galaxies: "
+    "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [STEPS=0] [MASK=a,b] [CYCLES=4] "
+    "[NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= "
+    "Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
+    "[FIXCTR=0] [CORE=] [ADAPTIVE] [START=] [BLOCK=]  B: X0= Y0= R0= R1= ...  -  fit two overlapping galaxies: "
     "ELLIPROF on A and on B in turn, each with the other's model taken out (help pair)",
+    "pairreport": "pairreport N [file]  -  a plain-text report of the last pair fit of buffer "
+    "N's image (settings, every call, growth, cycles, sky, residual rings around each galaxy, "
+    "hints), shown here and written to file if one is given",
     "pairexport": "pairexport N folder  -  write the last pair fit of buffer N's image to a "
     "folder: inputs, settings, every call, profiles, regions, models and the residual",
     "window": "window N BOX=x0,y0,x1,y1 [OUT=M] [MASKS=a,b|all]  -  cut out the pixels "
@@ -1040,6 +1043,23 @@ class Session(ImageCommands):
     def c_pair(self, words, keys) -> Reply:  # reached only through _pair_line
         raise CommandError(PAIR_HELP)
 
+    def c_pairreport(self, words, keys) -> Reply:
+        if not words:
+            raise CommandError(HELP["pairreport"])
+        image = self.buffer(words[0])
+        record = self.pairs.get(image.key)
+        if record is None:
+            raise CommandError(f"no pair fit of {image.name} yet (pair {words[0]} ...)")
+        text = pairs.report(record.result, record.job.snap, record.job.line, record.job.measurement)
+        if len(words) > 1:
+            path = self.path(words[1])
+            try:
+                path.write_text(text + "\n")
+            except OSError as e:
+                raise CommandError(f"cannot write {path}: {e}")
+            text += f"\n(written to {path})"
+        return Reply(text)
+
     def c_pairexport(self, words, keys) -> Reply:
         if len(words) < 2:
             raise CommandError(HELP["pairexport"])
@@ -1512,8 +1532,8 @@ class Session(ImageCommands):
 KEYWORDS = {
     "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
     "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE=",
-    "pair": "SKY= SKYFACTOR= SKYITER= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
-    "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE",
+    "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
+    "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1682,6 +1702,7 @@ SLOW = {
     "pair",
     "sky",
     "pairexport",
+    "pairreport",
     "window",
 }  # commands shown as busy while they run
 
@@ -1704,6 +1725,8 @@ Shared (before A:)
                 image's sky measurement; the fit with the smallest |m| is the result
   MASK=a,b      fitting layers (role fit, or no role; sky layers are refused)
   MASKFILE= MASKBUF=   as for elliprof
+  STEPS=0       growth steps: each galaxy's R1 grows from its START to its R1, A then B
+                each step; a galaxy whose growth fails stays at its last radius
   CYCLES=4      A then B, this many times after the initialisation (2 + 2 x CYCLES calls)
   NITER=10      iterations inside each elliprof call
   CORECAP=50    the largest core (pixels) left out around the other galaxy
@@ -1715,6 +1738,9 @@ Each galaxy (after A: or B:)
   X0= Y0= R0= R1=   its centre (ELLIPROF's coordinates) and radii (semi-major, pixels)
   NR=25  NAME="..."  MODE=none|3|4|3,4|4,6|3m|4m|6m,4m (or COS3X= COS4X=)  FIXCTR=0|1|2
   CORE=r        the core centred on THIS galaxy, left out while the other is fitted
+  BLOCK=r       left out around THIS galaxy during the other's first fit (block the
+                smaller galaxy to fit the larger one alone first)
+  START=r       the R1 of its first fit; STEPS= (shared) grows it to R1 in steps
   ADAPTIVE      if its outer isophotes fail, try a smaller R1 (at most 3 times)
 A line can go on after a \\ at its end.  The result is one of stable_valid_pair,
 valid_pair_not_stable, retained_after_failed_update, incomplete_initialization, cancelled."""

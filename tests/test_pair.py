@@ -691,6 +691,75 @@ def test_a_pair_folder_is_read(tmp_path):
         pair.read_folder(tmp_path / "nothing")
 
 
+# ---------------------------------------------------------------- block and grow
+def grow_snapshot(steps=2, block=None, start=8.0):
+    rng = np.random.default_rng(0)
+    image = 100.0 + rng.normal(0, 1, (60, 120))
+    comps = {
+        "A": pair.Component("A", 30.5, 30.5, 2, 20, 6, start=start),
+        "B": pair.Component("B", 90.5, 30.5, 2, 20, 6, start=start, block=block),
+    }
+    return pair.prepare(image, "tiny", None, comps, pair.Settings(sky=100.0, cycles=1, steps=steps))
+
+
+def test_the_galaxies_grow_from_start_to_r1():
+    snap = grow_snapshot(steps=2)
+    f = FakeFitter()
+    result = pair.run(snap, fitter=f)
+    r1s = [round(c["r1"], 3) for c in f.calls]
+    middle = round(8.0 * (20 / 8.0) ** 0.5, 3)
+    assert r1s == [8.0, 8.0, middle, middle, 20.0, 20.0, 20.0, 20.0]
+    assert [g["step"] for g in result.growth] == [1, 2]
+    assert result.status in ("stable_valid_pair", "valid_pair_not_stable")
+    assert result.commits["A"].r1_call == 20.0
+
+
+def test_a_galaxy_whose_growth_fails_stays_at_its_last_radius():
+    snap = grow_snapshot(steps=2)
+    f = FakeFitter(fail={("B", 2)})  # B's first growth step fails
+    result = pair.run(snap, fitter=f)
+    b_r1 = [round(c["r1"], 3) for c in f.calls if c["component"] == "B"]
+    assert b_r1 == [8.0, round(8.0 * 2.5**0.5, 3), 8.0, 8.0]
+    assert result.notes_growth and "B stopped growing" in result.notes_growth[0]
+    assert result.commits["B"].r1_call == 8.0
+
+
+def test_a_block_is_left_out_of_the_first_fit_only():
+    snap = grow_snapshot(steps=0, block=55.0, start=None)  # the core is 39
+    assert "B" in snap.blocks and snap.blocks["B"].masked.sum() > 0
+    first = snap.mask_for("A", first=True)
+    later = snap.mask_for("A")
+    assert first.sum() > later.sum()
+    assert not first[30, 30]  # never A's centre
+    seen = []
+
+    class Watch(FakeFitter):
+        def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+            seen.append((x0 < 50, int(kw["masked"].sum())))
+            return super().__call__(data, x0, y0, r0, r1, nr, **kw)
+
+    pair.run(snap, fitter=Watch())
+    a_masks = [n for is_a, n in seen if is_a]
+    assert a_masks[0] == int(first.sum()) and set(a_masks[1:]) == {int(later.sum())}
+    with pytest.raises(pair.PairError):
+        pair.components_from(
+            {
+                "A": {"X0": "1", "Y0": "1", "R0": "2", "R1": "10", "START": "12"},
+                "B": {"X0": "50", "Y0": "1", "R0": "2", "R1": "10"},
+            }
+        )
+
+
+def test_the_report_tells_what_happened():
+    snap = grow_snapshot(steps=2)
+    result = pair.run(snap, fitter=FakeFitter(fail={("B", 2)}))
+    text = pair.report(result, snap, "pair 1 ...")
+    for section in ("## status", "## settings", "## growth", "## calls", "## hints"):
+        assert section in text
+    assert "B stopped growing" in text
+    assert "residual rings" in text
+
+
 def test_the_pair_tool_in_the_window():
     from PySide6 import QtCore, QtWidgets
 
@@ -756,4 +825,12 @@ def test_the_pair_tool_in_the_window():
     assert panel.factor.value() == pytest.approx(record.job.snap.settings.sky_factor, abs=1e-5)
     assert panel.resid_hist.isVisibleTo(panel)
     assert window.pair_results.sky_table.rowCount() == len(record.result.sky_iterations)
+    # growth and block in the panel's command, and the report on the clipboard
+    panel.cards["A"].start.setValue(60)
+    panel.cards["B"].block.setValue(50)
+    panel.steps.setValue(2)
+    command = panel.command(1)
+    assert "STEPS=2" in command and "START=60" in command and "BLOCK=50" in command
+    window.copy_pair_report()
+    assert "## calls" in QtWidgets.QApplication.clipboard().text()
     window.close()

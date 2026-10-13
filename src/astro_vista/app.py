@@ -908,6 +908,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pp.stop_requested.connect(self.stop_pair)
         pp.export_requested.connect(self.export_pair)
         pp.blink_requested.connect(self.blink_pair)
+        pp.report_requested.connect(self.copy_pair_report)
         pp.changed.connect(self._overlays)
         self.finder.show_sources.toggled.connect(lambda on: self.layers.set_checked("sources", on))
 
@@ -1446,10 +1447,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 shape = (f[info.hdu] if info.hdu else f[0]).data.shape
             r1 = pairs.suggested_r1(info.centres, shape)
             for cid, (x, y, name) in info.centres.items():
+                # start small and grow; block B (the smaller, by the region file's labels)
+                # for A's first fit
                 p.cards[cid].set_values(
-                    {"name": name or cid, "x0": x, "y0": y, "r0": 3, "r1": r1[cid], "nr": 25}
+                    {
+                        "name": name or cid,
+                        "x0": x,
+                        "y0": y,
+                        "r0": 3,
+                        "r1": r1[cid],
+                        "nr": 25,
+                        "start": round(0.5 * r1[cid], 1),
+                        "block": r1[cid] if cid == "B" else 0,
+                    }
                 )
                 p.cards[cid].adaptive.setChecked(True)
+            p.steps.setValue(3)
         p.sky_source.setText("no sky yet")
         self.after_commands(self.show_pair_tool)
         said = f"{info.image.name}: " + (
@@ -1462,6 +1475,20 @@ class MainWindow(QtWidgets.QMainWindow):
             said += f" ({text})"
         self.statusBar().showMessage(said)
         self.console.say(said)
+
+    def copy_pair_report(self) -> None:
+        """Put the report of the last pair fit of the image shown on the clipboard."""
+        image = self.viewer.image
+        record = self.session.pairs.get(image.key) if image is not None else None
+        if record is None:
+            QtWidgets.QMessageBox.information(self, TITLE, "Fit a pair first.")
+            return
+        text = pairs.report(record.result, record.job.snap, record.job.line, record.job.measurement)
+        QtWidgets.QApplication.clipboard().setText(text)
+        self.statusBar().showMessage(
+            f"The pair report ({len(text.splitlines())} lines) is on the clipboard: paste it "
+            "anywhere (pairreport N file writes it to a file)"
+        )
 
     def pair_sky(self) -> None:
         n = self._current_number()
@@ -1699,9 +1726,8 @@ class MainWindow(QtWidgets.QMainWindow):
             x, y = card.centre()
             if (x or y) and (shown_tool or record is None):
                 d["centre"] = (x, y)
-                d["guide"] = [
-                    (x, y, r, r, 0.0) for r in (card.r0.value(), card.r1.value()) if r > 0
-                ]
+                radii = (card.r0.value(), card.r1.value(), card.start.value(), card.block.value())
+                d["guide"] = [(x, y, r, r, 0.0) for r in radii if r > 0]
             if record is not None:
                 snap, result = record.job.snap, record.result
                 core = snap.cores.get(cid)
