@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroVista Lite Commands</title>
+<meta name="description" content="The commands of AstroVista Lite with worked examples: reading and writing images, image arithmetic, statistics, masks, the source finder, ELLIPROF isophote fitting and command files.">
+<link rel="icon" href="images/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html"><img src="images/logo.svg" alt="">AstroVista Lite</a>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="tutorial.html">Tutorial</a>
+      <a class="here" href="commands.html">Commands &amp; recipes</a>
+      <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap narrow">
+<section>
+  <p class="kicker">Reference</p>
+  <h1>Commands &amp; recipes</h1>
+  <p>Everything AstroVista Lite does with data is a command. The buttons type them for you
+  and the terminal echoes them, so you can learn them by watching. You can also type them,
+  repeat them with ↑, complete them with Tab, and save them as a file that runs
+  again.</p>
+  <div class="toc">
+    <ol>
+      <li><a href="#basics">Images and buffers</a></li>
+      <li><a href="#arith">Image arithmetic</a></li>
+      <li><a href="#stats">Statistics and the sky</a></li>
+      <li><a href="#masks">Masks</a></li>
+      <li><a href="#sources">The source finder</a></li>
+      <li><a href="#elliprof">Isophotes with ELLIPROF</a></li>
+      <li><a href="#image">Image commands</a></li>
+      <li><a href="#files">Command files and variables</a></li>
+      <li><a href="#recipes">Recipes</a></li>
+    </ol>
+  </div>
+  <figure><img src="images/terminal.png" alt="The terminal with arithmetic and statistics commands, and the ratio image they made" loading="lazy"><figcaption>Commands and their answers in the terminal; the image shows the result of the last formula.</figcaption></figure>
+</section>
+
+<section id="basics">
+  <h2>Images and buffers</h2>
+  <p>A <b>buffer</b> is a numbered slot holding one image. Buffers are written
+  <code>[1]</code>, <code>[2]</code>, … (or <code>B1</code>, <code>B2</code>). The list on
+  the left shows each one with how it was made.</p>
+  <pre><code>rd 1 galaxy.fits             <span class="c"># read an image into buffer 1</span>
+rd 2 frame.fits[sci]         <span class="c"># one image of a multi-extension file, by name</span>
+rd 3 frame.fits[sci,2]       <span class="c"># by name and version; [1] picks by number</span>
+fitsinfo frame.fits          <span class="c"># what the file holds</span>
+tv 2                         <span class="c"># show buffer 2</span>
+copy 1 5                     <span class="c"># copy buffer 1 into buffer 5</span>
+tag 5 "my copy"              <span class="c"># a name of your own</span>
+wd 5 copy.fits               <span class="c"># write buffer 5 as FITS</span>
+buffers                      <span class="c"># list them</span></code></pre>
+  <p>FITS files are recognised by their contents, gzip-compressed too, whatever they are
+  called.</p>
+</section>
+
+<section id="arith">
+  <h2>Image arithmetic</h2>
+  <p>A formula is worked out <b>pixel by pixel</b>, and the result goes into the buffer on
+  the left of the <code>=</code>. <code>[3] = [1] - [2]</code> means each pixel of buffer 3
+  is the pixel of buffer 1 at the same place minus the pixel of buffer 2 there.</p>
+  <table>
+    <tr><th>In a formula</th><th>Meaning</th></tr>
+    <tr><td><code>[1]</code>, <code>B1</code></td><td>a buffer: its pixel at each place</td></tr>
+    <tr><td><code>3246</code>, <code>2.5</code>, <code>1e-3</code></td><td>numbers, the same for every pixel</td></tr>
+    <tr><td><code>k</code></td><td>a variable, set before with <code>set k=2.5</code></td></tr>
+    <tr><td><code>pi</code>, <code>e</code>, <code>nan</code></td><td>constants</td></tr>
+    <tr><td><code>mymask</code></td><td>a mask layer: 1 where good, NaN where it masks</td></tr>
+    <tr><td><code>( )  ^  -x  * / %  + -</code></td><td>in that order of priority, as on paper</td></tr>
+    <tr><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td><td>comparisons: 1 where true, 0 where false</td></tr>
+  </table>
+  <h3>Worked examples</h3>
+  <pre><code>[2] = [1] - median([1]) tag="no sky"     <span class="c"># subtract a constant sky</span>
+[3] = [1] / [5]                          <span class="c"># image / model (the model in buffer 5)</span>
+[4] = -2.5 * log10([1] / [2])            <span class="c"># a colour: magnitudes of two filters</span>
+[5] = [1] / sqrt(abs([1]) + 25)          <span class="c"># a rough signal-to-noise map</span>
+[6] = median([1], [2], [3]) tag=stack    <span class="c"># combine three exposures, NaN left out</span>
+[7] = ([1] - [8]) / [8] * 100            <span class="c"># the difference in per cent</span>
+[8] = div([1], [2], 0)                   <span class="c"># divide, 0 where buffer 2 is 0</span>
+set gain=2.4
+[9] = [1] * gain tag=electrons           <span class="c"># counts to electrons</span></code></pre>
+  <h3>Conditions</h3>
+  <pre><code>[5] = [1] &gt; 1000                    <span class="c"># 1 where brighter than 1000, else 0</span>
+[6] = where([1] &gt; 1000, [1], 0)     <span class="c"># keep the bright pixels, 0 elsewhere</span>
+[7] = where([1] &gt; 1000, nan, [1])   <span class="c"># hide the bright pixels (NaN)</span>
+[8] = ([1] &gt; 10) * ([1] &lt; 100)      <span class="c"># both true: multiply the conditions ("and")</span>
+[4] = [1] * mymask                  <span class="c"># NaN on the masked pixels</span>
+[4] = where(masked(mymask), 0, [1]) <span class="c"># 0 on the masked pixels</span></code></pre>
+  <h3>One image or several</h3>
+  <p><code>mean median sum min max std</code> work two ways. With several values they work
+  pixel by pixel across the images: <code>median([1], [2], [3])</code> combines
+  exposures. With one buffer they give a single number:
+  <code>median([1])</code> is the median of all of buffer 1.</p>
+  <p>Other functions, pixel by pixel: <code>abs sqrt exp log log10 sin cos tan arcsin arccos
+  arctan sinh cosh tanh floor ceil round isnan isfinite nan_to_num minimum maximum clip div
+  good masked</code>.</p>
+  <div class="note"><b>NaN</b> ("not a number") marks a pixel without a value. Division by
+  zero and the log of zero give NaN, never infinity. NaN pixels are left out of statistics
+  and masked in fits.</div>
+  <figure><img src="images/docs_arithmetic.png" alt="The image arithmetic page of the built-in documentation" loading="lazy"><figcaption>All of this, and more, is in Help ▸ Documentation ▸ Image arithmetic (or type <code>help calc</code>).</figcaption></figure>
+</section>
+
+<section id="stats">
+  <h2>Statistics and the sky</h2>
+  <pre><code>stats 1                      <span class="c"># mean, median, std, min, max (masked and NaN pixels left out)</span>
+stats 1 MASK=mymask,sources  <span class="c"># leaving out mask layers</span>
+sky 1 MASK=mymask            <span class="c"># a 3-sigma clipped median of what the masks leave</span>
+max 1                        <span class="c"># the brightest pixel and where it is</span>
+print 1 567 562 SIZE=5       <span class="c"># the pixel values around column 567, row 562</span></code></pre>
+</section>
+
+<section id="masks">
+  <h2>Masks</h2>
+  <p>A mask layer marks the pixels to leave out. In files, <b>0 = masked and 1 = good</b>.
+  Layers can be drawn with the mouse, or made with commands; <code>ERASE</code> unmasks
+  instead of masking.</p>
+  <pre><code>mask new mymask 1                   <span class="c"># an empty mask the size of buffer 1</span>
+mask load edges edges.fits 1        <span class="c"># a FITS or legacy .dmask mask</span>
+mask circle mymask 812 440 12       <span class="c"># a circle at X, Y with radius R</span>
+mask ellipse mymask 300 300 70 22 35    <span class="c"># X Y A B ANGLE</span>
+mask box mymask 10 10 60 40         <span class="c"># X0 Y0 X1 Y1</span>
+mask polygon mymask 1 1 50 1 25 40  <span class="c"># corners</span>
+mask circle mymask 812 440 12 ERASE <span class="c"># unmask</span>
+mask nan mymask 1                   <span class="c"># the pixels that are not finite</span>
+mask range mymask 1 60000 1e9       <span class="c"># saturated pixels</span>
+mask grow mymask 2                  <span class="c"># 2 pixels bigger (shrink: smaller)</span>
+mask union all mymask edges         <span class="c"># combine layers (intersect too)</span>
+mask save mymask mymask.fits        <span class="c"># FITS, 1 = good (.dmask: legacy bitmap)</span>
+undo                                <span class="c"># and redo</span></code></pre>
+  <p>Coordinates are ELLIPROF's: the first pixel spans 0 to 1, so its centre is at 0.5.
+  <code>help mask</code> lists every action.</p>
+</section>
+
+<section id="sources">
+  <h2>The source finder</h2>
+  <p>It detects and measures the stars and galaxies in an image with SEP, which implements
+  SExtractor's algorithms. Settings and catalogue columns keep SExtractor's names.</p>
+  <pre><code>sources 1                                    <span class="c"># find them</span>
+sources 1 DETECT_THRESH=2.5 DETECT_MINAREA=8 <span class="c"># with your own settings</span>
+sources 1 MASK=edges TOSEG=6                 <span class="c"># leave out a mask; the segmentation into buffer 6</span>
+runs                                         <span class="c"># every run, numbered</span>
+centre 1 SOURCE=12                           <span class="c"># ELLIPROF's centre from source 12</span>
+mask new sources 1
+mask sources sources SCALE=1.5               <span class="c"># mask every source but the galaxy</span>
+mask new stars 1
+mask sources stars WHERE='FLUX_RADIUS &lt; 2.5' <span class="c"># only the sources matching a condition</span>
+mask segments sources GROW=2                 <span class="c"># their pixels, grown by 2</span></code></pre>
+  <div class="gallery">
+    <figure><img class="shot" src="images/finder.png" alt="The Source finder settings and the detected sources" loading="lazy"><figcaption>Tools ▸ Source finder</figcaption></figure>
+    <figure><img class="shot" src="images/plots.png" alt="The Plots tab with FLUX_RADIUS against MAG_AUTO" loading="lazy"><figcaption>Results ▸ Plots</figcaption></figure>
+  </div>
+</section>
+
+<section id="elliprof">
+  <h2>Isophotes with ELLIPROF</h2>
+  <pre><code>elliprof 1 X0=567 Y0=562 R0=9 R1=347 NR=23 NITER=10 SKY=3246 RMSTAR MASK=u12517j,sources TOMODEL=3 TORESID=4</code></pre>
+  <table>
+    <tr><th>Keyword</th><th>Meaning</th></tr>
+    <tr><td><code>X0 Y0</code></td><td>the centre (ELLIPROF's coordinates)</td></tr>
+    <tr><td><code>R0 R1 NR</code></td><td>the first and last semi-major axis, and the number of ellipses</td></tr>
+    <tr><td><code>NITER</code></td><td>iterations per ellipse</td></tr>
+    <tr><td><code>SKY</code></td><td>a constant sky subtracted first</td></tr>
+    <tr><td><code>RMSTAR</code></td><td>reject star-like bright samples on each ellipse</td></tr>
+    <tr><td><code>MASK=a,b</code></td><td>mask layers to leave out (<code>MASKBUF=</code> buffers, <code>MASKFILE=</code> a file)</td></tr>
+    <tr><td><code>TOMODEL TORESID</code></td><td>the buffers for the model and the residual</td></tr>
+  </table>
+  <figure><img src="images/masked_fit.png" alt="The fit repeated with the found sources masked (orange) as well as the published mask (red)" loading="lazy"><figcaption>The fit repeated with the found sources masked (orange) as well as the published mask (red).</figcaption></figure>
+</section>
+
+<section id="image">
+  <h2>Image commands</h2>
+  <p>In the style of the VISTA and MONSTA command languages, written for AstroVista Lite:</p>
+  <table>
+    <tr><th>Commands</th><th>What they do</th></tr>
+    <tr><td><code>ac sc mc dc</code></td><td>add, subtract, multiply or divide a buffer by a constant</td></tr>
+    <tr><td><code>ai si mi di</code></td><td>the same with another buffer</td></tr>
+    <tr><td><code>log ln sqrt inverse round</code></td><td>functions in place</td></tr>
+    <tr><td><code>mn max min abx print</code></td><td>numbers about a buffer</td></tr>
+    <tr><td><code>shift rotate flip bin mash</code></td><td>move, turn, mirror, rebin and collapse</td></tr>
+    <tr><td><code>smooth filt zap clip skysub</code></td><td>smoothing, median filter, cosmic rays, limits, sky</td></tr>
+    <tr><td><code>fft noise gauss</code></td><td>power spectrum, added noise, an artificial star</td></tr>
+    <tr><td><code>ch chead</code></td><td>set and read FITS header keywords</td></tr>
+  </table>
+  <pre><code>smooth 1 FWHM=3              <span class="c"># a Gaussian smoothing</span>
+zap 1 SIG=5                  <span class="c"># remove cosmic rays and hot pixels</span>
+rotate 1 ANGLE=90            <span class="c"># multiples of 90 are exact</span>
+gauss 1 X=200 Y=200 FWHM=2.5 PEAK=5000   <span class="c"># add an artificial star</span>
+help smooth                  <span class="c"># any command explained</span></code></pre>
+</section>
+
+<section id="files">
+  <h2>Command files and variables</h2>
+  <p>A command file is plain text, one command per line, with <code>#</code> for comments.
+  File names inside it are relative to the file's own folder, so it can be shared with
+  its data.</p>
+  <pre><code>set xc=567 yc=562
+elliprof 1 X0=xc Y0=yc R0=9 R1=347 NR=23
+typ                          <span class="c"># show the variables</span>
+run session.txt              <span class="c"># run a file (or: astrovista --run session.txt)</span></code></pre>
+  <p>File ▸ Save the commands writes the session so far. Programs on the PATH run in the
+  terminal too (<code>ls</code>, <code>grep</code>, …); a line starting with <code>!</code>
+  always goes to the shell.</p>
+</section>
+
+<section id="recipes">
+  <h2>Recipes</h2>
+  <h3>Measure a galaxy's profile</h3>
+  <p>Open the image ▸ Source finder ▸ <i>Find sources</i> ▸ ELLIPROF: <i>Pick on the
+  image</i> (it snaps to the galaxy), <i>Pick</i> R1 where it fades ▸ <i>Estimate</i> the
+  sky ▸ <i>Mask the found sources</i> ▸ <i>Fit isophotes</i> ▸ Results ▸ Profile, tick
+  <i>R¼ law</i>.</p>
+  <h3>See what the model misses</h3>
+  <p>After a fit, tick Blink, choose the image and the residual, and press ← →. Or
+  <code>[9] = [1] / [3] tag="ratio"</code>, with the model in buffer 3.</p>
+  <h3>Mask a bright source by hand</h3>
+  <p>Choose the circle tool (M), set its radius, and click the source. Alt-click unmasks;
+  Ctrl+Z undoes.</p>
+  <h3>Find only bright, compact sources</h3>
+  <p>Raise the detection threshold in the Source finder, or use Masks ▸ Mask the sources
+  where… with <code>MAG_AUTO &lt; 18 and FWHM_IMAGE &lt; 3</code>.</p>
+  <h3>Subtract the sky and save</h3>
+  <pre><code>[2] = [1] - median([1]) tag="no sky"
+wd 2 nosky.fits</code></pre>
+  <h3>Combine exposures</h3>
+  <pre><code>rd 1 exp1.fits
+rd 2 exp2.fits
+rd 3 exp3.fits
+[4] = median([1], [2], [3]) tag=stack
+wd 4 stack.fits</code></pre>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>AstroVista Lite 1.0.0 · Ehsan Kourkchi · MIT licence</span>
+    <span><a href="index.html">Home</a> · <a href="tutorial.html">Tutorial</a> · <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a></span>
+  </div>
+</footer>
+</body>
+</html>

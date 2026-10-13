@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+# A second name on PyPI: installing astro-vista installs AstroVista (AstroVista Lite) and
+# nothing else; the commands come with AstroVista.
+[project]
+name = "astro-vista"
+version = "1.0.0"
+description = "Another name for AstroVista (AstroVista Lite): installing it installs AstroVista"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+maintainers = [{ name = "Ehsan Kourkchi", email = "ekourkchi@gmail.com" }]
+dependencies = ["AstroVista==1.0.0"]
+
+[project.urls]
+Homepage = "https://ekourkchi.github.io/AstroVista-Lite/"
+Repository = "https://github.com/ekourkchi/AstroVista-Lite"
+
+[tool.setuptools]
+packages = []

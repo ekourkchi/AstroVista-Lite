@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- AstroVista Lite: a galaxy's isophotes over a horizon arc ("vista"), in plain lines. -->
+  <rect x="10" y="10" width="236" height="236" rx="48" fill="#f3f6fb" stroke="#cdd8e6" stroke-width="4"/>
+  <g transform="translate(128 108) rotate(-28)" fill="none" stroke-width="6" stroke-linecap="round">
+    <ellipse rx="86" ry="31" stroke="#4a8fe0"/>
+    <ellipse rx="58" ry="21" stroke="#2fb3a3"/>
+    <ellipse rx="31" ry="12" stroke="#f2a33a"/>
+  </g>
+  <circle cx="128" cy="108" r="7" fill="#f2a33a"/>
+  <g fill="#8a98ad">
+    <circle cx="54" cy="58" r="4"/>
+    <circle cx="200" cy="50" r="3.5"/>
+    <circle cx="212" cy="140" r="3"/>
+    <circle cx="46" cy="154" r="3"/>
+  </g>
+  <path d="M 34 214 Q 128 166 222 214" fill="none" stroke="#4a8fe0" stroke-width="6" stroke-linecap="round"/>
+</svg>

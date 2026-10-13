@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use AstroVista Lite, please cite its GitHub repository."
+title: "AstroVista Lite"
+abstract: "Isophote fitting, source finding, masks and image arithmetic for astronomical images, simple enough for teaching."
+type: software
+authors:
+  - family-names: Kourkchi
+    given-names: Ehsan
+version: 1.0.0
+repository-code: "https://github.com/ekourkchi/AstroVista-Lite"
+url: "https://github.com/ekourkchi/AstroVista-Lite"
+keywords:
+  - astronomy
+  - surface photometry
+  - isophotes
+  - galaxies
+  - FITS

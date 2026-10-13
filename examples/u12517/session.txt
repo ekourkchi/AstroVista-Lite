@@ -1,0 +1,9 @@
+# The UGC 12517 example: run it with  astrovista --run session.txt  or File > Run a command file
+# (file names are relative to this file's folder).  The fit parameters are those of elliprof's example.
+rd 1 u12517j.fits
+mask load u12517j u12517j.dmask 1        # the published mask (0 = masked); also buffer 2
+sources 1                                # find the sources (SEP, built in)
+mask new sources 1
+mask sources sources SCALE=1.5           # every other source, 1.5 Kron ellipses
+# the published fit (add ,sources to MASK= to leave out the other sources as well)
+elliprof 1 X0=567 Y0=562 R0=9 R1=347 NR=23 NITER=10 SKY=3246 RMSTAR MASK=u12517j TOMODEL=3 TORESID=4

@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroVista Lite</title>
+<meta name="description" content="AstroVista Lite: fit the isophotes of galaxies, find and measure sources, mask, and do arithmetic on astronomical images, in one window. Free, for Linux and macOS: pip install AstroVista.">
+<link rel="icon" href="images/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html"><img src="images/logo.svg" alt="">AstroVista Lite</a>
+    <nav>
+      <a class="here" href="index.html">Home</a>
+      <a href="tutorial.html">Tutorial</a>
+      <a href="commands.html">Commands &amp; recipes</a>
+      <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+  <div class="hero">
+    <h1>See what a galaxy is made of</h1>
+    <p class="lead">AstroVista Lite fits the isophotes of galaxies, finds and measures the
+    stars and galaxies around them, masks what is in the way and does arithmetic on whole
+    images, all in one window. It is simple enough for a first class in astronomy and
+    useful in everyday research.</p>
+    <div class="buttons">
+      <a class="button primary" href="#install">Install</a>
+      <a class="button" href="tutorial.html">Start the tutorial</a>
+      <a class="button" href="https://github.com/ekourkchi/AstroVista-Lite">Source on GitHub</a>
+    </div>
+  </div>
+  <figure>
+    <img src="images/hero.png" alt="The AstroVista Lite window: a Hubble image of the galaxy UGC 12517 with green fitted isophotes, the buffers and layers on the left, the ELLIPROF tool on the right and the terminal below" width="1500" height="940">
+    <figcaption>The galaxy UGC 12517 (Hubble Space Telescope, near infrared) with its 23
+    fitted isophotes (green). Masked pixels are red; the terminal below records every
+    step as a command.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+<section>
+  <p class="kicker">What it does</p>
+  <h2>One window for the whole measurement</h2>
+  <div class="cards">
+    <div class="card"><h3>Isophote fitting</h3><p>ELLIPROF fits ellipses to a galaxy's
+    light from the centre outwards. You get a profile table, plots, the model galaxy and
+    the residual image.</p></div>
+    <div class="card"><h3>A source finder</h3><p>Finds the stars and galaxies in the image
+    and measures their position, shape, flux, magnitude and size, with SExtractor's
+    names. A sortable catalogue and plots come with it.</p></div>
+    <div class="card"><h3>Masks</h3><p>Draw circles, ellipses, boxes, polygons and brush
+    strokes, then turn and resize them before applying. You can also mask every found
+    source at once. Undo and redo work throughout.</p></div>
+    <div class="card"><h3>Image arithmetic</h3><p>Write <code>[3] = [1] - [2]</code>,
+    <code>median</code>, <code>where</code> and <code>clip</code>: formulas worked out
+    pixel by pixel over whole images.</p></div>
+    <div class="card"><h3>A terminal</h3><p>Every action is a command, echoed as it runs.
+    Save a session and run it again later, or give it to a class.</p></div>
+    <div class="card"><h3>Built to teach</h3><p>A first lesson, recipes, a FAQ and a
+    <b>?</b> beside every setting, all in the built-in documentation (F1).</p></div>
+  </div>
+</section>
+
+<section id="install">
+  <p class="kicker">Install</p>
+  <h2>One command, on Linux or macOS</h2>
+  <pre><code>pip install AstroVista
+astrovista --example        <span class="c"># the UGC 12517 example, shipped with the package</span>
+astrovista galaxy.fits      <span class="c"># or your own images</span></code></pre>
+  <p>Python 3.10 or later. Everything comes with <code>pip install</code>, the source finder
+  included. The names <code>astrovista</code> and <code>astro-vista</code> install the
+  same program. A virtual environment keeps it apart from your other Python programs:</p>
+  <pre><code>python3 -m venv ~/astrovista-env
+source ~/astrovista-env/bin/activate
+pip install AstroVista</code></pre>
+  <p>Images and masks can be loaded from the command line: <code>-i</code> puts images into
+  buffers 1, 2, … and <code>-m</code> adds mask layers.</p>
+  <pre><code>astrovista -i galaxy.fits "frame.fits[sci]" -m galaxy.dmask
+astrovista --run session.txt     <span class="c"># replay a file of commands</span></code></pre>
+  <div class="note"><b>On a minimal Linux system</b> (a server, WSL, a container), Qt may
+  report that it <i>could not load the Qt platform plugin "xcb"</i>. Install the
+  libraries every desktop already has:
+  <code>sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libegl1 libgl1 libfontconfig1 libdbus-1-3</code>
+  (Debian, Ubuntu), or
+  <code>sudo dnf install xcb-util-cursor libxkbcommon-x11 mesa-libEGL mesa-libGL fontconfig dbus-libs</code>
+  (Fedora).</div>
+</section>
+
+<section>
+  <p class="kicker">A tour</p>
+  <h2>What you will see</h2>
+
+  <div class="row">
+    <div>
+      <h3>Start here</h3>
+      <p>The welcome screen opens the example galaxy, your own FITS image, or the
+      <i>First lesson</i>. On the left, buffers hold images and layers hold what is
+      drawn over them. The image is in the middle. On the right, the Inspector, the
+      Tools, the Results and the FITS header sit in tabs. The terminal is below.</p>
+    </div>
+    <img class="shot" src="images/welcome.png" alt="The welcome screen with buttons to open the example, open an image, or start the first lesson" loading="lazy">
+  </div>
+
+  <div class="row flip">
+    <div>
+      <h3>Look at the light</h3>
+      <p>Faint light needs a stretched scale: <i>Log</i>, <i>Asinh</i> or a histogram
+      equalisation. Choose the limits from percentiles or ZScale, or drag them on the
+      histogram. Pick from twelve colour maps, and drag with the right mouse button for
+      contrast and bias. None of this changes a pixel value.</p>
+    </div>
+    <img class="shot" src="images/display.png" alt="The galaxy in the viridis colour map with the histogram and the colour bar under the image" loading="lazy">
+  </div>
+
+  <div class="row">
+    <div>
+      <h3>Contours</h3>
+      <p>Lines of equal brightness, with DS9's settings: the number of levels, linear or
+      log spacing, the smoothing, and the line colour and width. Each value can be
+      edited.</p>
+    </div>
+    <img class="shot" src="images/contours.png" alt="Yellow contour lines over the galaxy, with the Contours tool open on the right" loading="lazy">
+  </div>
+
+  <div class="row flip">
+    <div>
+      <h3>Inspect a pixel</h3>
+      <p>The Inspector shows the pixel under the cursor or the crosshair: its value, its
+      sky position (RA, Dec), a magnified view, and the statistics of the pixels around
+      it.</p>
+    </div>
+    <img class="shot" src="images/inspector.png" alt="The crosshair over the galaxy and the Inspector showing the pixel value, RA and Dec and a magnified view" loading="lazy">
+  </div>
+
+  <div class="row">
+    <div>
+      <h3>Mask what is in the way</h3>
+      <p>Draw a shape and it waits, in magenta, until you apply it. Drag it to move it,
+      drag its squares to resize it, and turn it with the round handle or the
+      <code>[</code> <code>]</code> keys. Press Enter to apply it or Esc to cancel. Alt or
+      Shift unmasks.</p>
+    </div>
+    <img class="shot" src="images/mask_rotate.png" alt="A magenta ellipse turned by 35 degrees, with square handles for resizing and a round handle for turning, waiting to be applied" loading="lazy">
+  </div>
+
+  <div class="row flip">
+    <div>
+      <h3>Fit the isophotes</h3>
+      <p>Press <i>Fit isophotes</i>. ELLIPROF follows the galaxy's light outwards from R0 to
+      R1. The model and the residual go into the buffers you choose; by default only free
+      buffers are offered.</p>
+    </div>
+    <img class="shot" src="images/fit.png" alt="Green isophotes fitted to UGC 12517 with the ELLIPROF tool on the right" loading="lazy">
+  </div>
+
+  <div class="row">
+    <div>
+      <h3>Read the profile</h3>
+      <p>Plot the intensity, ellipticity, position angle or the higher harmonics against
+      the radius or R<sup>¼</sup>. Tick <i>R¼ law</i> to fit de Vaucouleurs' law; for this
+      galaxy, R<sub>e</sub> ≈ 126 pixels with a scatter of 0.07 mag. Save the plot as a
+      PNG, or the table as an aligned CSV file.</p>
+    </div>
+    <img class="shot" src="images/profile_devauc.png" alt="The intensity profile on a log scale with the fitted de Vaucouleurs law over it" loading="lazy">
+  </div>
+
+  <div class="row flip">
+    <div>
+      <h3>Find and measure sources</h3>
+      <p>The Source finder detects every star and galaxy in the image and measures it with
+      SEP, which implements SExtractor's algorithms. Click a source to find its row;
+      sort the catalogue by any column; plot one column against another.</p>
+    </div>
+    <img class="shot" src="images/sources.png" alt="Cyan ellipses around the detected sources and the sortable catalogue on the right" loading="lazy">
+  </div>
+
+  <div class="row">
+    <div>
+      <h3>Look at what is left</h3>
+      <p>The residual, the image minus the model, shows what a smooth ellipse cannot
+      describe: dust lanes, discs, shells and companions. Tick <i>Blink</i> and press
+      ← → to switch between the image, the model and the residual. When zoomed in, blinking
+      keeps the same patch of sky through the WCS.</p>
+    </div>
+    <img class="shot" src="images/residual.png" alt="The residual image after the model galaxy is subtracted" loading="lazy">
+  </div>
+
+  <div class="row flip">
+    <div>
+      <h3>Type it, keep it, run it again</h3>
+      <p>Every button runs a command that you can also type: arithmetic, statistics, masks,
+      fits. Tab completes commands, buffers and file names. File ▸ Save the commands keeps
+      the session as a script.</p>
+    </div>
+    <img class="shot" src="images/terminal.png" alt="The terminal showing arithmetic commands and their statistics, with the ratio image displayed" loading="lazy">
+  </div>
+</section>
+
+<section>
+  <p class="kicker">Figures for your paper or your class</p>
+  <h2>Export what you measured</h2>
+  <p>The profile and the plots are saved as PNG figures made with matplotlib. Tables are
+  saved as CSV files whose columns line up in any text editor, and read back with
+  <code>pandas</code> or <code>astropy</code>. Isophotes can be exported as DS9 regions.</p>
+  <div class="gallery">
+    <figure><img class="shot" src="images/export_profile.png" alt="A matplotlib figure of the UGC 12517 profile with the R¼ law" loading="lazy"><figcaption>Results ▸ Profile ▸ Save PNG…</figcaption></figure>
+    <figure><img class="shot" src="images/export_plot.png" alt="A matplotlib scatter plot of FLUX_RADIUS against MAG_AUTO for the found sources" loading="lazy"><figcaption>Results ▸ Plots ▸ Save PNG…: stars form the narrow sequence at the bottom</figcaption></figure>
+  </div>
+</section>
+
+<section>
+  <p class="kicker">Learn</p>
+  <h2>Help is built in</h2>
+  <div class="row">
+    <div>
+      <p>Press <b>F1</b> for the documentation. It includes a thirty-minute <i>First
+      lesson</i>, recipes, image arithmetic in detail, a glossary, a FAQ, troubleshooting,
+      every command, and every setting explained. The <b>?</b> beside each setting opens
+      its own entry.</p>
+      <p>On this site: the <a href="tutorial.html">tutorial</a> walks through a whole
+      measurement with questions for learners, and <a href="commands.html">Commands &amp;
+      recipes</a> collects the commands and arithmetic with worked examples.</p>
+    </div>
+    <img class="shot" src="images/docs.png" alt="The built-in documentation window showing the first lesson" loading="lazy">
+  </div>
+</section>
+
+<section id="cite">
+  <p class="kicker">Credits</p>
+  <h2>Citing and credits</h2>
+  <p>If AstroVista Lite helps your work or your teaching, please cite its repository:</p>
+  <pre><code>Kourkchi, E., AstroVista Lite, https://github.com/ekourkchi/AstroVista-Lite</code></pre>
+  <p>GitHub's <i>Cite this repository</i> button gives the same. For the measurements,
+  please also cite:</p>
+  <ul>
+    <li><a href="https://github.com/ekourkchi/elliprof">elliprof</a>, for the isophotes;</li>
+    <li>SEP (Barbary 2016, JOSS 1, 58) and SExtractor (Bertin &amp; Arnouts 1996, A&amp;AS
+    117, 393), for the source finder.</li>
+  </ul>
+  <p>Built with Qt for Python (PySide6), pyqtgraph, matplotlib, NumPy, SciPy and Astropy.
+  The example image of UGC 12517 (HST WFC3/IR, F110W) and its mask come from the elliprof
+  example. AstroVista Lite is free software under the MIT licence.</p>
+</section>
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>AstroVista Lite 1.0.0 · Ehsan Kourkchi · MIT licence</span>
+    <span><a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a> · <a href="https://pypi.org/project/AstroVista/">PyPI</a></span>
+  </div>
+</footer>
+</body>
+</html>

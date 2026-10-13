@@ -1,0 +1,100 @@
+# A release, started by pushing a tag v<version> that matches the version in
+# pyproject.toml:
+#   1. build AstroVista (the program) and astro-vista (its second name) and check them;
+#   2. install the built wheel on Linux and run a whole session under X11;
+#   3. publish both to PyPI from the protected "pypi" environment (Trusted Publishing:
+#      no stored secrets; the environment asks for approval first);
+#   4. make the GitHub release with the files.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The tag matches the version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          alias=$(python -c "import tomllib; print(tomllib.load(open('packaging/aliases/astro-vista/pyproject.toml','rb'))['project']['version'])")
+          test "v$version" = "$GITHUB_REF_NAME" && test "$alias" = "$version"
+      - run: python -m pip install build twine
+      - run: |
+          python -m build --outdir dist/main .
+          python -m build --outdir dist/alias packaging/aliases/astro-vista
+          python -m twine check --strict dist/main/* dist/alias/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  linux-check:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-cursor0 libxkbcommon-x11-0 libegl1 libgl1 libfontconfig1 libdbus-1-3 \
+            libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libxcb-randr0 \
+            libxcb-render-util0 libxcb-image0 xvfb
+      - name: The wheel, installed and used
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |
+          python -m pip install dist/main/*.whl
+          astrovista --version
+          xvfb-run -a -s "-screen 0 1600x1000x24" python tests/smoke.py smoke-output
+
+  pypi:
+    needs: linux-check
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/AstroVista/
+    permissions:
+      id-token: write   # Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: AstroVista
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/main
+      - name: astro-vista
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/alias
+
+  github-release:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/main/* \
+            --repo "$GITHUB_REPOSITORY" --title "AstroVista Lite ${GITHUB_REF_NAME#v}" \
+            --notes "pip install AstroVista — documentation: https://ekourkchi.github.io/AstroVista-Lite/"

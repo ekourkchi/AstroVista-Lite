@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroVista Lite Tutorial</title>
+<meta name="description" content="A step-by-step lesson with AstroVista Lite: measure the light profile of the galaxy UGC 12517 from a Hubble image, find and mask the sources around it, and study the residual.">
+<link rel="icon" href="images/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html"><img src="images/logo.svg" alt="">AstroVista Lite</a>
+    <nav>
+      <a href="index.html">Home</a>
+      <a class="here" href="tutorial.html">Tutorial</a>
+      <a href="commands.html">Commands &amp; recipes</a>
+      <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap narrow">
+<section>
+  <p class="kicker">Tutorial</p>
+  <h1>The light of a galaxy</h1>
+  <p>In this lesson you measure how the light of a galaxy fades from its centre outwards,
+  using a Hubble Space Telescope image of the galaxy <b>UGC 12517</b>. It takes about
+  thirty minutes on your own, or one class period. You need no programming. Every step is
+  done with the mouse, and every step is also written as a command you can keep.</p>
+  <div class="toc">
+    <b>The steps</b>
+    <ol>
+      <li><a href="#s-open">Open the image</a></li>
+      <li><a href="#s-look">Look at the light</a></li>
+      <li><a href="#s-sources">Find the sources</a></li>
+      <li><a href="#s-centre">Find the centre and the size</a></li>
+      <li><a href="#s-mask">Mask what is not the galaxy</a></li>
+      <li><a href="#s-fit">Fit the isophotes</a></li>
+      <li><a href="#s-profile">Read the profile</a></li>
+      <li><a href="#s-residual">Look at what is left</a></li>
+      <li><a href="#s-keep">Keep and repeat the work</a></li>
+    </ol>
+    <a href="#exercises">Exercises for a class</a> · <a href="#research">For research use</a> · <a href="#words">Words used</a>
+  </div>
+  <div class="note"><b>Before you start:</b> install it with <code>pip install AstroVista</code>
+  and start it with <code>astrovista</code> (see <a href="index.html#install">Install</a>).</div>
+</section>
+
+<section>
+<ol class="steps">
+  <li class="step" id="s-open">
+    <h3>Open the image</h3>
+    <p>Press <b>Open the example</b> on the welcome screen (or File ▸ Open example). The
+    image goes into <b>buffer 1</b>; a buffer is a numbered slot that holds one image. The
+    example also loads a mask, <code>u12517j</code>, drawn in red over the bright stars and
+    the detector's edges. Masked pixels are left out of every measurement.</p>
+    <figure><img src="images/example.png" alt="The example image of UGC 12517 opened, with the published mask in red" loading="lazy"></figure>
+    <p>Look at the terminal at the bottom: the two lines starting with <code>›</code> are
+    the commands that did this. <code>rd 1 u12517j.fits.gz</code> reads the image into
+    buffer 1, and <code>mask load …</code> loads the mask.</p>
+  </li>
+
+  <li class="step" id="s-look">
+    <h3>Look at the light</h3>
+    <p>Move the mouse over the image. The status bar shows the pixel's value and its
+    position on the sky (right ascension and declination). The galaxy's centre is tens of
+    times brighter than its outskirts, so with a linear scale only the core shows.</p>
+    <p>In the bar above the image, change <i>Scale</i> to <b>Log</b> or <b>Asinh</b>, and tick
+    <b>Histogram</b>. Drag on the image with the right mouse button to change the contrast.
+    Try a colour map in <i>Colours</i>.</p>
+    <figure><img src="images/display.png" alt="The galaxy in the viridis colour map with a histogram of pixel values under the image" loading="lazy"><figcaption>Log scale, viridis colours, and the histogram of pixel values.</figcaption></figure>
+    <div class="question"><b>Question</b>How far out does the galaxy's light go? Compare
+    the picture with Linear, Log and Asinh. Does the galaxy have an edge?</div>
+  </li>
+
+  <li class="step" id="s-sources">
+    <h3>Find the sources</h3>
+    <p>Open <b>Tools ▸ Source finder</b> and press <b>Find sources</b> (or the button in the
+    top bar). Each cyan ellipse is a star or a galaxy that was detected and measured. Click
+    one to see its row in <b>Results ▸ Sources</b>, and click a column header to sort
+    the catalogue.</p>
+    <figure><img src="images/sources.png" alt="The detected sources outlined in cyan and the catalogue on the right" loading="lazy"></figure>
+    <p>Open <b>Results ▸ Plots</b> and plot <code>FLUX_RADIUS</code> (the radius holding
+    half the light) against <code>MAG_AUTO</code> (the magnitude).</p>
+    <figure><img src="images/export_plot.png" alt="FLUX_RADIUS against MAG_AUTO: a flat narrow sequence of stars and scattered galaxies above it" loading="lazy"></figure>
+    <div class="question"><b>Question</b>Stars are points: the telescope makes them all the
+    same size, whatever their brightness. Which sources in the plot are stars? Why do the
+    faintest sources all look small?</div>
+  </li>
+
+  <li class="step" id="s-centre">
+    <h3>Find the centre and the size</h3>
+    <p>Open <b>Tools ▸ ELLIPROF</b>. Press <b>Pick on the image</b> and click the galaxy's
+    bright core. With <i>Snap to sources</i> ticked, the small red cross jumps to the
+    centre the source finder measured. Then press <b>Pick</b> beside R1 and click where the
+    galaxy fades into the sky. The dashed red circle shows R1, the largest ellipse to
+    fit.</p>
+    <p>The example already holds the values of the published fit: X0 = 567, Y0 = 562,
+    R0 = 9, R1 = 347 pixels, 23 ellipses, and a sky level of 3246 subtracted. Press
+    <b>Estimate</b> beside <i>Sky</i> to measure the sky yourself.</p>
+    <div class="question"><b>Question</b>The pixels are 0.128″ wide. How large is R1 in
+    arcseconds? The compass shows which way is north. Is the galaxy round, or stretched
+    in one direction?</div>
+  </li>
+
+  <li class="step" id="s-mask">
+    <h3>Mask what is not the galaxy</h3>
+    <p>Other stars and galaxies would add light that does not belong to UGC 12517. Press
+    <b>Mask the found sources</b> in the ELLIPROF tool: every source except the galaxy
+    itself goes into a new mask layer called <code>sources</code>.</p>
+    <p>Touch it up by hand with the tools in the top bar: circle, ellipse, box, polygon,
+    brush, eraser. An ellipse, box or polygon waits in magenta until you apply it. Drag it
+    to move it, drag its squares to resize it, and turn it with the round handle or
+    <code>[</code> <code>]</code>. Press <b>Enter</b> to apply it, or <b>Esc</b> to cancel.
+    Hold Alt or Shift to unmask. Ctrl+Z undoes.</p>
+    <figure><img src="images/mask_rotate.png" alt="A magenta ellipse turned by 35 degrees waiting to be applied, with its handles" loading="lazy"><figcaption>A shape waiting to be applied: drag to move, squares to resize, the round handle to turn.</figcaption></figure>
+    <p>The layers on the left list every mask in its own colour. Untick one to hide it, and
+    tick the masks to use under <i>Mask with</i> in the ELLIPROF tool.</p>
+  </li>
+
+  <li class="step" id="s-fit">
+    <h3>Fit the isophotes</h3>
+    <p>Press <b>Fit isophotes</b> (Ctrl+E). An <b>isophote</b> is a line of equal
+    brightness, like a contour on a map. ELLIPROF fits an ellipse to each one, from R0
+    outwards, measuring its brightness, centre, ellipticity and orientation.</p>
+    <figure><img src="images/fit.png" alt="23 green isophotes fitted to the galaxy" loading="lazy"><figcaption>23 isophotes, from 9 to 347 pixels. The model and residual images go into buffers 3 and 4.</figcaption></figure>
+    <p>The terminal shows the command that ran:</p>
+    <pre><code>elliprof 1 X0=567 Y0=562 R0=9 R1=347 NR=23 NITER=10 SKY=3246 RMSTAR MASK=u12517j TOMODEL=3 TORESID=4</code></pre>
+    <div class="question"><b>Question</b>Do the ellipses keep the same shape and
+    orientation from the centre to the outskirts? What could make them twist?</div>
+  </li>
+
+  <li class="step" id="s-profile">
+    <h3>Read the profile</h3>
+    <p>Open <b>Results ▸ Profile</b>. It plots the brightness of each isophote against its
+    radius. Choose other quantities in the list: the ellipticity, the position angle, the
+    centre, and the cos 3θ and cos 4θ terms, which show whether isophotes are boxy or
+    discy.</p>
+    <p>Tick <b>R¼ axis</b>. Many elliptical galaxies follow <b>de Vaucouleurs' law</b>, a
+    straight line when the log of the intensity is plotted against R<sup>¼</sup>. Tick
+    <b>R¼ law</b> to fit it. The fit gives the effective radius R<sub>e</sub>, which holds
+    half the light, and the scatter about the law.</p>
+    <figure><img src="images/profile_devauc.png" alt="The intensity profile with the de Vaucouleurs law fitted" loading="lazy"><figcaption>For UGC 12517, R<sub>e</sub> ≈ 126.5 pixels with a scatter of only 0.07 mag.</figcaption></figure>
+    <p>Tick <b>Table</b> to see the numbers. <b>Save CSV…</b> writes the table and <b>Save
+    PNG…</b> writes the plot as a figure.</p>
+    <figure><img src="images/profile_table.png" alt="The profile table with radius, intensity, ellipticity and position angle" loading="lazy"></figure>
+    <div class="question"><b>Question</b>R<sub>e</sub> is 126.5 pixels of 0.128″. What is
+    it in arcseconds? If the galaxy is 60 Mpc away, how many kiloparsecs is that? (1″ at
+    1 Mpc ≈ 4.85 pc.)</div>
+  </li>
+
+  <li class="step" id="s-residual">
+    <h3>Look at what is left</h3>
+    <p>Click the <b>residual</b> buffer on the left: the image minus the model made of the
+    fitted ellipses. A perfect model would leave only noise. Tick <b>Blink</b> above the
+    image, click the image, and press ← and → to switch between the image, the model and
+    the residual.</p>
+    <figure><img src="images/residual.png" alt="The residual image after subtracting the fitted model" loading="lazy"></figure>
+    <div class="question"><b>Question</b>What does the model miss? Look for dust, a disc,
+    rings, shells or companions hidden in the galaxy's glow. Try
+    <code>[9] = div([1] - [3], [3], 0)</code> in the terminal: the residual as a fraction of
+    the model.</div>
+  </li>
+
+  <li class="step" id="s-keep">
+    <h3>Keep and repeat the work</h3>
+    <p>Every step you took is a command in the terminal. <b>File ▸ Save the commands</b>
+    writes them to a file, and <b>File ▸ Run a command file</b> (or
+    <code>astrovista --run session.txt</code>) repeats the whole measurement. This is how
+    the example in the repository is written:</p>
+    <pre><code>rd 1 u12517j.fits
+mask load u12517j u12517j.dmask 1        <span class="c"># the published mask (0 = masked)</span>
+sources 1                                <span class="c"># find the sources</span>
+mask new sources 1
+mask sources sources SCALE=1.5           <span class="c"># every other source, 1.5 Kron ellipses</span>
+elliprof 1 X0=567 Y0=562 R0=9 R1=347 NR=23 NITER=10 SKY=3246 RMSTAR MASK=u12517j TOMODEL=3 TORESID=4</code></pre>
+  </li>
+</ol>
+</section>
+
+<section id="exercises">
+  <p class="kicker">For a class</p>
+  <h2>Exercises</h2>
+  <ol>
+    <li><b>Does masking matter?</b> Fit once with only the <code>u12517j</code> mask, and
+    once with <code>sources</code> ticked too. Save both profiles as CSV and compare the
+    outer points. Where do they differ, and why?</li>
+    <li><b>The sky.</b> Change the sky by ±1% and fit again. Which part of the profile
+    changes most? What does this say about measuring the faint outskirts of galaxies?</li>
+    <li><b>Stars and galaxies.</b> In Results ▸ Plots, find the stellar sequence. Use Masks ▸
+    Mask the sources where… with a condition such as <code>FLUX_RADIUS &lt; 2.5</code> to
+    mask only the stars.</li>
+    <li><b>Shape.</b> Plot the ellipticity and the position angle against the radius. Is
+    UGC 12517 rounder in the centre or in the outskirts?</li>
+    <li><b>Arithmetic.</b> Make an image of only the bright pixels with
+    <code>[5] = where([1] &gt; 10000, [1], nan)</code>. What fraction of the image is
+    brighter than 10000? (Hint: <code>stats 5</code>.)</li>
+    <li><b>Your own galaxy.</b> Download a FITS image of a nearby elliptical galaxy from an
+    archive (HST, Legacy Survey, SDSS), open it with File ▸ Open, and repeat the lesson.</li>
+  </ol>
+  <p>The same lesson is in the program: Help ▸ Documentation ▸ <i>A first lesson</i>.
+  Teachers can hand out a command file so every student starts from the same place.</p>
+</section>
+
+<section id="research">
+  <p class="kicker">For astronomers</p>
+  <h2>Using it in research</h2>
+  <ul>
+    <li><b>Reproducible:</b> a session is a plain text file of commands, so it can go into a
+    paper's repository next to the data.</li>
+    <li><b>Standard names:</b> the source finder keeps SExtractor's keywords
+    (<code>DETECT_THRESH</code>, <code>MAG_AUTO</code>, <code>FLUX_RADIUS</code>, …) and
+    writes the segmentation image too.</li>
+    <li><b>Coordinates:</b> X0, Y0 and the mask commands use ELLIPROF's convention, in which
+    the first pixel spans 0 to 1. The status bar also shows the FITS pixel (from 1) and the
+    sky position.</li>
+    <li><b>Files:</b> FITS is recognised by content, whatever the file is called;
+    <code>name.fits[sci]</code> or <code>[sci,2]</code> picks an extension. Masks can be FITS
+    or legacy <code>.dmask</code> files, with 0 = masked.</li>
+    <li><b>Output:</b> CSV tables with aligned columns, PNG figures, DS9 regions, and
+    every buffer as FITS.</li>
+  </ul>
+  <p>Please cite the repository and the underlying tools: see <a href="index.html#cite">Citing</a>.</p>
+</section>
+
+<section id="words">
+  <p class="kicker">Glossary</p>
+  <h2>Words used</h2>
+  <table>
+    <tr><th>Word</th><th>Meaning</th></tr>
+    <tr><td>Buffer</td><td>A numbered slot holding one image: <code>[1]</code>, <code>[2]</code>, …</td></tr>
+    <tr><td>Mask</td><td>Pixels left out of a measurement; in files, 0 = masked and 1 = good.</td></tr>
+    <tr><td>Isophote</td><td>A line of equal brightness on the image.</td></tr>
+    <tr><td>R0, R1</td><td>The semi-major axes of the first and last ellipse fitted.</td></tr>
+    <tr><td>Ellipticity</td><td>1 − b/a: 0 for a circle, approaching 1 for a thin ellipse.</td></tr>
+    <tr><td>Position angle</td><td>The orientation of an ellipse's long axis.</td></tr>
+    <tr><td>Sky</td><td>The background level that the galaxy sits on, subtracted before the fit.</td></tr>
+    <tr><td>Model, residual</td><td>The galaxy rebuilt from its ellipses; the image minus the model.</td></tr>
+    <tr><td>R<sub>e</sub></td><td>The effective radius, within which half the light lies.</td></tr>
+    <tr><td>Magnitude</td><td>A logarithmic brightness: 5 magnitudes is a factor of 100, and brighter is smaller.</td></tr>
+    <tr><td>WCS</td><td>The World Coordinate System: how pixels map to positions on the sky.</td></tr>
+  </table>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>AstroVista Lite 1.0.0 · Ehsan Kourkchi · MIT licence</span>
+    <span><a href="index.html">Home</a> · <a href="commands.html">Commands &amp; recipes</a> · <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a></span>
+  </div>
+</footer>
+</body>
+</html>
