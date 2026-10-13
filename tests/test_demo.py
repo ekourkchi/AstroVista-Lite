@@ -1864,7 +1864,8 @@ def test_every_command_on_the_website_runs(tmp_path):
     from astro_vista.app import EXAMPLE_FILES, example_folder
 
     docs = Path(__file__).resolve().parent.parent / "docs"
-    pages = [docs / name for name in ("index.html", "tutorial.html", "commands.html")]
+    names = ("index.html", "tutorial.html", "commands.html", "terminal.html", "reference.html")
+    pages = [docs / name for name in names]
     assert all(page.exists() for page in pages)
     # the files the pages read: the example under the names they use
     data = fits.getdata(example_folder() / EXAMPLE_FILES[0]).astype(np.float32)
@@ -1894,4 +1895,42 @@ def test_every_command_on_the_website_runs(tmp_path):
                     continue
                 s.execute(line)  # raises on any command that does not work
                 ran += 1
-    assert ran >= 60
+    assert ran >= 180
+
+
+def test_the_reference_covers_every_command_and_the_website_matches_it():
+    # every command and mask action the terminal knows is in the reference, and the
+    # website's generated pages are what docs/build.py makes from it now
+    import importlib.util
+
+    from astro_vista import guide, reference
+    from astro_vista.commands import ALIASES, MASK_ACTIONS, Session
+
+    verbs = {n[2:] for n in dir(Session) if n.startswith("c_")} - {"arithmetic"}
+    documented = reference.documented_names()
+    assert not verbs - documented, sorted(verbs - documented)
+    assert not {f"mask {a}" for a in MASK_ACTIONS} - documented
+    assert all(alias in reference.TERMINAL_HTML for alias in ALIASES)
+    assert all(c.syntax and c.what and c.example for c in reference.commands())
+    # the documentation window has both pages, and the credits name John Tonry
+    assert guide.TOPICS["terminal"][1] == reference.TERMINAL_HTML
+    assert "elliprof N X0=" in guide.TOPICS["allcommands"][1]
+    assert "John Tonry" in guide.TOPICS["credits"][1]
+    docs = Path(__file__).resolve().parent.parent / "docs"
+    spec = importlib.util.spec_from_file_location("docs_build", docs / "build.py")
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    for name, text in build.pages().items():
+        assert (docs / name).read_text() == text, f"run python docs/build.py ({name})"
+
+
+def test_variable_names_in_any_case():
+    s = Session()
+    s.buffers[1] = Image("a", np.ones((10, 10), np.float32))
+    s.execute("set XC=5 rc=2")
+    assert s.variables == {"xc": 5.0, "rc": 2.0}
+    s.execute("gauss 1 X=XC+0.5 Y=Rc FWHM=2 PEAK=1")  # keyword values, an expression too
+    s.execute("[2] = [1] * xc + RC")  # formulas
+    assert abs(s.buffers[2].data[0, 0] - (s.buffers[1].data[0, 0] * 5 + 2)) < 1e-5
+    assert "column 5" in s.execute("max 1").text
+    assert "5" in s.execute("print 1 XC 3 SIZE=1").text.splitlines()[0]  # numbers in commands

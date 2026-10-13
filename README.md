@@ -149,7 +149,12 @@ SciPy: `ac sc mc dc`, `ai si mi di`, `log ln sqrt inverse round`, `mn max min ab
 `shift rotate flip bin mash`, `smooth filt zap clip skysub`, `fft noise
 gauss`, `ch chead`, and variables (`set xc=567`, then `X0=xc` in any command).
 
-`help` lists them all, and `help mask` the mask commands.
+`help` lists them all, and `help mask` the mask commands. The website explains
+[how the terminal works](https://ekourkchi.github.io/AstroVista-Lite/terminal.html) (how a
+line is written, buffers, coordinates, variables, programs, the keyboard, command files)
+and gives the
+[full command reference](https://ekourkchi.github.io/AstroVista-Lite/reference.html): every
+command with its keywords and an example. Both are also in Help ▸ Documentation.
 
 ## Using it
 
@@ -194,10 +199,20 @@ Source finder), listed below.
 
 ## Credits
 
-AstroVista Lite is by Ehsan Kourkchi. It is built on:
+AstroVista Lite is by Ehsan Kourkchi.
 
-- **elliprof**: elliptical isophote fitting
-  ([github.com/ekourkchi/elliprof](https://github.com/ekourkchi/elliprof), MIT).
+**John Tonry.** ELLIPROF, the isophote fitting at the heart of AstroVista Lite, was
+originally developed by John Tonry as part of MONSTA; it is used here through the elliprof
+package, which compiles his original code unchanged. The terminal follows the command
+language of MONSTA, John Tonry's image analysis and plotting system, which joined Vista
+(originally by Richard Stover and Tod Lauer, with image display by John Tonry) and Mongo (by
+John Tonry). The commands of AstroVista Lite are new code written in that style.
+
+It is built on:
+
+- **elliprof**: John Tonry's ELLIPROF as a Python package
+  ([github.com/ekourkchi/elliprof](https://github.com/ekourkchi/elliprof); the package is
+  MIT, the original ELLIPROF sources keep their own terms).
 - **SEP** (Source Extraction and Photometry), by Kyle Barbary and contributors
   ([github.com/sep-developers/sep](https://github.com/sep-developers/sep), LGPL-3.0):
   K. Barbary 2016, *Journal of Open Source Software* 1(6), 58. The Source finder uses it.
@@ -208,7 +223,8 @@ AstroVista Lite is by Ehsan Kourkchi. It is built on:
   figures; matplotlib licence, BSD-style), **NumPy**, **SciPy** and **Astropy** (BSD).
 - The example image of UGC 12517 (Hubble Space Telescope, WFC3/IR, F110W) and its mask
   come from the elliprof package's example.
-- The image commands follow the names of the VISTA and MONSTA command languages; they are
-  new code, written for AstroVista Lite.
+- The command language follows MONSTA (Vista and Mongo): the names and style are those of
+  John Tonry, Richard Stover and Tod Lauer; the commands are new code, written for
+  AstroVista Lite.
 
 The same list is in Help ▸ Documentation ▸ Credits.

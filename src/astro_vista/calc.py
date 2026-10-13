@@ -154,8 +154,8 @@ class Calculator:
                 return image.data.astype(np.float64)
         if isinstance(node, ast.Name):
             name = node.id
-            if name in self.variables:
-                return float(self.variables[name])
+            if name.lower() in self.variables:  # variable names in any case
+                return float(self.variables[name.lower()])
             if name in CONSTANTS:
                 return CONSTANTS[name]
             masked = self.mask(name)

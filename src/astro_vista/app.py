@@ -2305,6 +2305,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "<p>The lite edition of AstroVista, an astronomical image analysis studio in "
             "development: isophote fitting, a source finder, masks, image arithmetic and "
             "image commands in one window. Made for everyday tasks and for teaching.</p>"
+            "<p>Built on ELLIPROF and the command language of MONSTA, by John Tonry.</p>"
             "<p>Ehsan Kourkchi (Edwin Kay)</p>"
         )
         box.exec()

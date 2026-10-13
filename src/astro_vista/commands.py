@@ -240,7 +240,7 @@ class Session(ImageCommands):
 
         out = dict(keys)
         for key, value in keys.items():
-            names = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", value))
+            names = {n.lower() for n in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", value)}
             if names and names <= set(self.variables) | {
                 "pi",
                 "sqrt",
@@ -1147,7 +1147,7 @@ def _is_number(text: str) -> bool:
         return False
 
 
-SLOW = {"elliprof", "sources", "run", "rd"}  # commands run away from the window's thread
+SLOW = {"elliprof", "sources", "run", "rd"}  # commands shown as busy while they run
 
 
 def verb_of(line: str) -> str:

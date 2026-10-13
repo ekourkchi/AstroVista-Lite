@@ -90,8 +90,8 @@ def evaluate(text: str, variables: Dict[str, float]) -> float:
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
             return float(node.value)
         if isinstance(node, ast.Name):
-            if node.id in variables:
-                return float(variables[node.id])
+            if node.id.lower() in variables:  # variable names in any case
+                return float(variables[node.id.lower()])
             if node.id == "pi":
                 return math.pi
             raise CommandError(f"no variable {node.id!r} (set {node.id}=...)")

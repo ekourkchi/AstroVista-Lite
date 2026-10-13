@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroVista Lite Terminal</title>
+<meta name="description" content="How the AstroVista Lite terminal works: how a command line is written, buffers, coordinates, formulas, variables, programs on your computer, the keyboard and command files.">
+<link rel="icon" href="images/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html"><img src="images/logo.svg" alt="">AstroVista Lite</a>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="tutorial.html">Tutorial</a>
+      <a class="here" href="terminal.html">Terminal</a>
+      <a href="reference.html">Reference</a>
+      <a href="commands.html">Recipes</a>
+      <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap narrow">
+<section class="doc">
+  <p class="kicker">Guide</p>
+  <h1>The terminal</h1>
+
+<p>The terminal at the bottom of the window is where AstroVista Lite keeps its record and
+where you can type. Every button that changes data types a command there and runs it, so
+you can learn the commands by watching, repeat them, and save a whole session as a file
+that runs again.</p>
+
+<h3>A command line</h3>
+<pre>verb [buffer] [words] [KEY=value ...]   # a comment</pre>
+<ul>
+<li><b>The verb</b> comes first: <code>rd</code>, <code>stats</code>,
+<code>elliprof</code>… It is not case-sensitive: <code>STATS 1</code> works.</li>
+<li><b>Words</b> follow, separated by spaces: buffer numbers, file names, numbers and
+flags such as <code>RMSTAR</code>, <code>ERASE</code> or <code>MEAN</code> (flags are not
+case-sensitive).</li>
+<li><b>Keywords</b> are written <code>KEY=value</code> with no spaces around the
+<code>=</code>, in any order, anywhere after the verb. Their names are not
+case-sensitive (<code>x0=567</code> is <code>X0=567</code>).</li>
+<li><b>Quotes</b> keep spaces inside one word: <code>rd 1 "my galaxy.fits"</code>,
+<code>WHERE='MAG_AUTO &lt; 22 and FWHM_IMAGE &lt; 3'</code>,
+<code>ch 1 OBJECT='UGC 12517'</code>.</li>
+<li><b>#</b> starts a comment, to the end of the line (unless it is inside quotes).</li>
+<li><b>One command per line.</b> A semicolon does not separate commands.</li>
+<li><b>tag="name"</b> at the end of any line that makes a buffer names that buffer:
+<code>[2] = [1] - median([1]) tag="no sky"</code>.</li>
+</ul>
+
+<h3>Buffers, coordinates and units</h3>
+<ul>
+<li><b>Buffers</b> are numbered: a command takes the number (<code>stats 1</code>), a
+formula writes <code>[1]</code> or <code>B1</code>.</li>
+<li><b>ELLIPROF's coordinates</b> are used for X0, Y0, the mask shapes and
+<code>gauss</code>: x and y run continuously, the first pixel spanning 0 to 1, so its
+centre is at 0.5.</li>
+<li><b>Columns and rows</b> counted from 0 are used by <code>print</code>,
+<code>max</code>, <code>min</code> and <code>abx</code>: column c is the pixel between
+x = c and c + 1.</li>
+<li><b>The status bar</b> shows both, and the FITS pixel counted from 1, and the sky
+position when the image has a WCS. Source catalogues use SExtractor's convention
+(X_IMAGE of the first pixel's centre is 1).</li>
+<li>Angles are in degrees, counter-clockwise; sizes and radii in pixels.</li>
+</ul>
+
+<h3>Formulas</h3>
+<p>A line of the form <code>[M] = expression</code> (or <code>BM = expression</code>) is
+image arithmetic, worked out pixel by pixel into buffer M:</p>
+<pre><code>[3] = [1] - [2]
+[4] = ([1] - 3246) * 2.5
+[5] = median([1], [2], [3]) tag=stack</code></pre>
+<p>Help ▸ Documentation ▸ <i>Image arithmetic</i> explains every operator and function;
+<code>help calc</code> lists them.</p>
+
+<h3>Variables</h3>
+<pre><code>set xc=567 yc=562
+elliprof 1 X0=xc Y0=yc R0=9 R1=347 NR=23
+typ</code></pre>
+<p><code>set</code> keeps numbers by name (names are not case-sensitive). A variable, or
+an expression of variables such as <code>R1=2*re</code>, can stand for any keyword's value,
+for a number in a command (<code>ac 1 sky</code>) and in a formula. <code>mn</code>,
+<code>max</code> and <code>min</code> set variables too (mean, median, sigma; max, maxc,
+maxr; min, minc, minr).</p>
+
+<h3>Programs on your computer</h3>
+<p>A line that is not an AstroVista Lite command runs as in a shell, when its first word
+is a program on the PATH: <code>ls -l</code>, <code>grep</code>, <code>head
+file.txt</code>, <code>python script.py</code>. A line starting with <code>!</code> always
+goes to the shell, even when its first word is also a command name:
+<code>! sort catalogue.csv | head</code>. The programs run in the terminal's folder
+(<code>cd</code>, <code>pwd</code>), take no keyboard input, and are stopped by Ctrl+C or
+after 10 minutes; up to 2000 lines of their output are shown. <code>ll</code> stands for
+<code>ls -lrt</code> and <code>la</code> for <code>ls -A</code>.</p>
+<p>A listing from <code>ls</code> is in colour: folders blue, FITS files green, pictures
+purple, text files yellow, programs red. A click on a folder goes into it and lists it; a
+click on a FITS file opens it.</p>
+
+<h3>The keyboard</h3>
+<table cellspacing="4">
+<tr><td>Enter</td><td>run the line</td></tr>
+<tr><td>↑ ↓</td><td>the lines typed before (the history)</td></tr>
+<tr><td>Tab</td><td>complete what is being typed: commands, programs (after two letters),
+mask actions and layer names, keywords such as <code>X0=</code> or
+<code>DETECT_THRESH=</code>, buffer numbers after <code>TOMODEL=</code> and the like,
+mask names after <code>MASK=</code>, and file and folder names; when several fit, a list
+opens</td></tr>
+<tr><td>Ctrl+C</td><td>stop the program running; when nothing runs, drop the commands
+waiting and clear the line (with text selected, ⌘C or Ctrl+C copies it)</td></tr>
+<tr><td>Ctrl+`</td><td>go to the terminal</td></tr>
+<tr><td>Ctrl+Alt+= / Ctrl+Alt+−</td><td>larger or smaller text (View ▸ Terminal font
+size)</td></tr>
+</table>
+<p>A click anywhere in the terminal puts the cursor on the command line. The
+<i>Terminal</i> button in the status bar folds the terminal away; the command line then
+stays in the bar at the bottom.</p>
+
+<h3>How commands run</h3>
+<ul>
+<li>Commands run one after another, in the order typed or clicked. Reading files, fits
+and the source finder show a busy cursor while they work.</li>
+<li>When a command fails, its error is shown in red and the commands waiting after it are
+dropped, since they may depend on it.</li>
+<li><code>run file</code> runs a file of commands and stops at the first error, naming
+the file and the line. File names in the file are relative to the file's own folder, so a
+file can be shared with its data.</li>
+<li>File ▸ Save the commands writes every command of the session (the lines starting with
+›) to a file that <code>run</code>, File ▸ Run a command file or
+<code>astrovista --run file</code> runs again.</li>
+</ul>
+
+<h3>A session, written as commands</h3>
+<pre><code>rd 1 u12517j.fits
+mask load u12517j u12517j.dmask 1
+sources 1
+mask new sources 1
+mask sources sources SCALE=1.5
+set xc=567 yc=562
+elliprof 1 X0=xc Y0=yc R0=9 R1=347 NR=23 SKY=3246 RMSTAR MASK=u12517j,sources TOMODEL=3 TORESID=4
+[5] = div([1] - [3], [3], 0) tag="residual / model"
+stats 5 MASK=u12517j,sources
+wd 4 residual.fits</code></pre>
+
+<h3>Where the commands come from</h3>
+<p>The names and the style of many commands (<code>rd</code>, <code>wd</code>,
+<code>tv</code>, <code>ac</code>, <code>abx</code>, <code>shift</code>,
+<code>smooth</code>, <code>clip</code>, <code>mask</code>, <code>elliprof</code>…) are those
+of <b>MONSTA</b>, John Tonry's image analysis and plotting system, which joined
+<b>Vista</b> (originally by Richard Stover and Tod Lauer, with image display by John Tonry)
+and <b>Mongo</b> (by John Tonry). Astronomers who know them will feel at home. The
+commands of AstroVista Lite are new code with options of their own, listed in the
+<i>Command reference</i>, so MONSTA scripts do not run unchanged. ELLIPROF itself, the
+isophote fitting, is John Tonry's, used through the elliprof package.</p>
+
+<p>Every command, with its keywords and an example: the <a href="reference.html">Command reference</a>.</p>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>AstroVista Lite 1.0.0 · Ehsan Kourkchi · MIT licence</span>
+    <span><a href="index.html">Home</a> · <a href="tutorial.html">Tutorial</a> · <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a></span>
+  </div>
+</footer>
+</body>
+</html>

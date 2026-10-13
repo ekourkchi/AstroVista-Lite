@@ -6,6 +6,8 @@ import re
 
 from PySide6 import QtCore, QtWidgets
 
+from . import reference
+
 TOPICS = {
     "overview": (
         "AstroVista Lite",
@@ -283,8 +285,9 @@ then right-click buffer 2 ▸ Save as FITS.</p>
     "imagecommands": (
         "Image commands",
         """
-<p>Commands in the style of VISTA and MONSTA, written for AstroVista Lite. N is a buffer
-number; <code>help name</code> explains each one.</p>
+<p>Commands in the style of MONSTA (John Tonry's union of Vista and Mongo), written for
+AstroVista Lite. N is a buffer number; <code>help name</code> explains each one, and the
+<i>Command reference</i> gives every option with an example.</p>
 <table cellspacing="4">
 <tr><td><code>ac sc mc dc N value</code></td><td>add, subtract, multiply, divide by a
 number</td></tr>
@@ -456,14 +459,21 @@ the image, never changes a setting.</p>""",
         """
 <p><b>AstroVista Lite</b> by Ehsan Kourkchi, on PyPI for Linux and macOS
 (<code>pip install AstroVista</code>).</p>
+<p><b>John Tonry.</b> ELLIPROF, the isophote fitting at the heart of AstroVista Lite, was
+originally developed by John Tonry as part of MONSTA; it is used here through the elliprof
+package, which compiles his original code unchanged. The terminal follows the command
+language of MONSTA, John Tonry's image analysis and plotting system, which joined Vista
+(originally by Richard Stover and Tod Lauer, with image display by John Tonry) and Mongo
+(by John Tonry). The commands of AstroVista Lite are new code written in that style.</p>
 <p><b>Citing AstroVista Lite:</b> please cite its GitHub repository:<br>
 Kourkchi, E., <i>AstroVista Lite</i>, <a href="https://github.com/ekourkchi/AstroVista-Lite">github.com/ekourkchi/AstroVista-Lite</a><br>
 and, for what you measure with it, the works below (elliprof for the isophotes, SEP and
 SExtractor for the Source finder).</p>
 <p><b>Built on:</b></p>
 <ul>
-<li><b>elliprof</b>: elliptical isophote fitting (<a
-href="https://github.com/ekourkchi/elliprof">github.com/ekourkchi/elliprof</a>, MIT).</li>
+<li><b>elliprof</b>: John Tonry's ELLIPROF as a Python package (<a
+href="https://github.com/ekourkchi/elliprof">github.com/ekourkchi/elliprof</a>; the
+package is MIT, the original ELLIPROF sources keep their own terms).</li>
 <li><b>SEP</b>: source extraction and photometry, by K. Barbary and contributors
 (<a href="https://github.com/sep-developers/sep">github.com/sep-developers/sep</a>,
 LGPL-3.0); Barbary 2016, JOSS 1, 58. It implements the algorithms of
@@ -472,8 +482,9 @@ LGPL-3.0); Barbary 2016, JOSS 1, 58. It implements the algorithms of
 figures), <b>NumPy</b>, <b>SciPy</b>, <b>Astropy</b>.</li>
 <li>The example image of UGC 12517 (Hubble Space Telescope, WFC3/IR) and its mask come
 from the elliprof package's example.</li>
-<li>The image commands follow the names of the VISTA and MONSTA command languages; they
-are new code, written for AstroVista Lite.</li>
+<li>The command language follows MONSTA (Vista and Mongo) by John Tonry, Richard Stover
+and Tod Lauer: the names and style are theirs; the commands are new code, written for
+AstroVista Lite (see <i>Terminal syntax</i> and the <i>Command reference</i>).</li>
 </ul>""",
     ),
     "elliprof": (
@@ -612,7 +623,9 @@ them; the Contours layer shows or hides them.</p>""",
         """
 <p>Every action that changes data is a command, shown as it runs, so a session can be
 read, repeated, saved (File ▸ Save the commands) and run again (<code>run file</code>).
-<code>help</code> lists the commands; <code>help mask</code> the mask commands.</p>
+<code>help</code> lists the commands; <code>help mask</code> the mask commands.
+<i>Terminal syntax</i> explains how a line is written, and the <i>Command reference</i>
+every command.</p>
 <pre>rd 1 galaxy.fits[sci]
 sources 1 DETECT_THRESH=2.5
 mask new mymask 1
@@ -986,29 +999,16 @@ analysis studio in development.</p>""",
 )
 
 
-def _commands_page() -> str:
-    """Every command with how to write it, from the commands' own help."""
-    import html as _html
-
-    from .commands import HELP, MASK_HELP
-
-    rows = "".join(
-        f"<tr><td valign='top'><code>{_html.escape(k)}</code></td>"
-        f"<td>{_html.escape(v.split('  -  ', 1)[-1])}<br><span style='color:#8b9099'>"
-        f"{_html.escape(v.split('  -  ', 1)[0])}</span></td></tr>"
-        for k, v in sorted(HELP.items())
-        if k not in ("=", "shell")
-    )
-    return (
-        "<p>Type them in the terminal; <code>help name</code> explains one, Tab completes "
-        "it. Arithmetic: <code>[3] = [1] - [2]</code> (see <i>Image arithmetic</i>); any "
-        "program on the PATH runs too.</p>"
-        f"<table cellspacing='4'>{rows}</table>"
-        f"<h4>Mask commands</h4><pre>{_html.escape(MASK_HELP)}</pre>"
-    )
-
-
-TOPICS["allcommands"] = ("All the commands", _commands_page())
+TOPICS["allcommands"] = (
+    "Command reference",
+    "<p>Every command the terminal knows, with its syntax, its keywords and an example "
+    "(the examples run as written). <code>help name</code> explains one in the terminal "
+    "and Tab completes it; <i>Terminal syntax</i> explains how a line is written. Commands "
+    "marked <i>MONSTA name</i> share their name with a command of MONSTA, John Tonry's "
+    "image analysis system; their options are AstroVista Lite's own, as given here.</p>"
+    + reference.reference_html(),
+)
+TOPICS["terminal"] = ("Terminal syntax", reference.TERMINAL_HTML)
 
 TOPICS["settings"] = ("Every setting explained", _settings_page())
 
@@ -1034,7 +1034,7 @@ TIP_LIST = [
 # the topics in reading order (the guide window and the Help menu follow it)
 ORDER = (
     "overview lesson recipes files images display blinking layers masks elliprof profile "
-    "sources arithmetic tags imagecommands contours inspect commands listing saving keys "
+    "sources arithmetic tags imagecommands contours inspect commands terminal listing saving keys "
     "glossary settings faq problems allcommands credits"
 ).split()
 TOPICS = {key: TOPICS[key] for key in ORDER + [k for k in TOPICS if k not in ORDER]}

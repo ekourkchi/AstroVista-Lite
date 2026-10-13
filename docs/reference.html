@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroVista Lite Command Reference</title>
+<meta name="description" content="Every command of the AstroVista Lite terminal, with its syntax, its keywords and an example: images and buffers, arithmetic, statistics, geometry, smoothing, the header, variables, ELLIPROF, the source finder and masks.">
+<link rel="icon" href="images/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html"><img src="images/logo.svg" alt="">AstroVista Lite</a>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="tutorial.html">Tutorial</a>
+      <a href="terminal.html">Terminal</a>
+      <a class="here" href="reference.html">Reference</a>
+      <a href="commands.html">Recipes</a>
+      <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap narrow">
+<section class="doc">
+  <p class="kicker">Reference</p>
+  <h1>Command reference</h1>
+<p>Every command the terminal knows, with how it is written, what it does, its keywords and an example; the examples run as written, in order, on the example image. <a href="terminal.html">The terminal</a> explains how a line is written. In the syntax, <code>[ ]</code> marks what is optional and <code>|</code> a choice; N and M are buffer numbers. Commands marked <span class='monsta'>MONSTA name</span> share their name with a command of MONSTA, John Tonry's image analysis and plotting system; their options are AstroVista Lite's own, as given here.</p>
+<div class='toc'><b>Groups</b><ol>
+<li><a href='#g0'>Images and buffers</a></li>
+<li><a href='#g1'>Arithmetic</a></li>
+<li><a href='#g2'>Statistics</a></li>
+<li><a href='#g3'>Changing the geometry</a></li>
+<li><a href='#g4'>Smoothing and cleaning</a></li>
+<li><a href='#g5'>Making images</a></li>
+<li><a href='#g6'>The FITS header</a></li>
+<li><a href='#g7'>Variables</a></li>
+<li><a href='#g8'>Isophotes and sources</a></li>
+<li><a href='#g9'>Masks</a></li>
+<li><a href='#g10'>Files, folders and the session</a></li>
+</ol></div>
+<h2 id='g0'>Images and buffers</h2>
+<p>An image lives in a numbered buffer: 1, 2, 3, … The list on the left of the window shows them, each with the command that made it.</p>
+<h3><code>rd</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>rd N file[ext]</code></p>
+<p>Read a FITS image into buffer N. The file may be gzip-compressed and may have any name: FITS is recognised by its contents. Without [ext], the first image in the file is read.</p>
+<table cellspacing='4'><tr><td><code>[n]</code></td><td>the HDU with that number, 0 being the primary: rd 1 frame.fits[1]</td></tr><tr><td><code>[NAME]</code></td><td>the image extension called NAME (its EXTNAME): [sci]</td></tr><tr><td><code>[NAME,v]</code></td><td>NAME with version v (EXTVER): [sci,2]</td></tr></table>
+<pre><code>rd 1 galaxy.fits
+rd 2 frame.fits[sci]
+rd 3 frame.fits[sci,2]</code></pre>
+<h3><code>fitsinfo</code></h3>
+<p><code>fitsinfo file</code></p>
+<p>List what a FITS file holds: each HDU by number and name, with the size of its image or the rows and columns of its table.</p>
+<pre><code>fitsinfo frame.fits</code></pre>
+<h3><code>wd</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>wd N file</code></p>
+<p>Write buffer N as a FITS file (32-bit floating point), with its header. The commands that made the buffer are kept as HISTORY cards.</p>
+<pre><code>wd 1 copy_of_galaxy.fits</code></pre>
+<h3><code>tv</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>tv N</code></p>
+<p>Show buffer N in the image window.</p>
+<pre><code>tv 1</code></pre>
+<h3><code>copy</code></h3>
+<p><code>copy N M</code></p>
+<p>Copy buffer N, pixels and header, into buffer M.</p>
+<pre><code>copy 1 5</code></pre>
+<h3><code>close</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>close N</code></p>
+<p>Remove buffer N.</p>
+<pre><code>close 5</code></pre>
+<h3><code>buffers buf</code></h3>
+<p><code>buffers   (or buf)</code></p>
+<p>List the buffers: number, name, size, and the line that made each.</p>
+<pre><code>buffers</code></pre>
+<h3><code>tag</code></h3>
+<p><code>tag N "name"</code></p>
+<p>Give buffer N a name of your own, shown in the buffer list. Any command or formula that makes a buffer also takes tag="name" at the end of its line.</p>
+<pre><code>tag 1 "UGC 12517, F110W"
+[6] = [1] * 2 tag="twice"</code></pre>
+<h2 id='g1'>Arithmetic</h2>
+<p>Formulas over whole images, worked out pixel by pixel. Help ▸ Documentation ▸ Image arithmetic explains them in detail.</p>
+<h3><code>[M] = BM =</code></h3>
+<p><code>[M] = expression     (or BM = expression)</code></p>
+<p>Put the result of a formula into buffer M: [3] = [1] - [2] subtracts buffer 2 from buffer 1, pixel by pixel. A formula holds buffers ([n] or Bn), numbers, variables, mask layers by name (1 where good, NaN where masked), + - * / % and ^ or ** for powers, comparisons (1 or 0), and functions. Dividing by 0 gives NaN, never infinity.</p>
+<table cellspacing='4'><tr><td><code>mean median sum min max std</code></td><td>of several values: pixel by pixel; of one buffer: one number over the whole image</td></tr><tr><td><code>div(a, b, fill)</code></td><td>a / b, with fill where b is 0</td></tr><tr><td><code>where(c, a, b)</code></td><td>a where c is true (not 0), b elsewhere</td></tr><tr><td><code>clip(a, lo, hi)</code></td><td>the values limited to lo … hi</td></tr><tr><td><code>good(m), masked(m)</code></td><td>1 where the mask layer m is good / masks</td></tr><tr><td><code>abs sqrt exp log log10 …</code></td><td>functions of each pixel (help calc lists them all)</td></tr></table>
+<pre><code>[2] = [1] - median([1])
+[3] = median([1], [2], [6])
+[4] = div([1], [2], 0)
+[7] = where([1] &gt; 1000, [1], nan)</code></pre>
+<h3><code>calc</code></h3>
+<p><code>calc M EXPR='expression'</code></p>
+<p>The same as [M] = expression, written as a command with a keyword.</p>
+<pre><code>calc 8 EXPR='[1] * 2.5'</code></pre>
+<h3><code>ac sc mc dc</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>ac N value   (sc, mc, dc)</code></p>
+<p>Add (ac), subtract (sc), multiply by (mc) or divide by (dc) a number, in place. The value may be a variable or an expression of variables.</p>
+<pre><code>ac 8 100
+sc 8 100
+mc 8 2
+dc 8 2</code></pre>
+<h3><code>ai si mi di</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>ai N M   (si, mi, di)</code></p>
+<p>Add (ai), subtract (si), multiply (mi) or divide (di) buffer N by buffer M, pixel by pixel, in place in N. The buffers must have the same size; dividing by 0 gives NaN.</p>
+<pre><code>ai 8 1
+si 8 1</code></pre>
+<h3><code>log ln sqrt inverse round</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>log N   (ln, sqrt, inverse, round)</code></p>
+<p>Replace each pixel of buffer N by its base-10 logarithm (log), natural logarithm (ln), square root (sqrt), 1/x (inverse) or nearest whole number (round). Where the function has no value (log of 0 or less, square root of a negative number, 1/0) the pixel becomes NaN.</p>
+<pre><code>copy 1 9
+log 9
+round 9</code></pre>
+<h2 id='g2'>Statistics</h2>
+<p>Numbers about a buffer. Columns and rows are counted from 0. mn, max and min also keep their results as variables, for the commands that follow.</p>
+<h3><code>stats</code></h3>
+<p><code>stats N [MASK=a,b]</code></p>
+<p>The mean, median, standard deviation, minimum, maximum and number of pixels of buffer N, leaving out NaN pixels and those of the mask layers named.</p>
+<table cellspacing='4'><tr><td><code>MASK=</code></td><td>mask layers to leave out, separated by commas</td></tr></table>
+<pre><code>stats 1
+stats 1 MASK=mymask</code></pre>
+<h3><code>sky</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>sky N [MASK=a,b]</code></p>
+<p>The sky level of buffer N: the median of the pixels the masks leave, clipped at 3 standard deviations until it settles. Also gives the clipped mean and the standard deviation.</p>
+<table cellspacing='4'><tr><td><code>MASK=</code></td><td>mask layers to leave out</td></tr></table>
+<pre><code>sky 1 MASK=mymask</code></pre>
+<h3><code>mn</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mn N</code></p>
+<p>The mean, median, standard deviation (sigma) and number of the finite pixels of buffer N. Sets the variables mean, median and sigma.</p>
+<pre><code>mn 1</code></pre>
+<h3><code>max min</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>max N   (min N)</code></p>
+<p>The largest (smallest) pixel and its column and row. Sets the variables max, maxc, maxr (min, minc, minr).</p>
+<pre><code>max 1
+min 1</code></pre>
+<h3><code>abx</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>abx N</code></p>
+<p>The sum, mean and number of the finite pixels, and the maximum and minimum with their columns and rows.</p>
+<pre><code>abx 1</code></pre>
+<h3><code>print</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>print N C R [SIZE=5]</code></p>
+<p>The pixel values in a SIZE × SIZE square around column C, row R, as a table with the rows from top to bottom.</p>
+<table cellspacing='4'><tr><td><code>SIZE=</code></td><td>the side of the square, in pixels (default 5)</td></tr></table>
+<pre><code>print 1 567 562 SIZE=3</code></pre>
+<h2 id='g3'>Changing the geometry</h2>
+<p>Results go into the buffer itself unless OUT=M asks for another one.</p>
+<h3><code>shift</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>shift N DX= DY= [ORDER=3] [OUT=M]</code></p>
+<p>Move the image by DX columns and DY rows, fractions of a pixel too. Pixels that come in from outside are NaN.</p>
+<table cellspacing='4'><tr><td><code>DX=, DY=</code></td><td>the shift in pixels (default 0)</td></tr><tr><td><code>ORDER=</code></td><td>the order of the spline interpolation, 0 to 5 (default 3)</td></tr><tr><td><code>OUT=</code></td><td>the buffer for the result</td></tr></table>
+<pre><code>shift 9 DX=1.5 DY=-0.25</code></pre>
+<h3><code>rotate</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>rotate N ANGLE= [ORDER=3] [OUT=M]</code></p>
+<p>Rotate the image about its centre by ANGLE degrees, counter-clockwise. Multiples of 90° are exact (no interpolation); other angles keep the image's size, with NaN in the corners.</p>
+<table cellspacing='4'><tr><td><code>ANGLE=</code></td><td>degrees, counter-clockwise (rotate N 90 works too)</td></tr><tr><td><code>ORDER=</code></td><td>the spline order (default 3)</td></tr><tr><td><code>OUT=</code></td><td>the buffer for the result</td></tr></table>
+<pre><code>rotate 9 ANGLE=90
+rotate 9 ANGLE=12.5 OUT=10</code></pre>
+<h3><code>flip</code></h3>
+<p><code>flip N X|Y [OUT=M]</code></p>
+<p>Mirror the image left to right (X) or top to bottom (Y).</p>
+<pre><code>flip 9 X</code></pre>
+<h3><code>bin</code></h3>
+<p><code>bin N k [MEAN] [OUT=M]</code></p>
+<p>Add up the pixels in blocks of k × k, making an image k times smaller; with MEAN, average them instead. NaN pixels are left out.</p>
+<table cellspacing='4'><tr><td><code>MEAN</code></td><td>average the blocks instead of adding them</td></tr></table>
+<pre><code>bin 9 2 MEAN OUT=10</code></pre>
+<h3><code>mash</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mash N ROWS|COLS [OUT=M]</code></p>
+<p>Add up all the rows into one row (ROWS), or all the columns into one column (COLS). The result goes into a free buffer unless OUT= names one.</p>
+<pre><code>mash 1 ROWS OUT=10</code></pre>
+<h2 id='g4'>Smoothing and cleaning</h2>
+<p>Results go into the buffer itself unless OUT=M asks for another one.</p>
+<h3><code>smooth</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>smooth N FWHM=   or   smooth N BOXCAR=k   [OUT=M]</code></p>
+<p>Smooth with a Gaussian of the full width at half maximum given, or with a k × k boxcar. NaN pixels neither spread nor count.</p>
+<table cellspacing='4'><tr><td><code>FWHM=</code></td><td>pixels (default 2)</td></tr><tr><td><code>BOXCAR=</code></td><td>the side of the box, in pixels</td></tr></table>
+<pre><code>smooth 9 FWHM=3 OUT=10
+smooth 9 BOXCAR=5 OUT=10</code></pre>
+<h3><code>filt</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>filt N MEDIAN=k [OUT=M]</code></p>
+<p>Replace each pixel by the median of the k × k pixels around it.</p>
+<table cellspacing='4'><tr><td><code>MEDIAN=</code></td><td>the side of the box (default 5)</td></tr></table>
+<pre><code>bin 1 4 MEAN OUT=10
+filt 10 MEDIAN=3</code></pre>
+<h3><code>zap</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>zap N [SIG=5] [SIZE=5] [OUT=M]</code></p>
+<p>Replace the pixels more than SIG standard deviations above the median of the SIZE × SIZE around them by that median: cosmic rays and hot pixels. The standard deviation is measured locally, from the median absolute deviation.</p>
+<table cellspacing='4'><tr><td><code>SIG=</code></td><td>how many standard deviations above the local median (default 5)</td></tr><tr><td><code>SIZE=</code></td><td>the side of the box (default 5)</td></tr></table>
+<pre><code>zap 1 SIG=5 OUT=10</code></pre>
+<h3><code>clip</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>clip N [MIN=] [MAX=] [VALUE=] [OUT=M]</code></p>
+<p>Pixels below MIN become MIN and pixels above MAX become MAX, or VALUE when it is given (VALUE=nan makes them NaN).</p>
+<table cellspacing='4'><tr><td><code>MIN=, MAX=</code></td><td>the limits</td></tr><tr><td><code>VALUE=</code></td><td>what clipped pixels become instead of the limit</td></tr></table>
+<pre><code>clip 10 MIN=0 MAX=60000
+clip 10 MAX=60000 VALUE=nan</code></pre>
+<h3><code>skysub</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>skysub N [VALUE=]</code></p>
+<p>Subtract the sky from buffer N: the value given, or the median of the image clipped at 3 standard deviations.</p>
+<table cellspacing='4'><tr><td><code>VALUE=</code></td><td>the sky to subtract</td></tr></table>
+<pre><code>skysub 10
+skysub 10 VALUE=3246</code></pre>
+<h2 id='g5'>Making images</h2>
+<p>For practice and tests: add a star or noise to an image, or look at its power spectrum.</p>
+<h3><code>gauss</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>gauss N X= Y= FWHM= PEAK=</code></p>
+<p>Add a Gaussian star at X, Y (ELLIPROF's coordinates: the first pixel spans 0 to 1) with the full width at half maximum and the peak given.</p>
+<pre><code>gauss 10 X=200 Y=200 FWHM=2.5 PEAK=5000</code></pre>
+<h3><code>noise</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>noise N SIGMA= [SEED=]</code></p>
+<p>Add Gaussian noise of standard deviation SIGMA. SEED= makes it the same every time.</p>
+<pre><code>noise 10 SIGMA=10 SEED=1</code></pre>
+<h3><code>fft</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>fft N OUT=M</code></p>
+<p>The power spectrum of buffer N, with the zero frequency at the centre, into buffer M. The mean is subtracted first and NaN pixels count as 0.</p>
+<pre><code>fft 1 OUT=11</code></pre>
+<h2 id='g6'>The FITS header</h2>
+<h3><code>ch</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>ch N KEY=value ...</code></p>
+<p>Set FITS header keywords of buffer N. Numbers are kept as numbers; quote text with spaces.</p>
+<pre><code>ch 1 OBJECT='UGC 12517' GAIN=2.4</code></pre>
+<h3><code>chead</code></h3>
+<p><code>chead N [WORD]</code></p>
+<p>Print the header of buffer N, or only the cards containing WORD.</p>
+<pre><code>chead 1 NAXIS</code></pre>
+<h2 id='g7'>Variables</h2>
+<p>Numbers kept by name. Variable names are not case-sensitive (set keeps them in lower case). A variable, or an expression of variables, can be used as any keyword's value (X0=xc, R1=2*re), as a number in a command (ac 1 sky, print 1 maxc maxr) and in formulas ([2] = [1] - sky).</p>
+<h3><code>set</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>set NAME=expression ...</code></p>
+<p>Set variables. An expression may use numbers, other variables, + - * / ** and sqrt log10 log exp abs sin cos tan, and pi.</p>
+<pre><code>set xc=567 yc=562 re=126.5
+set r1=2.75*re</code></pre>
+<h3><code>typ</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>typ [NAME ...]</code></p>
+<p>Print variables: those named, or all of them.</p>
+<pre><code>typ
+typ xc yc</code></pre>
+<h2 id='g8'>Isophotes and sources</h2>
+<p>The two measurements of AstroVista Lite. The tools on the right of the window type these commands for you.</p>
+<h3><code>elliprof</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>elliprof N X0= Y0= R0= R1= NR= [NITER=10] [SKY=] [RMSTAR] [MASK=a,b] [MASKBUF=M,...] [MASKFILE=file] [TOMODEL=M] [TORESID=M]</code></p>
+<p>Fit elliptical isophotes to buffer N with ELLIPROF, John Tonry's isophote fitting from MONSTA (through the elliprof package): NR ellipses from R0 to R1 around X0, Y0. The profile goes to Results ▸ Profile and the ellipses onto the image.</p>
+<table cellspacing='4'><tr><td><code>X0=, Y0=</code></td><td>the centre, in ELLIPROF's coordinates (required)</td></tr><tr><td><code>R0=, R1=</code></td><td>the first and last semi-major axis, in pixels (required)</td></tr><tr><td><code>NR=</code></td><td>the number of ellipses (required)</td></tr><tr><td><code>NITER=</code></td><td>iterations of the fit (default 10)</td></tr><tr><td><code>SKY=</code></td><td>a constant sky subtracted before the fit</td></tr><tr><td><code>RMSTAR</code></td><td>reject star-like bright samples along each ellipse</td></tr><tr><td><code>MASK=</code></td><td>mask layers whose pixels are left out</td></tr><tr><td><code>MASKBUF=</code></td><td>buffers used as masks: masked where 0 or NaN</td></tr><tr><td><code>MASKFILE=</code></td><td>a mask file (FITS or .dmask, 0 = masked)</td></tr><tr><td><code>TOMODEL=, TORESID=</code></td><td>the buffers for the model and the residual</td></tr></table>
+<pre><code>elliprof 1 X0=567 Y0=562 R0=9 R1=347 NR=23 SKY=3246 RMSTAR MASK=u12517j TOMODEL=3 TORESID=4</code></pre>
+<h3><code>sources</code></h3>
+<p><code>sources N [KEYWORD=value ...] [MASK=a,b] [TOSEG=M]</code></p>
+<p>Find the sources (stars and galaxies) in buffer N and measure them, with SEP (the algorithms of SExtractor). Each run is numbered; the catalogue is in Results ▸ Sources. Keywords not given take the values of the Source finder panel's defaults.</p>
+<table cellspacing='4'><tr><td><code>THRESH_TYPE=</code></td><td>RELATIVE (in standard deviations of the background, default) or ABSOLUTE</td></tr><tr><td><code>DETECT_THRESH=</code></td><td>the detection threshold (default 3)</td></tr><tr><td><code>DETECT_MINAREA=</code></td><td>connected pixels above it (default 5)</td></tr><tr><td><code>FILTER=, FILTER_FWHM=, FILTER_TYPE=</code></td><td>smoothing before detection: Y/N, FWHM in pixels (0: a 3 × 3 kernel), matched or conv</td></tr><tr><td><code>DEBLEND_NTHRESH=, DEBLEND_MINCONT=</code></td><td>deblending (32, 0.005)</td></tr><tr><td><code>CLEAN=, CLEAN_PARAM=</code></td><td>cleaning of spurious detections (Y, 1)</td></tr><tr><td><code>BACK_TYPE=, BACK_VALUE=, BACK_SIZE=, BACK_FILTERSIZE=, BACK_FILTTHRESH=</code></td><td>the background: AUTO (a map in cells of BACK_SIZE = 64 pixels) or MANUAL (the constant BACK_VALUE)</td></tr><tr><td><code>PHOT_APERTURES=, PHOT_AUTOPARAMS=, PHOT_FLUXFRAC=</code></td><td>aperture diameters (5), MAG_AUTO's Kron factor and smallest radius (2.5,3.5), FLUX_RADIUS's fraction (0.5)</td></tr><tr><td><code>MAG_ZEROPOINT=, GAIN=</code></td><td>the magnitude of one count (0), e-/ADU (0)</td></tr><tr><td><code>MASK=</code></td><td>mask layers whose pixels are left out</td></tr><tr><td><code>TOSEG=</code></td><td>the buffer for the segmentation image</td></tr></table>
+<pre><code>sources 1
+sources 1 DETECT_THRESH=2.5 DETECT_MINAREA=8 TOSEG=12</code></pre>
+<h3><code>runs</code></h3>
+<p><code>runs</code></p>
+<p>List the source-finder runs: number, image, how many sources, and the settings that differ from the defaults.</p>
+<pre><code>runs</code></pre>
+<h3><code>centre</code></h3>
+<p><code>centre N SOURCE=number [RUN=k]</code></p>
+<p>Take ELLIPROF's centre from a found source (by its NUMBER), of the last run on buffer N or of run k.</p>
+<pre><code>centre 1 SOURCE=1</code></pre>
+<h2 id='g9'>Masks</h2>
+<p>A mask layer marks the pixels to leave out of a measurement. In files, 0 means masked and 1 good. Coordinates are ELLIPROF's: the first pixel spans 0 to 1. The drawing actions take ERASE to unmask instead. help mask lists them all.</p>
+<h3><code>mask new</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask new NAME [N]</code></p>
+<p>An empty mask layer the size of buffer N (without N: of the lowest-numbered buffer).</p>
+<pre><code>mask new edges 1</code></pre>
+<h3><code>mask load</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask load NAME file [N]</code></p>
+<p>Read a mask from a FITS file or a legacy .dmask bitmap (0 = masked). The mask also appears as a buffer (1 good, 0 masked) kept up to date with the layer.</p>
+<pre><code>mask load published u12517j.dmask 1</code></pre>
+<h3><code>mask save</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask save NAME file</code></p>
+<p>Write a mask layer: a .dmask name writes a legacy bitmap, any other name a FITS image (1 good, 0 masked).</p>
+<pre><code>mask save edges edges_mask.fits</code></pre>
+<h3><code>mask frombuf tobuf</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask frombuf NAME N   ·   mask tobuf NAME M|new</code></p>
+<p>A mask layer from buffer N (masked where it is 0 or NaN), or a mask layer as buffer M (or a new buffer).</p>
+<pre><code>mask frombuf frombuffer 1
+mask tobuf edges new</code></pre>
+<h3><code>mask copy rename delete</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask copy NAME FROM  ·  mask rename NAME NEW  ·  mask delete NAME</code></p>
+<p>Copy, rename or delete a mask layer.</p>
+<pre><code>mask copy spare edges
+mask rename spare spare2
+mask delete spare2</code></pre>
+<h3><code>mask union intersect</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask union|intersect NAME A B ...</code></p>
+<p>A new layer with the pixels masked by any (union) or all (intersect) of the layers A, B, …</p>
+<pre><code>mask union both edges published</code></pre>
+<h3><code>mask circle ellipse box polygon brush</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask circle NAME X Y R  ·  mask ellipse NAME X Y A B ANGLE  ·  mask box NAME X0 Y0 X1 Y1  ·  mask polygon NAME X1 Y1 X2 Y2 X3 Y3 ...  ·  mask brush NAME R X1 Y1 X2 Y2 ...   [ERASE]</code></p>
+<p>Draw a shape on a layer: a circle of radius R, an ellipse with semi-axes A, B turned by ANGLE degrees, a box between two corners, a polygon through its corners, or circles of radius R along a path. The mask tools of the window type these commands.</p>
+<table cellspacing='4'><tr><td><code>ERASE</code></td><td>unmask the shape instead of masking it</td></tr></table>
+<pre><code>mask circle edges 812 440 12
+mask ellipse edges 300 300 70 22 35
+mask box edges 10 10 60 40
+mask polygon edges 100 100 150 100 125 140
+mask brush edges 3 400 400 420 410 440 400
+mask circle edges 812 440 12 ERASE</code></pre>
+<h3><code>mask unpatch</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask unpatch NAME X Y</code></p>
+<p>Unmask the whole connected masked area under X, Y.</p>
+<pre><code>mask circle edges 812 440 12
+mask unpatch edges 812 440</code></pre>
+<h3><code>mask nan range</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask nan NAME N  ·  mask range NAME N LO HI</code></p>
+<p>Mask the pixels of buffer N that are not finite (NaN or infinite), or whose values lie from LO to HI.</p>
+<pre><code>mask nan edges 1
+mask range edges 1 60000 1e9</code></pre>
+<h3><code>mask sources segments</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask sources NAME [RUN=k] [SCALE=1.5] [KEEP=centre|none|number] [X0= Y0=] [IDS=1,5,9] [WHERE='condition']  ·  mask segments NAME [RUN=k] [GROW=0] [KEEP=...] [X0= Y0=]</code></p>
+<p>Mask the found sources: their Kron ellipses enlarged by SCALE (sources), or their own pixels from the segmentation grown by GROW pixels (segments). The galaxy at ELLIPROF's centre is kept unmasked unless KEEP= says otherwise.</p>
+<table cellspacing='4'><tr><td><code>RUN=</code></td><td>the source-finder run (default: the last on that image)</td></tr><tr><td><code>SCALE=</code></td><td>the Kron ellipses × SCALE (default 1.5)</td></tr><tr><td><code>KEEP=</code></td><td>centre (the source at X0, Y0, default), none, or a source NUMBER</td></tr><tr><td><code>X0=, Y0=</code></td><td>the centre to keep (default: the last ELLIPROF centre)</td></tr><tr><td><code>IDS=</code></td><td>only these source numbers</td></tr><tr><td><code>WHERE=</code></td><td>only the sources meeting a condition: catalogue columns compared with numbers, joined by and / or, read from left to right: WHERE='MAG_AUTO &lt; 22 and FWHM_IMAGE &lt; 3'</td></tr><tr><td><code>GROW=</code></td><td>pixels added around each segment (segments)</td></tr></table>
+<pre><code>mask new found 1
+mask sources found SCALE=1.5
+mask sources found WHERE='FLUX_RADIUS &lt; 2.5'
+mask segments found GROW=2</code></pre>
+<h3><code>mask grow shrink invert clear fill show hide</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>mask grow|shrink NAME R  ·  mask invert|clear|fill NAME  ·  mask show|hide NAME</code></p>
+<p>Grow or shrink the masked areas by R pixels; swap masked and good; unmask or mask everything; show or hide the layer on the image.</p>
+<pre><code>mask grow edges 2
+mask shrink edges 1
+mask hide edges
+mask show edges</code></pre>
+<h3><code>masks</code></h3>
+<p><code>masks</code></p>
+<p>List the mask layers: size and number of masked pixels.</p>
+<pre><code>masks</code></pre>
+<h3><code>undo redo</code></h3>
+<p><code>undo  ·  redo</code></p>
+<p>Undo the last mask edit, or redo the edit undone last (the last 30 are kept). Ctrl+Z and Ctrl+Shift+Z do the same.</p>
+<pre><code>undo
+redo</code></pre>
+<h2 id='g10'>Files, folders and the session</h2>
+<h3><code>cd pwd</code></h3>
+<p><code>cd [folder]  ·  pwd</code></p>
+<p>Change the folder that file names are relative to (cd alone: your home folder), or print it. Programs run from the terminal start there too.</p>
+<pre><code>pwd</code></pre>
+<h3><code>run</code></h3>
+<p><code>run file</code></p>
+<p>Run the commands in a file, one per line (# starts a comment). File names in it are relative to the file's own folder. The run stops at the first error, naming the file and the line.</p>
+<pre><code>run session.txt</code></pre>
+<h3><code>help</code> <span class='monsta'>MONSTA name</span></h3>
+<p><code>help [command]</code></p>
+<p>List the commands, or explain one. help mask lists the mask actions and help calc the arithmetic.</p>
+<pre><code>help shift
+help mask</code></pre>
+<h3><code>export</code></h3>
+<p><code>export NAME=value ...</code></p>
+<p>Set environment variables for the programs run from the terminal.</p>
+<pre><code>export CATALOGUES=catalogues</code></pre>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>AstroVista Lite 1.0.0 · Ehsan Kourkchi · MIT licence</span>
+    <span><a href="index.html">Home</a> · <a href="tutorial.html">Tutorial</a> · <a href="https://github.com/ekourkchi/AstroVista-Lite">GitHub</a></span>
+  </div>
+</footer>
+</body>
+</html>

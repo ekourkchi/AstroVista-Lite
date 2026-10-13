@@ -159,3 +159,16 @@ th { color: var(--muted); font-weight: 600; }
 
 footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: 14.5px; }
 footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+
+/* the generated reference and terminal pages */
+.doc h2 { margin-top: 44px; padding-top: 12px; border-top: 1px solid var(--line); }
+.doc h3 { margin-top: 30px; }
+.doc h3 code { font-size: 0.95em; background: none; padding: 0; color: var(--accent); }
+.doc ul { padding-left: 22px; }
+.doc li { margin: 6px 0; }
+.doc pre:not(:has(code)) { background: var(--code-bg); color: var(--text); }
+.monsta {
+  display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; vertical-align: middle; letter-spacing: 0.02em;
+  background: var(--accent-soft); color: var(--accent); font-family: inherit;
+}
