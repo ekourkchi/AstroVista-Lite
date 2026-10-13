@@ -122,6 +122,29 @@ def evaluate(text: str, variables: Dict[str, float]) -> float:
         raise CommandError(f"cannot read {text!r}")
 
 
+def nan_median_filter(data: np.ndarray, k: int, budget: int = 32_000_000) -> np.ndarray:
+    """The median of the k x k pixels around each pixel, leaving NaN pixels out (NaN
+    where every pixel of the box is NaN).  The edges are mirrored, as SciPy's median
+    filter does.  Written with NumPy alone: the boxes are sorted (NaN goes last), and
+    the middle of the finite values is taken; ``budget`` bounds the bytes used at once,
+    so a band of rows is done at a time."""
+    data = np.asarray(data, np.float64)
+    ny, nx = data.shape
+    before, after = k // 2, k - 1 - k // 2  # the box around a pixel, as SciPy places it
+    padded = np.pad(data, ((before, after), (before, after)), mode="symmetric")
+    boxes = np.lib.stride_tricks.sliding_window_view(padded, (k, k))  # (ny, nx, k, k)
+    out = np.empty((ny, nx))
+    rows = max(1, budget // max(1, nx * k * k * 8))
+    for r0 in range(0, ny, rows):
+        band = np.sort(boxes[r0 : r0 + rows].reshape(-1, k * k), axis=1)
+        count = np.isfinite(band).sum(axis=1)
+        low = np.take_along_axis(band, np.maximum(count - 1, 0)[:, None] // 2, 1)[:, 0]
+        high = np.take_along_axis(band, (count // 2)[:, None], 1)[:, 0]
+        median = np.where(count > 0, 0.5 * (low + high), np.nan)
+        out[r0 : r0 + rows] = median.reshape(-1, nx)
+    return out
+
+
 class ImageCommands:
     """The image commands, mixed into the Session (which has buffers and variables)."""
 
@@ -392,8 +415,11 @@ class ImageCommands:
 
         n, image = self._image(words)
         k = integer(self.value_of(keys.get("MEDIAN", 5)), "MEDIAN")
+        if k < 1:
+            raise CommandError("MEDIAN must be at least 1")
+        # NaN pixels are left out of each box; without any, SciPy's filter is the same
         out = (
-            ndimage.generic_filter(image.data.astype(np.float64), np.nanmedian, size=k)
+            nan_median_filter(image.data, k)
             if np.isnan(image.data).any()
             else ndimage.median_filter(image.data, size=k)
         )

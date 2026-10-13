@@ -1934,3 +1934,34 @@ def test_variable_names_in_any_case():
     assert abs(s.buffers[2].data[0, 0] - (s.buffers[1].data[0, 0] * 5 + 2)) < 1e-5
     assert "column 5" in s.execute("max 1").text
     assert "5" in s.execute("print 1 XC 3 SIZE=1").text.splitlines()[0]  # numbers in commands
+
+
+def test_the_median_filter_leaves_nan_out_quickly():
+    # filt on an image with NaN pixels: the same as SciPy's per-pixel nanmedian filter,
+    # boxes that are all NaN stay NaN, and a 1000 x 1000 image takes well under a second
+    import time
+    import warnings
+
+    from scipy import ndimage
+
+    from astro_vista.imageops import nan_median_filter
+
+    rng = np.random.default_rng(1)
+    a = rng.normal(size=(30, 41))
+    a[rng.random(a.shape) < 0.3] = np.nan
+    a[:5, :5] = np.nan
+    for k in (2, 3, 5):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            expected = ndimage.generic_filter(a, np.nanmedian, size=k)
+        got = nan_median_filter(a, k, budget=4000)  # in bands of a few rows
+        assert np.array_equal(np.isnan(got), np.isnan(expected))
+        assert np.allclose(got, expected, equal_nan=True)
+    s = Session()
+    big = rng.normal(size=(1000, 1000)).astype(np.float32)
+    big[::40, ::40] = np.nan
+    s.buffers[1] = Image("big", big)
+    start = time.perf_counter()
+    s.execute("filt 1 MEDIAN=5 OUT=2")
+    assert time.perf_counter() - start < 3.0
+    assert np.isfinite(s.buffers[2].data).all()  # every 5 x 5 box has finite pixels
