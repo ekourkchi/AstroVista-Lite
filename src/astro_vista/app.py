@@ -12,6 +12,7 @@ import argparse
 import re
 import shlex
 import sys
+import threading
 import traceback
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -288,7 +289,12 @@ class ElidedLabel(QtWidgets.QLabel):
 
 
 class Task(QtCore.QObject):
-    """Runs a function in a worker thread and reports back in the window's thread."""
+    """Runs a function in a worker thread and reports back in the window's thread.
+
+    The worker is a Python thread, not a Qt thread pool task: a Python function handed to
+    QRunnable.create can run without Python's interpreter lock (PySide6 6.12 on Linux),
+    which corrupts reference counts and crashes Python 3.10 and 3.11.  The signals are
+    delivered in the window's thread, where this object lives (a queued connection)."""
 
     done = QtCore.Signal(object)
     failed = QtCore.Signal(str)
@@ -298,21 +304,17 @@ class Task(QtCore.QObject):
         self._function = function
 
     def start(self) -> None:
-        QtCore.QThreadPool.globalInstance().start(QtCore.QRunnable.create(self._run))
+        threading.Thread(target=self._run, name="astrovista-task", daemon=True).start()
 
     def _run(self) -> None:
         try:
             value = self._function()
         except CommandError as e:
-            message = str(e)
-            report = lambda: self.failed.emit(message)
+            self.failed.emit(str(e))
         except Exception as e:  # shown to the user, not raised in the worker
-            message = f"{type(e).__name__}: {e}\n" + traceback.format_exc(limit=3)
-            report = lambda: self.failed.emit(message)
+            self.failed.emit(f"{type(e).__name__}: {e}\n" + traceback.format_exc(limit=3))
         else:
-            report = lambda: self.done.emit(value)
-        # report in the window's thread (this object lives there)
-        QtCore.QTimer.singleShot(0, self, report)
+            self.done.emit(value)
 
 
 class MainWindow(QtWidgets.QMainWindow):
