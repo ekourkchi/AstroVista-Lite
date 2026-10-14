@@ -805,12 +805,21 @@ TIPS = {
     "how much sky there is. The verdict is advice: <i>Use this sky</i> takes the median as "
     "the base level whatever it says, and the verdict is kept with the fit. One sky is used "
     "for both galaxies and every cycle.",
-    "pair_grow": "<b>Growing the galaxies.</b> With a <i>Start R1</i> below R1 and some "
-    "<i>Growth steps</i>, each galaxy is first fitted out to its Start R1; then, step by step, "
-    "both R1s grow (geometrically) to their R1s, A then B, each on the image minus the "
-    "other's model. A galaxy whose growth fit fails keeps its last good model and stays at "
-    "that radius; the report says where it stopped and why. The cycles then run at the "
-    "radii reached.",
+    "pair_grow": "<b>The radius schedule.</b> Each galaxy is first fitted out to its "
+    "<i>Initial R1</i>; then its R1 grows every cycle, by a factor (× 1.5), by a number of "
+    "pixels (+ 20) or along a list you give (40, 60, 90, 130, 180), until it reaches the "
+    "<i>Final R1</i>. A and B have their own schedules; the note under them shows the R1 of "
+    "each fit. After both reach their final R1, the cycles go on there until they converge "
+    "or the maximum is reached.",
+    "pair_converge": "<b>Convergence.</b> A cycle at the final radii counts as converged when "
+    "A, B and A + B each changed by less than this fraction (their RMS change over the "
+    "evaluation pixels). The run stops after this many converged cycles in a row (2 by "
+    "default); 0 runs every cycle. The threshold is a starting value, not a validated "
+    "scientific criterion.",
+    "pair_onfail": "<b>When a fit fails.</b> A failed fit is never used: the galaxy keeps "
+    "its last valid model. Then it can stay at the radius of that model, try the failed "
+    "radius again in the next cycle, or the whole run can stop there. The iteration table "
+    "and the report say which galaxy failed, at which radius and why.",
     "pair_block": "<b>Blocking a galaxy.</b> The region of this radius around this galaxy "
     "(shaped as its source, else a circle) is left out of the other galaxy's first fit, so "
     "that the other is first fitted alone. Block the smaller galaxy, out to where its light "
@@ -1139,13 +1148,18 @@ angle, the last ellipse at R1). Ellipses of A and B may cross: they belong to di
 galaxies. A rejected fit is never used: the galaxy keeps its last good model. NITER counts
 the iterations inside each elliprof call; cycles count the turns of A and B. Four cycles
 make 10 elliprof calls.</p>
-<p><b>Block and grow.</b> To fit the larger galaxy alone first, give the smaller one a
-<i>Block</i> radius: that region is left out of the larger one's first fit. With a
-<i>Start R1</i> below R1 and some <i>Growth steps</i>, both galaxies start small and grow,
-step by step, to their R1s, each fitted on the image minus the other's model; a galaxy
-whose growth fails stays at its last good radius. <i>Copy report</i> puts a plain-text
-report of the fit (every call, the growth, the residual in rings around each galaxy, and
-hints) on the clipboard.</p>
+<p><b>The iterative decomposition</b> (the default). A, the larger galaxy, is fitted first
+on the original image D out to its <i>Initial R1</i>; then B on D − M_A; then A on D − M_B
+and B on D − M_A, cycle after cycle, each R1 growing by its own schedule (× a factor, + a
+number of pixels, or a list) to its <i>Final R1</i>. Every input is made afresh from D,
+which is never changed. The galaxies are not masked from each other: the companion's
+current model is subtracted instead. Centres are fixed by default. At the final radii the
+cycles go on until A, B and A + B change by less than the threshold for two cycles in a
+row, or the maximum is reached. A failed fit is never used: the galaxy keeps its last
+valid model and stays at its radius, tries again, or the run stops (your choice). The
+iteration table lists every call as it runs; double-click a row to see its model and the
+image it was fitted on (<code>pairstep</code>). <i>Copy report</i> puts a plain-text report
+on the clipboard.</p>
 <p>When a galaxy's first fit fails (its neighbour is too bright), it is started from a
 smaller R1 (0.7, 0.5 or 0.35 of it): such a <i>bootstrap</i> model only starts the cycles
 and is never part of a result.</p>

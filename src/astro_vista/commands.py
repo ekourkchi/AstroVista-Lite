@@ -66,6 +66,9 @@ HELP = {
     "Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
     "[FIXCTR=0] [CORE=] [ADAPTIVE] [START=] [BLOCK=]  B: X0= Y0= R0= R1= ...  -  fit two overlapping galaxies: "
     "ELLIPROF on A and on B in turn, each with the other's model taken out (help pair)",
+    "pairstep": "pairstep N K  -  put the model made by call K of the last pair fit of "
+    "buffer N's image, and the image that call was fitted on (D, D - M_A or D - M_B), into "
+    "two buffers (the iteration table's rows)",
     "pairreport": "pairreport N [file]  -  a plain-text report of the last pair fit of buffer "
     "N's image (settings, every call, growth, cycles, sky, residual rings around each galaxy, "
     "hints), shown here and written to file if one is given",
@@ -1043,6 +1046,41 @@ class Session(ImageCommands):
     def c_pair(self, words, keys) -> Reply:  # reached only through _pair_line
         raise CommandError(PAIR_HELP)
 
+    def c_pairstep(self, words, keys) -> Reply:
+        if len(words) != 2:
+            raise CommandError(HELP["pairstep"])
+        image = self.buffer(words[0])
+        record = self.pairs.get(image.key)
+        if record is None:
+            raise CommandError(f"no pair fit of {image.name} yet (pair {words[0]} ...)")
+        k = integer(words[1], "the call")
+        history = record.result.history
+        if not 1 <= k <= len(history):
+            raise CommandError(f"the last pair fit made calls 1 to {len(history)}")
+        h = history[k - 1]
+        snap = record.job.snap
+        data = snap.image if h["companion_model"] is None else snap.image - h["companion_model"]
+        what = f"pair call {k}: {h['galaxy']} cycle {h['cycle']} R1 {h['r1']:.1f}"
+        n_in = self.output_buffer(integer(words[0], "the buffer"), f"{what} input")
+        self.buffers[n_in] = image.derived(f"{image.name} {what} input {h['input']}", data)
+        made = [f"{n_in} the input ({h['input']})"]
+        show = n_in
+        if h["model"] is not None:
+            n_model = self.output_buffer(integer(words[0], "the buffer"), f"{what} model")
+            while n_model == n_in:
+                n_model = self.free_buffer(n_model)
+            self.buffers[n_model] = image.derived(f"{image.name} {what} model", h["model"])
+            made.append(f"{n_model} its model")
+            show = n_model
+        status = "passed" if h["passed"] else f"failed: {h['reason']}"
+        reply = Reply(
+            f"call {k}: {h['galaxy']} on {h['input']} (companion {h['companion']}), R1 "
+            f"{h['r1']:.1f}, {status}; buffers: " + "; ".join(made),
+            {"buffers", "data"},
+        )
+        reply.show = show
+        return reply
+
     def c_pairreport(self, words, keys) -> Reply:
         if not words:
             raise CommandError(HELP["pairreport"])
@@ -1533,7 +1571,8 @@ KEYWORDS = {
     "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
     "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE=",
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
-    "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START=",
+    "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
+    "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1725,8 +1764,12 @@ Shared (before A:)
                 image's sky measurement; the fit with the smallest |m| is the result
   MASK=a,b      fitting layers (role fit, or no role; sky layers are refused)
   MASKFILE= MASKBUF=   as for elliprof
-  STEPS=0       growth steps: each galaxy's R1 grows from its START to its R1, A then B
-                each step; a galaxy whose growth fails stays at its last radius
+  CORES=0       mask nothing around the companion: only its model is subtracted
+  STEPS=0       growth steps (when a galaxy has START but no STEP, FACTOR or RADII)
+  CONVERGE=0.02 CONSECUTIVE=0   stop after CONSECUTIVE cycles at the final radii in which
+                A, B and A + B each changed by less than CONVERGE (0: run every cycle)
+  ONFAIL=hold   on a failed fit keep the last valid model and: hold (stay at its radius),
+                retry (try the radius again next cycle) or stop (end the run)
   CYCLES=4      A then B, this many times after the initialisation (2 + 2 x CYCLES calls)
   NITER=10      iterations inside each elliprof call
   CORECAP=50    the largest core (pixels) left out around the other galaxy
@@ -1737,6 +1780,8 @@ Shared (before A:)
 Each galaxy (after A: or B:)
   X0= Y0= R0= R1=   its centre (ELLIPROF's coordinates) and radii (semi-major, pixels)
   NR=25  NAME="..."  MODE=none|3|4|3,4|4,6|3m|4m|6m,4m (or COS3X= COS4X=)  FIXCTR=0|1|2
+  START=r STEP=dr | FACTOR=f | RADII=r1,r2,...   its radius schedule: the first R1,
+                then + dr or x f each cycle, or the listed radii; always ending at R1
   CORE=r        the core centred on THIS galaxy, left out while the other is fitted
   BLOCK=r       left out around THIS galaxy during the other's first fit (block the
                 smaller galaxy to fit the larger one alone first)

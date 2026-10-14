@@ -23,6 +23,14 @@ newest is at the top.
   threshold down to 0.01 sigma), shows the sky mask on request, and lets the user take the
   measured median whatever the verdict (which is kept with the fit). Results ▸ Pair ▸ Sky
   lists the fits.
+- **Two-galaxy iterative fit** (the Pair fit tool's default): A on D, B on D − M_A, then
+  A on D − M_B and B on D − M_A each cycle, every input made afresh from the original image;
+  no masking between the galaxies (`CORES=0`); each galaxy's R1 grows by its own schedule
+  (`START=` with `FACTOR=` or `STEP=`, or `RADII=`); fixed centres by default; stops after
+  `CONSECUTIVE=` converged cycles at the final radii (`CONVERGE=`); `ONFAIL=hold|retry|stop`.
+  A live iteration table; `pairstep N K` shows any call's model and input; the export writes
+  `iterations.json` (every call's input, companion, radii, mask, arguments, profile and
+  model checksum). A pair folder's centres are moved to the light peak.
 - **Block and grow.** `B: BLOCK=r` leaves a region around B out of A's first fit, so the
   larger galaxy is fitted alone first; `START=r` and `STEPS=n` start each galaxy at a small
   R1 and grow both, step by step, to their R1s (a galaxy whose growth fails stays at its

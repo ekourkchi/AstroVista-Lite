@@ -909,6 +909,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pp.export_requested.connect(self.export_pair)
         pp.blink_requested.connect(self.blink_pair)
         pp.report_requested.connect(self.copy_pair_report)
+        pp.iteration_requested.connect(self.show_pair_iteration)
         pp.changed.connect(self._overlays)
         self.finder.show_sources.toggled.connect(lambda on: self.layers.set_checked("sources", on))
 
@@ -1447,8 +1448,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 shape = (f[info.hdu] if info.hdu else f[0]).data.shape
             r1 = pairs.suggested_r1(info.centres, shape)
             for cid, (x, y, name) in info.centres.items():
-                # start small and grow; block B (the smaller, by the region file's labels)
-                # for A's first fit
+                # start at a third of the final R1 and grow by 1.5 each cycle (starting
+                # values to check, not results); fixed centres
                 p.cards[cid].set_values(
                     {
                         "name": name or cid,
@@ -1457,24 +1458,43 @@ class MainWindow(QtWidgets.QMainWindow):
                         "r0": 3,
                         "r1": r1[cid],
                         "nr": 25,
-                        "start": round(0.5 * r1[cid], 1),
-                        "block": r1[cid] if cid == "B" else 0,
+                        "start": round(r1[cid] / 3, 1),
+                        "growth": 0,
+                        "growth_value": 1.5,
+                        "fixctr": 1,
+                        "adaptive": False,
                     }
                 )
-                p.cards[cid].adaptive.setChecked(True)
-            p.steps.setValue(3)
         p.sky_source.setText("no sky yet")
         self.after_commands(self.show_pair_tool)
-        said = f"{info.image.name}: " + (
-            "A and B placed from the region file, with starting radii to check; "
-            if len(info.centres) == 2
-            else ""
-        )
-        said += f"{len(names)} mask(s) loaded; measure the sky, then Fit pair"
-        for text in info.notes:
-            said += f" ({text})"
-        self.statusBar().showMessage(said)
-        self.console.say(said)
+        if len(info.centres) == 2:
+            self.after_commands(self._snap_pair_centres)
+
+    def _snap_pair_centres(self) -> None:
+        """Move each galaxy's centre to the light peak within 3 px (region-file centres are
+        approximate hints; with fixed centres an offset leaves a dipole in the core)."""
+        image = self.viewer.image
+        if image is None:
+            return
+        for cid, card in self.pair_panel.cards.items():
+            x, y = card.centre()
+            found = pairs.peak_centre(image.data, x, y)
+            if found is not None:
+                card.set_centre(*found)
+                card.match.setText(
+                    f"{cid}: centre at the light peak {found[0]:.2f}, {found[1]:.2f} (the "
+                    f"region file said {x:.1f}, {y:.1f})"
+                )
+
+    def show_pair_iteration(self, number: int) -> None:
+        """Put one call's model, and the image it was fitted on, into buffers and show the
+        model (the iteration table's rows)."""
+        image = self.viewer.image
+        n = self._current_number(say=False)
+        record = self.session.pairs.get(image.key) if image is not None else None
+        if record is None or n is None or not 1 <= number <= len(record.result.history):
+            return
+        self.run_command(f"pairstep {n} {number}")
 
     def copy_pair_report(self) -> None:
         """Put the report of the last pair fit of the image shown on the clipboard."""
@@ -1508,7 +1528,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.viewer.image is None:
             return
         card = self.pair_panel.cards[cid]
-        if what in ("r0", "r1"):
+        if what in ("r0", "r1", "start"):
             x0, y0 = card.centre()
             if not (x0 or y0):
                 QtWidgets.QMessageBox.information(self, TITLE, f"Set {cid}'s centre first.")
@@ -1525,7 +1545,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _pair_picked(self, x: float, y: float) -> None:
         _p, cid, what = self._pick_target.split(":")
         card = self.pair_panel.cards[cid]
-        if what in ("r0", "r1"):
+        if what in ("r0", "r1", "start"):
             cx, cy = card.centre()
             r = round(float(np.hypot(x - cx, y - cy)), 2)
             getattr(card, what).setValue(r)
@@ -1606,12 +1626,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"Running: {line}")
 
     def _pair_progress(self, info: dict) -> None:
+        if info.get("phase") == "call":
+            self.pair_panel.add_iteration(info)
+            return
         if info.get("phase") == "fit":
             cycle = info["cycle"]
             text = (
-                f"Pair • call {info['call']} of {info['calls']} • "
+                f"Pair • call {info['call']} of at most {info['calls']} • "
                 + ("start" if str(cycle).startswith("init") else f"cycle {cycle}")
-                + f" • fitting {info['component']} (R1 {info['r1']:.1f})"
+                + f" • fitting {info['component']} on {info.get('input', 'D')} "
+                f"(R1 {info['r1']:.1f})"
             )
             if info.get("retry"):
                 text += f" • adaptive retry {info['retry']}"
@@ -1702,6 +1726,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     residual = record.result.residual[use]
             self.pair_results.set_record(record, text, residual)
             p.show_result(record.result if record else None)
+            p.show_history(record.result if record else None)
             p.show_residual_sky(
                 record.result.sky_check if record else None,
                 residual,
@@ -1726,7 +1751,7 @@ class MainWindow(QtWidgets.QMainWindow):
             x, y = card.centre()
             if (x or y) and (shown_tool or record is None):
                 d["centre"] = (x, y)
-                radii = (card.r0.value(), card.r1.value(), card.start.value(), card.block.value())
+                radii = (card.r0.value(), card.r1.value(), card.start.value())
                 d["guide"] = [(x, y, r, r, 0.0) for r in radii if r > 0]
             if record is not None:
                 snap, result = record.job.snap, record.result

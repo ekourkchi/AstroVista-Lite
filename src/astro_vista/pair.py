@@ -82,9 +82,37 @@ class Component:
     block: Optional[float] = None  # BLOCK: left out around this galaxy for the other's 1st fit
     start: Optional[float] = None  # START: the R1 of its first fit (then grown to R1)
 
+    step: Optional[float] = None  # STEP: R1 grows by this many pixels per cycle
+    factor: Optional[float] = None  # FACTOR: R1 grows by this factor per cycle
+    radii: Optional[List[float]] = None  # RADII: the R1 of each fit, listed
+
     @property
     def first_r1(self) -> float:
+        if self.radii:
+            return self.radii[0]
         return self.start if self.start else self.r1
+
+    def schedule(self, steps: int = 0) -> List[float]:
+        """The R1 of each fit of this galaxy, from the first to R1: RADII as listed; else
+        from START by STEP pixels or by FACTOR each cycle; else STEPS geometric steps (the
+        shared setting); always ending at R1."""
+        if self.radii:
+            out = [r for r in self.radii if r < self.r1 - 1e-9]
+        else:
+            r = self.first_r1
+            out = [r]
+            if r < self.r1 - 1e-9:
+                if self.step:
+                    while out[-1] + self.step < self.r1 - 1e-9:
+                        out.append(out[-1] + self.step)
+                elif self.factor:
+                    while out[-1] * self.factor < self.r1 - 1e-9:
+                        out.append(out[-1] * self.factor)
+                elif steps:
+                    out = [r * (self.r1 / r) ** (g / steps) for g in range(steps)]
+                else:
+                    out = []
+        return [float(x) for x in out if x < self.r1 - 1e-9] + [float(self.r1)]
 
     @property
     def label(self) -> str:
@@ -113,6 +141,10 @@ class Settings:
     sky_factor: float = 1.0  # SKYFACTOR=
     sky_iter: int = 0  # SKYITER=: refit with the factor updated from the residual sky
     steps: int = 0  # STEPS=: growth steps from each galaxy's START to its R1
+    cores: bool = True  # CORES=0: nothing is left out around the companion
+    converge: float = STABILITY  # CONVERGE=: the relative change below which it is stable
+    consecutive: int = 0  # CONSECUTIVE=: stop after this many stable cycles at the targets
+    on_fail: str = "hold"  # ONFAIL=hold|retry|stop
 
 
 @dataclass
@@ -224,6 +256,10 @@ class Call:
     passed: bool
     reason: str
     precision: Optional[str] = None
+    input: str = ""  # "D", "D - M_A" or "D - M_B"
+    companion: str = ""  # the companion model subtracted, with the cycle that made it
+    centre_drift: Optional[float] = None  # largest fitted-centre distance from X0, Y0
+    mask_pixels: int = 0
 
 
 @dataclass
@@ -243,6 +279,9 @@ class PairResult:
     bootstraps: Dict[str, float] = field(default_factory=dict)  # partial first fits' R1
     sky_check: dict = field(default_factory=dict)
     growth: List[dict] = field(default_factory=list)  # one entry per growth step
+    schedules: Dict[str, List[float]] = field(default_factory=dict)  # each galaxy's R1s
+    # every call, with references to its model and the companion model it saw (not copies)
+    history: List[dict] = field(default_factory=list)
     notes_growth: List[str] = field(default_factory=list)  # galaxies that stopped growing
     # SKYITER: one entry per pair fit (factor, sky, residual median, status); the result is
     # the fit marked "chosen"
@@ -328,6 +367,10 @@ SHARED = {
     "SKYFACTOR",
     "SKYITER",
     "STEPS",
+    "CORES",
+    "CONVERGE",
+    "CONSECUTIVE",
+    "ONFAIL",
 }
 OWN = {
     "NAME",
@@ -344,6 +387,9 @@ OWN = {
     "ADAPTIVE",
     "BLOCK",
     "START",
+    "STEP",
+    "FACTOR",
+    "RADII",
 }
 FLAGS = {"RMSTAR", "STOP", "ADAPTIVE", "VIEWS"}
 
@@ -362,6 +408,16 @@ def _num(keys, key, what, default=None, kind=float):
     if not math.isfinite(value):
         raise PairError(f"{key} must be finite{what}")
     return value
+
+
+def _radii(text: str, where: str) -> List[float]:
+    try:
+        values = [float(x) for x in re.split(r"[,\s]+", text.strip()) if x]
+    except ValueError:
+        raise PairError(f"RADII must be numbers separated by commas{where}, not {text!r}")
+    if not values or any(b <= a for a, b in zip(values, values[1:])):
+        raise PairError(f"RADII must increase{where}")
+    return values
 
 
 def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
@@ -390,6 +446,9 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
             adaptive="ADAPTIVE" in k,
             block=_num(k, "BLOCK", where) if "BLOCK" in k else None,
             start=_num(k, "START", where) if "START" in k else None,
+            step=_num(k, "STEP", where) if "STEP" in k else None,
+            factor=_num(k, "FACTOR", where) if "FACTOR" in k else None,
+            radii=_radii(k["RADII"], where) if "RADII" in k else None,
         )
         if not 0 < c.r0 < c.r1:
             raise PairError(f"0 < R0 < R1 is needed{where}")
@@ -403,6 +462,14 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
             raise PairError(f"BLOCK must be 0 or more{where}")
         if c.start is not None and not c.r0 < c.start <= c.r1:
             raise PairError(f"R0 < START <= R1 is needed{where}")
+        if sum(x is not None for x in (c.step, c.factor, c.radii)) > 1:
+            raise PairError(f"give one of STEP=, FACTOR= and RADII={where}")
+        if c.step is not None and c.step <= 0:
+            raise PairError(f"STEP must be positive{where}")
+        if c.factor is not None and c.factor <= 1:
+            raise PairError(f"FACTOR must be above 1{where}")
+        if c.radii and not (c.r0 < c.radii[0] and c.radii[-1] <= c.r1 + 1e-9):
+            raise PairError(f"RADII must lie between R0 and R1{where}")
         out[cid] = c
     return out
 
@@ -416,6 +483,10 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         sky_factor=factor,
         sky_iter=_num(shared, "SKYITER", "", 0, int),
         steps=_num(shared, "STEPS", "", 0, int),
+        cores=_num(shared, "CORES", "", 1, int) != 0,
+        converge=_num(shared, "CONVERGE", "", STABILITY),
+        consecutive=_num(shared, "CONSECUTIVE", "", 1 if "STOP" in shared else 0, int),
+        on_fail=shared.get("ONFAIL", "hold").strip().lower(),
         cycles=_num(shared, "CYCLES", "", 4, int),
         niter=_num(shared, "NITER", "", 10, int),
         rlaw=_num(shared, "RLAW", "", 2, int),
@@ -439,6 +510,12 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         raise PairError("SKYITER must be 0 to 50")
     if not 0 <= s.steps <= 20:
         raise PairError("STEPS must be 0 to 20")
+    if not 0 < s.converge < 1:
+        raise PairError("CONVERGE must be between 0 and 1 (a relative change)")
+    if not 0 <= s.consecutive <= 20:
+        raise PairError("CONSECUTIVE must be 0 to 20")
+    if s.on_fail not in ("hold", "retry", "stop"):
+        raise PairError("ONFAIL must be hold, retry or stop")
     return s
 
 
@@ -600,10 +677,18 @@ def prepare(
         note = f"one source covers both centres (blend): source {matches['A'].number}"
         matches = {cid: Match(False, note) for cid in matches}
         notes.append(note)
-    cores = {
-        "A": make_core(a, b, matches["A"], shape, m0, invalid, settings.corecap),
-        "B": make_core(b, a, matches["B"], shape, m0, invalid, settings.corecap),
-    }
+    if settings.cores:
+        cores = {
+            "A": make_core(a, b, matches["A"], shape, m0, invalid, settings.corecap),
+            "B": make_core(b, a, matches["B"], shape, m0, invalid, settings.corecap),
+        }
+    else:  # the companion is not masked: its current model is subtracted instead
+        cores = {
+            c.id: Core(
+                c.id, "none", c.x0, c.y0, 0.0, 0.0, 0.0, "CORES=0: no core", np.zeros(shape, bool)
+            )
+            for c in (a, b)
+        }
     blocks = {}
     for owner, target in ((a, b), (b, a)):
         block = make_block(owner, target, matches[owner.id], shape, m0, invalid)
@@ -786,14 +871,22 @@ def run(
     cancelled: Optional[Callable[[], bool]] = None,
     fitter: Fitter = fit_array,
 ) -> PairResult:
-    """Run the pair fit on a snapshot (see the module's description)."""
+    """Run the pair fit on a snapshot (see the module's description).
+
+    Every fit works on the original image D minus the companion's current model (D - M_B
+    for A, D - M_A for B), made afresh from D each time; D itself is never changed.  Each
+    galaxy's R1 follows its schedule (Component.schedule) for the first cycles, then the
+    cycles continue at the radii reached."""
     s = snap.settings
     comps = snap.components
     image = snap.image
     finite = np.isfinite(image)
     result = PairResult(status="incomplete_initialization", run_id=snap.run_id)
     start = time.perf_counter()
-    total_calls = 2 + 2 * (s.steps + s.cycles)
+    sched = {cid: comps[cid].schedule(s.steps) for cid in ("A", "B")}
+    n_grow = max(len(v) for v in sched.values()) - 1
+    result.schedules = {cid: list(v) for cid, v in sched.items()}
+    total_calls = 2 + 2 * (n_grow + s.cycles)
     counter = {"n": 0}
 
     def say(**info):
@@ -806,15 +899,20 @@ def run(
 
     def fit_component(
         cid: str,
-        conditional: np.ndarray,
+        companion: Optional[Commit],
         r1_start: float,
         cycle: str,
         adaptive: Optional[bool] = None,
         bootstrap: bool = False,
         first: bool = False,
     ):
-        """A candidate for ``cid`` (with adaptive-R1 retries): a Commit, or None."""
+        """A candidate for ``cid`` (with adaptive-R1 retries): a Commit, or None.  It is
+        fitted on D - (the companion's model), made here from D."""
         comp = comps[cid]
+        other = "B" if cid == "A" else "A"
+        conditional = image if companion is None else image - companion.model
+        source = "D" if companion is None else f"D - M_{other}"
+        companion_tag = "none" if companion is None else f"M_{other} ({companion.tag})"
         cos3x, cos4x = comp.harmonics()
         mask = snap.mask_for(cid, first=first)
         usable = finite & ~mask
@@ -825,7 +923,7 @@ def run(
             if stop_requested():
                 raise Cancelled()
             counter["n"] += 1 if attempt == 0 and not bootstrap else 0
-            say(phase="fit", cycle=cycle, component=cid, r1=r1, retry=attempt)
+            say(phase="fit", cycle=cycle, component=cid, r1=r1, retry=attempt, input=source)
             fit = fitter(
                 conditional,
                 comp.x0,
@@ -848,18 +946,47 @@ def run(
             )
             ok, reason, kind, radius = check(fit, comp, r1, finite)
             result.attempted_r1[cid] = r1
-            result.calls.append(
-                Call(
-                    cycle,
-                    cid,
-                    r1,
-                    _clean_arguments(fit.arguments),
-                    fit.returncode,
-                    fit.seconds,
-                    ok,
-                    reason,
-                    fit.precision,
-                )
+            drift = _centre_drift(fit.profile, comp) if ok else None
+            call = Call(
+                cycle,
+                cid,
+                r1,
+                _clean_arguments(fit.arguments),
+                fit.returncode,
+                fit.seconds,
+                ok,
+                reason,
+                fit.precision,
+                input=source,
+                companion=companion_tag,
+                centre_drift=drift,
+                mask_pixels=int(mask.sum()),
+            )
+            result.calls.append(call)
+            entry = {
+                "call": len(result.calls),
+                "cycle": cycle,
+                "galaxy": cid,
+                "input": source,
+                "companion": companion_tag,
+                "r1": r1,
+                "passed": ok,
+                "reason": reason,
+                "model": fit.model if ok else None,
+                "profile": fit.profile if ok else None,
+                "companion_model": None if companion is None else companion.model,
+            }
+            result.history.append(entry)
+            say(
+                phase="call",
+                cycle=cycle,
+                component=cid,
+                r1=r1,
+                input=source,
+                passed=ok,
+                reason=reason,
+                drift=drift,
+                index=len(result.calls),
             )
             if ok:
                 support = outer_support(fit.profile, usable)
@@ -874,7 +1001,7 @@ def run(
                     bootstrap=bootstrap,
                     requested_r1=comp.r1,
                 )
-            result.failures[cid] = f"{cycle}: {reason}"
+            result.failures[cid] = f"{cycle}: {reason} (R1 {r1:.1f})"
             result.diagnostics[cid] = fit
             if not adaptive or kind != "outer" or radius is None or radius < 0.65 * r1:
                 break
@@ -885,17 +1012,15 @@ def run(
             r1 = new
         return None
 
-    def initialise(cid: str, conditional: np.ndarray):
-        """The first model of ``cid``: at its START (R1 by default), or else a partial
-        bootstrap fit at 0.7, 0.5 or 0.35 of it (only to start the cycles; never part of a
-        result)."""
-        r_first = comps[cid].first_r1
-        grows = s.steps > 0 and r_first < comps[cid].r1
+    def initialise(cid: str, companion: Optional[Commit]):
+        """The first model of ``cid``: at the first radius of its schedule, or else a
+        partial bootstrap fit at 0.7, 0.5 or 0.35 of it (only to start the cycles; never
+        part of a result)."""
+        r_first = sched[cid][0]
+        grows = len(sched[cid]) > 1
         c0 = fit_component(
-            cid, conditional, r_first, "init", adaptive=False if grows else None, first=True
+            cid, companion, r_first, "init", adaptive=False if grows else None, first=True
         )
-        if c0 is not None and grows:
-            c0.requested_r1 = r_first  # grown later, step by step
         if c0 is not None or not s.bootstrap:
             return c0
         failure = result.failures.get(cid, "")
@@ -905,7 +1030,7 @@ def run(
                 break
             c = fit_component(
                 cid,
-                conditional,
+                companion,
                 r1,
                 "init (bootstrap)",
                 adaptive=False,
@@ -918,51 +1043,16 @@ def run(
         result.failures[cid] = failure + " (no bootstrap fit at 0.7, 0.5 or 0.35 R1 passed either)"
         return None
 
-    def grow(committed: Dict[str, Commit], checkpoint):
-        """STEPS growth steps: each galaxy's R1 grows geometrically from its START to its
-        R1, A then B, each on the image minus the other's committed model.  A galaxy whose
-        growth fit fails keeps its model and stays at its last radius (refitted there)."""
-        reached = {cid: committed[cid].r1_call for cid in "AB"}
-        frozen: Dict[str, str] = {}
-        for g in range(1, s.steps + 1):
-            tag = f"g{g}"
-            row = {"step": g}
-            for cid in ("A", "B"):
-                comp = comps[cid]
-                other = "B" if cid == "A" else "A"
-                begin = comp.first_r1
-                target = begin * (comp.r1 / begin) ** (g / s.steps)
-                r1 = reached[cid] if cid in frozen else max(target, reached[cid])
-                cand = fit_component(cid, image - committed[other].model, r1, tag, adaptive=False)
-                if cand is not None:
-                    committed[cid] = cand
-                    reached[cid] = r1
-                elif cid not in frozen:
-                    frozen[cid] = result.failures.get(cid, "")
-                row[f"{cid}_r1"] = r1
-                row[f"{cid}_ok"] = cand is not None
-            row["frozen"] = sorted(frozen)
-            result.growth.append(row)
-            say(phase="grow", cycle=tag, row=row)
-            if row["A_ok"] and row["B_ok"]:
-                if not (committed["A"].bootstrap or committed["B"].bootstrap):
-                    checkpoint = (tag, dict(committed))
-        for cid, why in frozen.items():
-            result.notes_growth.append(
-                f"{cid} stopped growing at R1 {reached[cid]:.1f} (asked {comps[cid].r1:g}): {why}"
-            )
-        return checkpoint
-
     committed: Dict[str, Commit] = {}
     checkpoint: Optional[Tuple[str, Dict[str, Commit]]] = None
     try:
-        a0 = initialise("A", image)
+        a0 = initialise("A", None)
         if a0 is None:
             result.status = "incomplete_initialization"
             result.stability_reason = f"A: {result.failures.get('A', '')}"
             return _finish(result, snap, start, None, committed)
         committed["A"] = a0
-        b0 = initialise("B", image - a0.model)
+        b0 = initialise("B", a0)
         if b0 is None:
             result.status = "incomplete_initialization"
             result.stability_reason = f"B: {result.failures.get('B', '')}"
@@ -971,37 +1061,83 @@ def run(
         committed["B"] = b0
         if not (a0.bootstrap or b0.bootstrap):
             checkpoint = ("0", dict(committed))
-        if s.steps:
-            checkpoint = grow(committed, checkpoint)
         last_ok = {"A": True, "B": True}
-        for k in range(1, s.cycles + 1):
+        held: Dict[str, float] = {}  # galaxies whose growth failed: the radius they stay at
+        streak = 0
+        stopped_on_failure = None
+        for k in range(1, n_grow + s.cycles + 1):
             tag = str(k)
-            prev_a = committed["A"].model.copy()
-            prev_b = committed["B"].model.copy()
-            prev_t = prev_a + prev_b
-            cand = fit_component("A", image - committed["B"].model, committed["A"].next_r1, tag)
-            last_ok["A"] = cand is not None
-            if cand is not None:
-                committed["A"] = cand
-            cand = fit_component("B", image - committed["A"].model, committed["B"].next_r1, tag)
-            last_ok["B"] = cand is not None
-            if cand is not None:
-                committed["B"] = cand
-            m = _metrics(snap, committed, prev_a, prev_b, prev_t)
+            growing = k <= n_grow
+            prev = dict(committed)
+            prev_t = prev["A"].model + prev["B"].model
+            radii = {}
+            for cid in ("A", "B"):
+                other = "B" if cid == "A" else "A"
+                want = sched[cid][min(k, len(sched[cid]) - 1)]
+                current = committed[cid]
+                if cid in held and s.on_fail == "hold":
+                    r1, adaptive = held[cid], False
+                elif want > current.r1_call + 1e-9 and (growing or s.on_fail == "retry"):
+                    r1, adaptive = want, False  # a growth step
+                else:
+                    r1, adaptive = current.next_r1, None
+                radii[cid] = r1
+                cand = fit_component(cid, committed[other], r1, tag, adaptive=adaptive)
+                last_ok[cid] = cand is not None
+                if cand is not None:
+                    committed[cid] = cand
+                else:
+                    if r1 > current.r1_call + 1e-9 and cid not in held:
+                        held[cid] = current.r1_call
+                        result.notes_growth.append(
+                            f"{cid} could not grow to R1 {r1:.1f} in cycle {k} (kept its model "
+                            f"at R1 {current.r1_call:.1f}): {result.failures.get(cid, '')}"
+                        )
+                    if s.on_fail == "stop":
+                        stopped_on_failure = cid
+                        break
+            m = _metrics(snap, committed, prev["A"].model, prev["B"].model, prev_t, s.converge)
             m.update(
                 cycle=k,
                 A_ok=last_ok["A"],
-                B_ok=last_ok["B"],
+                B_ok=last_ok.get("B", False) if stopped_on_failure != "A" else False,
                 A_tag=committed["A"].tag,
                 B_tag=committed["B"].tag,
+                A_r1=radii.get("A"),
+                B_r1=radii.get("B"),
+                growing=growing,
             )
+            for cid in ("A", "B"):
+                m.update(
+                    {
+                        f"{cid}_{key}": v
+                        for key, v in _profile_change(committed[cid], prev[cid]).items()
+                    }
+                )
             result.metrics.append(m)
+            if growing:
+                result.growth.append(
+                    {
+                        "step": k,
+                        "A_r1": radii.get("A"),
+                        "A_ok": last_ok["A"],
+                        "B_r1": radii.get("B"),
+                        "B_ok": m["B_ok"],
+                        "frozen": sorted(held),
+                    }
+                )
             say(phase="cycle", cycle=tag, metrics=m)
-            joint = last_ok["A"] and last_ok["B"]
+            joint = m["A_ok"] and m["B_ok"]
             if joint and not (committed["A"].bootstrap or committed["B"].bootstrap):
                 checkpoint = (tag, dict(committed))
-                if s.early_stop and m["stable"]:
-                    break
+            if stopped_on_failure:
+                break
+            at_target = k > n_grow  # this cycle and the one before at the final radii
+            streak = streak + 1 if (at_target and joint and m["stable"]) else 0
+            m["converged_streak"] = streak
+            if s.consecutive and streak >= s.consecutive:
+                m["converged"] = True
+                break
         last = result.metrics[-1]
         if checkpoint is None:
             result.status = "incomplete_initialization"
@@ -1014,22 +1150,66 @@ def run(
             )
             result.partial = dict(committed)
             return _finish(result, snap, start, None, committed)
-        if last_ok["A"] and last_ok["B"]:
+        if last["A_ok"] and last["B_ok"]:
             if last["stable"]:
                 result.status = "stable_valid_pair"
             else:
                 result.status = "valid_pair_not_stable"
                 result.stability_reason = last["reason"]
         else:
-            failed = [c for c in ("A", "B") if not last_ok[c]]
+            failed = [c for c in ("A", "B") if not last[f"{c}_ok"]]
             result.status = "retained_after_failed_update"
             result.stability_reason = "; ".join(
                 f"{c} failed in cycle {last['cycle']}: {result.failures.get(c, '')}" for c in failed
             )
+            if stopped_on_failure:
+                result.stability_reason += " (stopped there: on failure = stop)"
     except Cancelled:
         result.status = "cancelled"
         result.stability_reason = "stopped by the user"
     return _finish(result, snap, start, checkpoint, committed)
+
+
+def _centre_drift(profile, comp: Component) -> Optional[float]:
+    """The largest distance of the fitted centres from X0, Y0 (pixels)."""
+    try:
+        return float(np.nanmax(np.hypot(profile["x0"] - comp.x0, profile["y0"] - comp.y0)))
+    except (KeyError, ValueError):
+        return None
+
+
+def _profile_change(new: Commit, old: Commit) -> dict:
+    """How a galaxy's profile changed from one cycle to the next, over the radii both
+    cover: the largest relative change of I0, of the ellipticity, of the angle (where the
+    ellipticity is above 0.05) and of the centre.  Diagnostics only."""
+    if new is old:
+        return {"dI0": 0.0, "dE": 0.0, "dPA": 0.0, "dXY": 0.0}
+    a, b = new.profile, old.profile
+    r = a["Rmaj"].to_numpy(float)
+    r_old = b["Rmaj"].to_numpy(float)
+    keep = (r >= r_old.min()) & (r <= r_old.max())
+    if keep.sum() < 2:
+        return {"dI0": None, "dE": None, "dPA": None, "dXY": None}
+    r = r[keep]
+
+    def at(col):
+        return np.interp(r, r_old, b[col].to_numpy(float)), a[col].to_numpy(float)[keep]
+
+    i_old, i_new = at("I0")
+    e_old, e_new = at("ellip")
+    p_old, p_new = at("alpha")
+    x_old, x_new = at("x0")
+    y_old, y_new = at("y0")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        di = np.nanmax(np.abs(i_new / i_old - 1))
+    dpa = np.abs(((p_new - p_old) + 90) % 180 - 90)
+    dpa = dpa[(e_new > PA_MIN_ELLIP) & (e_old > PA_MIN_ELLIP)]
+    return {
+        "dI0": float(di),
+        "dE": float(np.nanmax(np.abs(e_new - e_old))),
+        "dPA": float(dpa.max()) if dpa.size else None,
+        "dXY": float(np.nanmax(np.hypot(x_new - x_old, y_new - y_old))),
+    }
 
 
 def with_sky(snap: Snapshot, factor: float) -> Snapshot:
@@ -1119,7 +1299,7 @@ def chosen_factor(result: PairResult, settings: Settings) -> float:
     return settings.sky_factor
 
 
-def _metrics(snap, committed, prev_a, prev_b, prev_t) -> dict:
+def _metrics(snap, committed, prev_a, prev_b, prev_t, threshold: float = STABILITY) -> dict:
     ev = snap.eval
     a, b = committed["A"].model, committed["B"].model
     t = a + b
@@ -1143,11 +1323,11 @@ def _metrics(snap, committed, prev_a, prev_b, prev_t) -> dict:
             continue
         value = _rms((new - old)[good]) / level
         out[key] = value
-        if value >= STABILITY:
+        if value >= threshold:
             stable = False
             reasons.append(f"d{name}={value:.3f}")
-    if stable is False and out.get("dT") is not None and out["dT"] < STABILITY:
-        if any(out.get(k) is not None and out[k] >= STABILITY for k in ("dA", "dB")):
+    if stable is False and out.get("dT") is not None and out["dT"] < threshold:
+        if any(out.get(k) is not None and out[k] >= threshold for k in ("dA", "dB")):
             reasons.append("components changing; total stable")
     out["stable"] = stable
     out["reason"] = ", ".join(reasons)
@@ -1348,6 +1528,7 @@ def export(
         "sky_check_on_frozen_support": result.sky_check,
         "sky_factor_iterations": result.sky_iterations,
         "growth_steps": result.growth,
+        "radius_schedules": result.schedules,
         "growth_notes": result.notes_growth,
         "blocks": {cid: b.describe() for cid, b in snap.blocks.items()},
     }
@@ -1443,6 +1624,58 @@ def export(
         lines += ["", "# the route from the original files"] + replay
     text("commands.txt", "\n".join(lines) + "\n")
     text("elliprof_calls.json", json.dumps([c.__dict__ for c in result.calls], indent=2) + "\n")
+    # every iteration: what it was fitted on, with what, and what it made
+    iterations = []
+    for h, c in zip(result.history, result.calls):
+        comp = snap.components[h["galaxy"]]
+        e = {
+            "call": h["call"],
+            "cycle": h["cycle"],
+            "galaxy": h["galaxy"],
+            "original_image": snap.provenance.get("file") or snap.image_name,
+            "original_sha256": snap.provenance.get("snapshot_sha256"),
+            "input": h["input"],
+            "companion_model_subtracted": h["companion"],
+            "centre": [comp.x0, comp.y0],
+            "fixctr": comp.fixctr,
+            "r0": comp.r0,
+            "r1": h["r1"],
+            "nr": comp.nr,
+            "harmonics": list(comp.harmonics()),
+            "sky": s.sky,
+            "mask": snap.fit_mask_label,
+            "mask_pixels": c.mask_pixels,
+            "elliprof_arguments": c.arguments,
+            "passed": h["passed"],
+            "reason": h["reason"],
+            "centre_drift": c.centre_drift,
+            "seconds": c.seconds,
+        }
+        if h["model"] is not None:
+            e["model_sha256"] = hashlib.sha256(
+                np.ascontiguousarray(h["model"]).tobytes()
+            ).hexdigest()
+            name = f"iterations/{h['call']:03d}_{h['galaxy']}_profile.csv"
+            atomic(name, lambda p, prof=h["profile"]: prof.to_csv(p, index=False))
+            e["profile"] = name
+            both = h["model"] + (0 if h["companion_model"] is None else h["companion_model"])
+            r = (snap.image - s.sky - both)[snap.eval & np.isfinite(snap.image)]
+            if r.size:
+                e["residual_on_eval"] = {
+                    "median": float(np.median(r)),
+                    "mad_sigma": float(1.4826 * np.median(np.abs(r - np.median(r)))),
+                    "pixels": int(r.size),
+                }
+        iterations.append(e)
+    text(
+        "iterations.json",
+        json.dumps(
+            {"radius_schedules": result.schedules, "iterations": iterations},
+            indent=2,
+            default=float,
+        )
+        + "\n",
+    )
     for cid, c in result.commits.items():
         atomic(f"{cid}_profile.csv", lambda p, c=c: c.profile.to_csv(p, index=False))
 
@@ -1693,7 +1926,13 @@ def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) ->
                     + (" (beyond R1: the model's extrapolation)" if r["beyond_r1"] else "")
                 )
             if r["facing"] is not None and r["away"] is not None and r["model"] > 0:
-                if abs(r["facing"] - r["away"]) > 0.1 * scale:
+                if abs(r["facing"] - r["away"]) > 0.1 * scale and r["r_out"] <= 10:
+                    hints.append(
+                        f"{cid}: within {r['r_out']:.0f} px of the centre one side is "
+                        f"{r['facing'] - r['away']:+.4g} against the other (a dipole): the "
+                        "centre is probably off; pick it on the source, or free the centre"
+                    )
+                elif abs(r["facing"] - r["away"]) > 0.1 * scale:
                     hints.append(
                         f"{cid}: at {r['r_in']:.0f}-{r['r_out']:.0f} px the side facing the other "
                         f"galaxy differs from the far side by {r['facing'] - r['away']:+.4g} "
@@ -1830,6 +2069,31 @@ def read_folder(folder) -> Folder:
     else:
         notes.append("no region file: place A and B by hand")
     return Folder(image, hdu, masks, centres, notes)
+
+
+def peak_centre(data: np.ndarray, x: float, y: float, radius: int = 3):
+    """The light peak near (x, y), in ELLIPROF's coordinates: the brightest finite pixel
+    within ``radius`` pixels, refined by the centroid of its 3 x 3 neighbourhood; None if
+    there is no finite pixel there."""
+    ny, nx = data.shape
+    i, j = int(math.floor(x)), int(math.floor(y))
+    x0, x1 = max(i - radius, 1), min(i + radius + 1, nx - 1)
+    y0, y1 = max(j - radius, 1), min(j + radius + 1, ny - 1)
+    if x0 >= x1 or y0 >= y1:
+        return None
+    box = np.where(np.isfinite(data[y0:y1, x0:x1]), data[y0:y1, x0:x1], -np.inf)
+    if not np.isfinite(box).any():
+        return None
+    jj, ii = np.unravel_index(int(np.argmax(box)), box.shape)
+    pi, pj = x0 + ii, y0 + jj
+    sub = np.nan_to_num(data[pj - 1 : pj + 2, pi - 1 : pi + 2].astype(float))
+    sub = sub - sub.min()
+    if sub.sum() <= 0:
+        return pi + 0.5, pj + 0.5
+    yy, xx = np.mgrid[-1:2, -1:2]
+    return pi + 0.5 + float((sub * xx).sum() / sub.sum()), pj + 0.5 + float(
+        (sub * yy).sum() / sub.sum()
+    )
 
 
 def suggested_r1(centres, shape) -> Dict[str, float]:

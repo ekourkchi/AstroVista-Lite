@@ -379,6 +379,13 @@ def test_the_example_pair_settles_and_recovers_the_truth(tmp_path):
     assert residual.dtype.kind == "f" and residual.dtype.itemsize == 8
     atol = 8 * 2.2e-16 * (np.abs(science) + 1000.0 + np.abs(total)) + 1e-12
     assert (np.abs(residual - (science - 1000.0 - total)) <= atol).all()
+    iterations = json.loads((out / "iterations.json").read_text())["iterations"]
+    assert len(iterations) == len(result.calls)
+    assert iterations[0]["input"] == "D"
+    assert next(e for e in iterations if e["galaxy"] == "B")["input"] == "D - M_A"
+    for e in iterations:
+        if e["passed"]:
+            assert (out / e["profile"]).exists() and len(e["model_sha256"]) == 64
     manifest = json.loads((out / "manifest.json").read_text())
     for name, digest in manifest["files_sha256"].items():
         assert hashlib.sha256((out / name).read_bytes()).hexdigest() == digest
@@ -666,6 +673,13 @@ def test_the_sky_filter_and_a_level_without_support_verdict():
         assert np.isfinite(h.level)
 
 
+def test_the_light_peak_refines_a_centre():
+    g = synthetic.Galaxy(40.3, 30.7, ie=100, re=8, ellip=0.2, angle=30)
+    data = g.image((60, 80))
+    x, y = pair.peak_centre(data, 38.0, 29.0)
+    assert abs(x - 40.3) < 0.5 and abs(y - 30.7) < 0.5
+
+
 def test_a_pair_folder_is_read(tmp_path):
     from astropy.io import fits
 
@@ -720,7 +734,7 @@ def test_a_galaxy_whose_growth_fails_stays_at_its_last_radius():
     result = pair.run(snap, fitter=f)
     b_r1 = [round(c["r1"], 3) for c in f.calls if c["component"] == "B"]
     assert b_r1 == [8.0, round(8.0 * 2.5**0.5, 3), 8.0, 8.0]
-    assert result.notes_growth and "B stopped growing" in result.notes_growth[0]
+    assert result.notes_growth and "B could not grow" in result.notes_growth[0]
     assert result.commits["B"].r1_call == 8.0
 
 
@@ -756,8 +770,128 @@ def test_the_report_tells_what_happened():
     text = pair.report(result, snap, "pair 1 ...")
     for section in ("## status", "## settings", "## growth", "## calls", "## hints"):
         assert section in text
-    assert "B stopped growing" in text
+    assert "B could not grow" in text
     assert "residual rings" in text
+
+
+# ---------------------------------------------------------------- the iterative workflow
+class SteadyFitter(FakeFitter):
+    """A fake elliprof whose model for a galaxy is the same in every call (it converges)."""
+
+    def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+        fit = super().__call__(data, x0, y0, r0, r1, nr, **kw)
+        fit.model[:] = 1.0 if x0 < 50 else 2.0
+        return fit
+
+
+def iterative_snapshot(a_kw=None, b_kw=None, **settings):
+    rng = np.random.default_rng(1)
+    image = 100.0 + rng.normal(0, 1, (60, 120))
+    comps = {
+        "A": pair.Component("A", 30.5, 30.5, 2, 20, 6, fixctr=1, **(a_kw or {})),
+        "B": pair.Component("B", 90.5, 30.5, 2, 20, 6, fixctr=1, **(b_kw or {})),
+    }
+    settings.setdefault("cycles", 2)
+    return pair.prepare(
+        image, "tiny", None, comps, pair.Settings(sky=100.0, cores=False, **settings)
+    )
+
+
+def test_every_fit_sees_d_minus_the_current_companion_and_d_never_changes():
+    snap = iterative_snapshot(a_kw={"start": 8, "factor": 1.5}, b_kw={"start": 6, "step": 5})
+    d = snap.image.copy()
+    f = FakeFitter()
+    result = pair.run(snap, fitter=f)
+    assert np.array_equal(snap.image, d)  # D is immutable
+    calls = f.calls
+    assert calls[0]["component"] == "A" and np.array_equal(calls[0]["data"], d)  # A first, on D
+    models = {}  # the model each call made: FakeFitter's model = its call number
+    for k, c in enumerate(calls, 1):
+        if k == 1:
+            continue
+        other = "B" if c["component"] == "A" else "A"
+        last_other = max(j for j, x in enumerate(calls[: k - 1], 1) if x["component"] == other)
+        # exactly D minus the companion's latest model, never a running subtraction
+        assert np.array_equal(c["data"], d - float(last_other)), k
+    for h, c in zip(result.history, calls):
+        assert h["input"] == (
+            "D" if h["call"] == 1 else f"D - M_{'B' if c['component'] == 'A' else 'A'}"
+        )
+
+
+def test_no_galaxy_is_masked_from_the_other():
+    snap = iterative_snapshot()
+    f = FakeFitter()
+    pair.run(snap, fitter=f)
+    assert all(int(c["kw"]["masked"].sum()) == int(snap.fit_mask.sum()) for c in f.calls)
+    assert all(core.masked.sum() == 0 for core in snap.cores.values())
+
+
+def test_each_galaxy_follows_its_own_radius_schedule():
+    a = pair.Component("A", 0, 0, 2, 180, 6, radii=[40, 60, 90, 130, 180])
+    assert a.schedule() == [40, 60, 90, 130, 180]
+    b = pair.Component("B", 0, 0, 2, 50, 6, start=20, step=10)
+    assert b.schedule() == [20, 30, 40, 50]
+    c = pair.Component("C", 0, 0, 2, 100, 6, start=30, factor=1.5)
+    assert c.schedule() == pytest.approx([30, 45, 67.5, 100])
+    snap = iterative_snapshot(a_kw={"radii": [8, 12, 20]}, b_kw={"start": 6, "step": 7}, cycles=1)
+    f = FakeFitter()
+    pair.run(snap, fitter=f)
+    a_r1 = [c["r1"] for c in f.calls if c["component"] == "A"]
+    b_r1 = [c["r1"] for c in f.calls if c["component"] == "B"]
+    assert a_r1 == [8, 12, 20, 20]  # its list, then the cycle at the target
+    assert b_r1 == [6, 13, 20, 20]
+    with pytest.raises(pair.PairError):
+        pair.components_from(
+            {
+                "A": {"X0": "1", "Y0": "1", "R0": "2", "R1": "10", "STEP": "2", "FACTOR": "2"},
+                "B": {"X0": "50", "Y0": "1", "R0": "2", "R1": "10"},
+            }
+        )
+
+
+def test_it_stops_after_two_consecutive_converged_cycles_at_the_targets():
+    snap = iterative_snapshot(a_kw={"start": 8, "factor": 2}, cycles=10, consecutive=2)
+    result = pair.run(snap, fitter=SteadyFitter())
+    assert result.status == "stable_valid_pair"
+    assert result.metrics[-1].get("converged")
+    # growth (8 -> 16 -> 20: 2 cycles), then 2 converged cycles at the targets, not 10
+    assert len(result.metrics) < 2 + 10
+    assert [m["converged_streak"] for m in result.metrics][-2:] == [1, 2]
+
+
+def test_a_failure_keeps_the_last_valid_model_and_can_stop_the_run():
+    snap = iterative_snapshot(cycles=3, on_fail="stop")
+    f = FakeFitter(fail={("A", 3)})  # A's third fit (cycle 2) fails
+    result = pair.run(snap, fitter=f)
+    assert result.status == "retained_after_failed_update"
+    assert "stopped there" in result.stability_reason
+    assert result.commits["A"].tag == "1"  # the last valid A, intact
+    failed = [h for h in result.history if not h["passed"]]
+    assert failed and failed[0]["galaxy"] == "A" and failed[0]["model"] is None
+    assert "R1 20.0" in result.failures["A"]
+
+
+def test_fixed_centres_are_passed_and_the_drift_is_recorded():
+    snap = iterative_snapshot()
+    f = FakeFitter()
+    result = pair.run(snap, fitter=f)
+    assert {c["kw"]["fixctr"] for c in f.calls} == {1}
+    assert all(c.centre_drift is not None for c in result.calls if c.passed)
+
+
+def test_the_products_and_every_iteration_are_kept():
+    snap = iterative_snapshot(a_kw={"start": 8, "step": 6})
+    result = pair.run(snap, fitter=FakeFitter())
+    a, b = result.commits["A"].model, result.commits["B"].model
+    assert np.array_equal(result.total, a + b)
+    assert np.array_equal(result.residual, snap.image - 100.0 - a - b)
+    assert len(result.history) == len(result.calls)
+    for h, c in zip(result.history, result.calls):
+        assert h["r1"] == c.r1 and h["galaxy"] == c.component
+        assert (h["model"] is not None) == c.passed
+        assert h["companion"] == c.companion
+    assert result.schedules["A"] == [8, 14, 20]
 
 
 def test_the_pair_tool_in_the_window():
@@ -826,11 +960,17 @@ def test_the_pair_tool_in_the_window():
     assert panel.resid_hist.isVisibleTo(panel)
     assert window.pair_results.sky_table.rowCount() == len(record.result.sky_iterations)
     # growth and block in the panel's command, and the report on the clipboard
-    panel.cards["A"].start.setValue(60)
-    panel.cards["B"].block.setValue(50)
-    panel.steps.setValue(2)
+    panel.cards["A"].set_values({"start": 60, "growth": 0, "growth_value": 1.5})
+    panel.cards["B"].set_values({"growth": 2, "radii": "20, 30, 40"})
     command = panel.command(1)
-    assert "STEPS=2" in command and "START=60" in command and "BLOCK=50" in command
+    assert "START=60 FACTOR=1.5" in command and "RADII=20,30,40" in command
+    assert "CORES=0" in command and "CONSECUTIVE=2" in command and "FIXCTR=1" in command
+    assert panel.cards["A"].schedule() == [60, 90, 120]
+    # the iteration table, and one call's images
+    assert panel.iterations.rowCount() == len(record.result.calls)
+    window.show_pair_iteration(3)
+    settle()
+    assert window.viewer.image.name.endswith("model") or "input" in window.viewer.image.name
     window.copy_pair_report()
     assert "## calls" in QtWidgets.QApplication.clipboard().text()
     window.close()

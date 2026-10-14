@@ -147,30 +147,41 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.match = note()
         form.addRow(self.match)
         self.r0 = number(0.1, 1e5, 3, tip="R0: semi-major axis of the first isophote, pixels")
-        self.r1 = number(0.2, 1e5, 100, tip="R1: semi-major axis of the last isophote, pixels")
-        for key, box in (("r0", self.r0), ("r1", self.r1)):
+        self.r1 = number(0.2, 1e5, 100, tip="R1: the final (target) outer radius, pixels")
+        self.start = number(
+            0, 1e5, 0, tip="START: the R1 of the first fit; it grows to the final R1"
+        )
+        self.start.setSpecialValueText("= final R1")
+        for key, box, label in (
+            ("r0", self.r0, "R0"),
+            ("start", self.start, "Initial R1"),
+            ("r1", self.r1, "Final R1"),
+        ):
             row = QtWidgets.QHBoxLayout()
             row.addWidget(box, 1)
             b = QtWidgets.QToolButton(text="Pick")
-            b.setToolTip(f"Click on the image at the distance {key.upper()} from {cid}'s centre")
+            b.setToolTip(f"Click on the image at the distance {label} from {cid}'s centre")
             b.clicked.connect(lambda _c=False, k=key: self.pick_requested.emit(k))
             row.addWidget(b)
-            form.addRow(key.upper(), tip(row, key))
-        self.start = number(
-            0, 1e5, 0, tip="START: the R1 of the first fit, grown to R1 in the growth steps"
-        )
-        self.start.setSpecialValueText("R1 (no growth)")
-        form.addRow("Start R1", tip(self.start, "pair_grow"))
-        other_id = "B" if cid == "A" else "A"
-        self.block = number(
-            0,
-            1e5,
-            0,
-            decimals=1,
-            tip=f"BLOCK: left out around {cid} while {other_id} is fitted the first time",
-        )
-        self.block.setSpecialValueText("core only")
-        form.addRow("Block (px)", tip(self.block, "pair_block"))
+            form.addRow(label, tip(row, "pair_grow" if key == "start" else key))
+        self.growth = QtWidgets.QComboBox()
+        self.growth.addItems(["× factor", "+ pixels", "list of radii"])
+        self.growth_value = number(0.01, 1e4, 1.5, decimals=2, step=0.1, tip="the factor or step")
+        self.radii = QtWidgets.QLineEdit()
+        self.radii.setPlaceholderText("40, 60, 90, 130, 180")
+        self.radii.setToolTip("RADII: the R1 of each fit, increasing; the final R1 ends it")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.growth)
+        row.addWidget(self.growth_value, 1)
+        row.addWidget(self.radii, 2)
+        form.addRow("Growth", tip(row, "pair_grow"))
+        self.schedule_note = note()
+        form.addRow(self.schedule_note)
+        self.growth.currentIndexChanged.connect(self._growth_mode)
+        self._growth_mode(0)
+        for w in (self.start, self.r1, self.r0, self.growth_value):
+            w.valueChanged.connect(lambda _v: self._show_schedule())
+        self.radii.textChanged.connect(lambda _t: self._show_schedule())
         self.nr = whole(2, 100, 25, tip="NR: the number of isophotes from R0 to R1")
         self.coarse = note()
         row = QtWidgets.QHBoxLayout()
@@ -189,6 +200,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
         form.addRow("Harmonics", tip(self.mode, "pair_mode"))
         self.fixctr = QtWidgets.QComboBox()
         self.fixctr.addItems(["Free", "Fixed at X0, Y0", "Median of the fitted centres"])
+        self.fixctr.setCurrentIndex(1)  # fixed centres: the more stable decomposition
         form.addRow("Centres", tip(self.fixctr, "pair_fixctr"))
         self.core_mode = QtWidgets.QComboBox()
         self.core_mode.addItems(["Auto", "This radius", "Off"])
@@ -215,12 +227,57 @@ class GalaxyCard(QtWidgets.QGroupBox):
         row.addWidget(self.adaptive)
         row.addWidget(self.visible)
         form.addRow(tip(row, "pair_adaptive"))
-        for box in (self.x0, self.y0, self.r0, self.r1, self.start, self.block):
+        for box in (self.x0, self.y0, self.r0, self.r1, self.start):
             box.valueChanged.connect(lambda _v: self.changed.emit())
         self.nr.valueChanged.connect(self._nr)
         self.visible.toggled.connect(lambda _v: self.changed.emit())
         self.core.valueChanged.connect(lambda _v: self.changed.emit())
         self._nr(self.nr.value())
+
+    def _growth_mode(self, index: int) -> None:
+        self.growth_value.setVisible(index < 2)
+        self.radii.setVisible(index == 2)
+        if index == 0 and self.growth_value.value() < 1.01:
+            self.growth_value.setValue(1.5)
+        if index == 1 and self.growth_value.value() < 2:
+            self.growth_value.setValue(20)
+        self._show_schedule()
+
+    def growth_keywords(self) -> List[str]:
+        index = self.growth.currentIndex()
+        if index == 2:
+            text = ",".join(x for x in self.radii.text().replace(" ", ",").split(",") if x)
+            return [f"RADII={text}"] if text else []
+        if not self.r0.value() < self.start.value() < self.r1.value():
+            return []
+        out = [f"START={self.start.value():g}"]
+        out.append(
+            f"FACTOR={self.growth_value.value():g}"
+            if index == 0
+            else f"STEP={self.growth_value.value():g}"
+        )
+        return out
+
+    def schedule(self) -> List[float]:
+        """The R1 of each fit, as the engine will make it (empty if not valid)."""
+        from .pair import Component, PairError, components_from
+
+        keys = {"X0": "1", "Y0": "1", "R0": f"{self.r0.value():g}", "R1": f"{self.r1.value():g}"}
+        for k in self.growth_keywords():
+            key, value = k.split("=", 1)
+            keys[key] = value
+        try:
+            other = {"X0": "500", "Y0": "1", "R0": "1", "R1": "2"}
+            return components_from({"A": keys, "B": other})["A"].schedule()
+        except PairError:
+            return []
+
+    def _show_schedule(self) -> None:
+        radii = self.schedule()
+        self.schedule_note.setText(
+            "R1 per cycle: " + ", ".join(f"{r:g}" for r in radii) if radii else "not valid"
+        )
+        self.changed.emit()
 
     def _nr(self, value: int) -> None:
         self.coarse.setText("coarse (teaching) fit" if value < 15 else "")
@@ -252,10 +309,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
             parts.append("CORE=0")
         if self.adaptive.isChecked():
             parts.append("ADAPTIVE")
-        if self.r0.value() < self.start.value() < self.r1.value():
-            parts.append(f"START={self.start.value():g}")
-        if self.block.value() > 0:
-            parts.append(f"BLOCK={self.block.value():g}")
+        parts += self.growth_keywords()
         return " ".join(parts)
 
     def values(self) -> dict:
@@ -272,12 +326,14 @@ class GalaxyCard(QtWidgets.QGroupBox):
             "core": self.core.value(),
             "adaptive": self.adaptive.isChecked(),
             "start": self.start.value(),
-            "block": self.block.value(),
+            "growth": self.growth.currentIndex(),
+            "growth_value": self.growth_value.value(),
+            "radii": self.radii.text(),
         }
 
     def set_values(self, v: dict) -> None:
         self.name.setText(v.get("name", ""))
-        for key in ("x0", "y0", "r0", "r1", "core", "start", "block"):
+        for key in ("x0", "y0", "r0", "r1", "core", "start"):
             if key in v:
                 getattr(self, key).setValue(float(v[key]))
         if "nr" in v:
@@ -287,6 +343,12 @@ class GalaxyCard(QtWidgets.QGroupBox):
                 getattr(self, key).setCurrentIndex(int(v[key]))
         if "adaptive" in v:
             self.adaptive.setChecked(bool(v["adaptive"]))
+        if "growth" in v:
+            self.growth.setCurrentIndex(int(v["growth"]))
+        if "growth_value" in v:
+            self.growth_value.setValue(float(v["growth_value"]))
+        if "radii" in v:
+            self.radii.setText(str(v["radii"]))
 
 
 class PairPanel(QtWidgets.QWidget):
@@ -300,6 +362,7 @@ class PairPanel(QtWidgets.QWidget):
     export_requested = QtCore.Signal()
     blink_requested = QtCore.Signal()
     report_requested = QtCore.Signal()
+    iteration_requested = QtCore.Signal(int)  # a call's number (1, 2, ...): show its images
     changed = QtCore.Signal()  # something drawn on the image changed
 
     def __init__(self, parent=None):
@@ -445,17 +508,48 @@ class PairPanel(QtWidgets.QWidget):
 
         # ---- the run
         form.addRow(heading("4. Run"))
-        self.steps = whole(0, 20, 0, tip="STEPS: grow each galaxy's R1 from Start R1 to R1")
-        self.steps.setSpecialValueText("off")
-        form.addRow("Growth steps", tip(self.steps, "pair_grow"))
-        self.cycles = whole(1, 50, 4, tip="CYCLES: A then B, this many times after the start")
+        form.addRow(
+            note(
+                "A on D, B on D − M_A, then A on D − M_B and B on D − M_A, cycle after cycle, "
+                "the radii growing to their final R1. The galaxies are not masked from each "
+                "other: the companion's current model is subtracted from the original image."
+            )
+        )
+        self.cycles = whole(
+            1, 50, 6, tip="CYCLES: the most A → B cycles at the final radii (after growing)"
+        )
         self.niter = whole(1, 1000, 10, tip="NITER: iterations inside each elliprof call")
-        form.addRow("Cycles (A → B)", tip(self.cycles, "pair_cycles"))
+        form.addRow("Max cycles at final R1", tip(self.cycles, "pair_cycles"))
+        self.converge = number(
+            0.01, 50, 2.0, decimals=2, step=0.5, tip="CONVERGE: largest change of A, B and A + B, %"
+        )
+        self.consecutive = whole(0, 20, 2, tip="CONSECUTIVE: converged cycles in a row to stop")
+        self.consecutive.setSpecialValueText("never stop early")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("change <"))
+        row.addWidget(self.converge, 1)
+        row.addWidget(QtWidgets.QLabel("% for"))
+        row.addWidget(self.consecutive, 1)
+        row.addWidget(QtWidgets.QLabel("cycles"))
+        form.addRow("Converged", tip(row, "pair_converge"))
+        self.on_fail = QtWidgets.QComboBox()
+        self.on_fail.addItems(
+            [
+                "keep the last valid model, stay at its radius",
+                "keep the last valid model, try the radius again",
+                "stop and keep the last valid models",
+            ]
+        )
+        form.addRow("If a fit fails", tip(self.on_fail, "pair_onfail"))
         form.addRow("NITER (each call)", tip(self.niter, "niter"))
+        self.masking = QtWidgets.QCheckBox("Also mask a core around the companion (older method)")
+        self.masking.setToolTip("CORES: by default nothing is masked around the companion")
+        form.addRow(self.masking)
         self.calls = note()
         form.addRow(self.calls)
         self.cycles.valueChanged.connect(self._summary_line)
-        self.steps.valueChanged.connect(self._summary_line)
+        for card in self.cards.values():
+            card.changed.connect(self._summary_line)
         self.advanced = QtWidgets.QGroupBox("Advanced")
         self.advanced.setCheckable(True)
         self.advanced.setChecked(False)
@@ -467,7 +561,6 @@ class PairPanel(QtWidgets.QWidget):
         self.tie = whole(-50, 10, -1, tip="TIE: -1 = no smoothing of the parameters with radius")
         self.rmstar = QtWidgets.QCheckBox("RMSTAR")
         self.corecap = number(0, 1e4, 50, decimals=1, tip="the largest core, pixels")
-        self.early = QtWidgets.QCheckBox("Stop early once stable")
         self.timeout = number(1, 36000, 300, decimals=0, tip="seconds per elliprof call")
         self.bootstrap = QtWidgets.QCheckBox("Partial bootstrap start if a first fit fails")
         self.bootstrap.setChecked(True)
@@ -479,7 +572,6 @@ class PairPanel(QtWidgets.QWidget):
             ("TIE", self.tie),
             ("", self.rmstar),
             ("Core cap (px)", self.corecap),
-            ("", self.early),
             ("Timeout (s)", self.timeout),
             ("", self.bootstrap),
             ("", self.views),
@@ -504,6 +596,24 @@ class PairPanel(QtWidgets.QWidget):
         form.addRow(buttons)
         self.progress = note()
         form.addRow(self.progress)
+        self.iterations = plain_table()
+        self.iterations.setColumnCount(6)
+        self.iterations.setHorizontalHeaderLabels(
+            ["cycle", "galaxy", "input", "R1", "status", "centre drift"]
+        )
+        self.iterations.setMinimumHeight(170)
+        self.iterations.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeToContents
+        )
+        self.iterations.verticalHeader().setDefaultSectionSize(22)
+        self.iterations.setToolTip(
+            "Every elliprof call, as it runs. Double-click a row to see that fit's model and "
+            "the image it was fitted on (D − the companion's model then)."
+        )
+        self.iterations.cellDoubleClicked.connect(
+            lambda row, _col: self.iteration_requested.emit(row + 1)
+        )
+        form.addRow(self.iterations)
         self.status = QtWidgets.QLabel()
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.RichText)
@@ -557,9 +667,12 @@ class PairPanel(QtWidgets.QWidget):
             w.setVisible(on)
 
     def _summary_line(self) -> None:
-        n = 2 + 2 * (self.steps.value() + self.cycles.value())
+        grow = max(len(c.schedule()) for c in self.cards.values()) - 1 if self.cards else 0
+        grow = max(grow, 0)
+        n = 2 + 2 * (grow + self.cycles.value())
         self.calls.setText(
-            f"{n} elliprof calls: 2 to start, then A and B in each growth step and cycle"
+            f"at most {n} elliprof calls: 2 to start, {2 * grow} while the radii grow, then "
+            f"A and B in each cycle at the final radii"
         )
 
     # ---- the sky
@@ -752,10 +865,15 @@ class PairPanel(QtWidgets.QWidget):
         layers = self.ticked_layers()
         if layers:
             parts.append("MASK=" + ",".join(layers))
-        if self.steps.value():
-            parts.append(f"STEPS={self.steps.value()}")
-        if self.cycles.value() != 4:
-            parts.append(f"CYCLES={self.cycles.value()}")
+        if not self.masking.isChecked():
+            parts.append("CORES=0")
+        parts.append(f"CYCLES={self.cycles.value()}")
+        if self.consecutive.value():
+            parts.append(f"CONVERGE={self.converge.value() / 100:g}")
+            parts.append(f"CONSECUTIVE={self.consecutive.value()}")
+        on_fail = ("hold", "retry", "stop")[self.on_fail.currentIndex()]
+        if on_fail != "hold":
+            parts.append(f"ONFAIL={on_fail}")
         if self.niter.value() != 10:
             parts.append(f"NITER={self.niter.value()}")
         if self.rlaw.currentIndex() != 2:
@@ -768,8 +886,6 @@ class PairPanel(QtWidgets.QWidget):
             parts.append("RMSTAR")
         if self.corecap.value() != 50:
             parts.append(f"CORECAP={self.corecap.value():g}")
-        if self.early.isChecked():
-            parts.append("STOP")
         if self.timeout.value() != 300:
             parts.append(f"TIMEOUT={self.timeout.value():g}")
         if not self.bootstrap.isChecked():
@@ -786,11 +902,56 @@ class PairPanel(QtWidgets.QWidget):
         self.cards["B"].set_values(a)
         self.changed.emit()
 
+    def clear_iterations(self) -> None:
+        self.iterations.setRowCount(0)
+
+    def add_iteration(self, info: dict) -> None:
+        """One row of the iteration table (from a call's progress message)."""
+        row = self.iterations.rowCount()
+        self.iterations.insertRow(row)
+        status = "done" if info.get("passed") else f"FAILED: {info.get('reason', '')}"
+        drift = info.get("drift")
+        cells = [
+            str(info.get("cycle", "")),
+            info.get("component", ""),
+            info.get("input", ""),
+            f"{info.get('r1', 0):.1f}",
+            status,
+            "" if drift is None else f"{drift:.2f} px",
+        ]
+        for col, text in enumerate(cells):
+            item = QtWidgets.QTableWidgetItem(text)
+            if col == 1:
+                item.setForeground(QtGui.QColor(COLOURS.get(text, "#c9d1d9")))
+            if col == 4 and not info.get("passed"):
+                item.setForeground(QtGui.QColor("#f85149"))
+            self.iterations.setItem(row, col, item)
+        self.iterations.scrollToBottom()
+
+    def show_history(self, result) -> None:
+        """The iteration table of a finished fit: the calls of the fit kept."""
+        self.clear_iterations()
+        if result is None:
+            return
+        for h, c in zip(result.history, result.calls):
+            self.add_iteration(
+                {
+                    "cycle": h["cycle"],
+                    "component": h["galaxy"],
+                    "input": h["input"],
+                    "r1": h["r1"],
+                    "passed": h["passed"],
+                    "reason": h["reason"],
+                    "drift": c.centre_drift,
+                }
+            )
+
     def set_running(self, on: bool) -> None:
         self.run.setEnabled(not on)
         self.stop.setEnabled(on)
         if on:
             self.status.setText("")
+            self.clear_iterations()
 
     def show_result(self, result) -> None:
         if result is None:

@@ -570,19 +570,33 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ("TOMODELA=, TOMODELB=, TOMODEL=, TORESID=", "the result buffers (free ones)"),
                     ("VIEWS", "also the image − sky − B and image − sky − A"),
                     ("STOP, BOOTSTRAP=0", "stop once stable; no partial first fits"),
+                    ("CORES=0", "mask nothing around the companion (its model is subtracted)"),
                     (
-                        "STEPS=",
-                        "growth steps: each galaxy's R1 grows from its START to its R1 (0: off)",
+                        "CONVERGE=, CONSECUTIVE=",
+                        "stop after CONSECUTIVE cycles at the final radii with every change "
+                        "below CONVERGE (0.02; 0: run every cycle)",
                     ),
+                    ("ONFAIL=", "hold (default), retry or stop when a fit fails"),
+                    ("STEPS=", "geometric growth steps for a galaxy with START alone"),
                     (
                         "A: … B: …",
                         "each galaxy: X0= Y0= R0= R1= NR=25 NAME= MODE= FIXCTR= CORE= ADAPTIVE "
-                        "START= (first R1) BLOCK= (left out around it during the other's first "
-                        "fit)",
+                        "START= (first R1) with STEP= (+ pixels) or FACTOR= (×), or RADII= "
+                        "(a list); BLOCK= (left out around it during the other's first fit)",
                     ),
                 ),
                 "pair 1 SKY=3246 MASK=u12517j CYCLES=2 A: NAME=UGC12517 X0=567 Y0=562 R0=9 "
                 "R1=200 NR=20 B: X0=362.1 Y0=498.4 R0=2 R1=25 NR=10",
+            ),
+            _c(
+                "pairstep",
+                "pairstep N K",
+                "Put the model made by call K of the last pair fit of buffer N's image, and "
+                "the image that call was fitted on (D for A's first fit, D − M_B for A, D − "
+                "M_A for B), into two buffers. The iteration table of the Pair fit tool does "
+                "this when a row is double-clicked.",
+                (),
+                "pairstep 1 3",
             ),
             _c(
                 "pairreport",
