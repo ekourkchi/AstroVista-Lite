@@ -21,7 +21,18 @@ from .fitting import MODES
 from .flow import FlowLayout
 from .panels import heading, note, number, plain_table, tip, title_row, whole
 
-COLOURS = {"A": "#22d3ee", "B": "#ff9f1c"}  # cyan and orange, as in the examples
+COLOURS = {"A": "#22d3ee", "B": "#ff9f1c"}
+# the run of the automatic settings (chosen on simulated pairs; see the changelog)
+AUTO_RUN = [
+    "CORES=0",
+    "CYCLES=6",
+    "CONVERGE=0.02",
+    "CONSECUTIVE=2",
+    "DAMP=0.5",
+    "TRYDAMP=1,0.5",
+    "TRYFIX=1,0",
+    "TRYFACTOR=1.5,1.25",
+]  # cyan and orange, as in the examples
 STATE_COLOURS = {
     "usable_support": "#3fb950",
     "candidate_inspect_support": "#d29922",
@@ -131,6 +142,14 @@ class GalaxyCard(QtWidgets.QGroupBox):
         )
         form = QtWidgets.QFormLayout(self)
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        self.form = form
+        self._manual_rows = []  # rows hidden with the automatic settings
+
+        def manual(*args):
+            form.addRow(*args)
+            self._manual_rows.append(form.rowCount() - 1)
+
+        self.automatic = False
         self.name = QtWidgets.QLineEdit()
         self.name.setPlaceholderText(f"a name for {cid} (optional)")
         form.addRow("Name", self.name)
@@ -170,7 +189,18 @@ class GalaxyCard(QtWidgets.QGroupBox):
             b.setToolTip(f"Click on the image at the distance {label} from {cid}'s centre")
             b.clicked.connect(lambda _c=False, k=key: self.pick_requested.emit(k))
             row.addWidget(b)
-            form.addRow(label, tip(row, "pair_grow" if key == "start" else key))
+            if key == "r1":
+                self.r1_pick = b
+                self.r1_auto = QtWidgets.QCheckBox("auto")
+                self.r1_auto.setToolTip(
+                    "R1=AUTO: where the light on the side away from the companion fades into "
+                    "the noise (worked out when the fit starts)"
+                )
+                self.r1_auto.toggled.connect(self._r1_auto)
+                row.addWidget(self.r1_auto)
+                form.addRow(label, tip(row, "pair_r1auto"))
+            else:
+                manual(label, tip(row, "pair_grow" if key == "start" else key))
         self.growth = QtWidgets.QComboBox()
         self.growth.addItems(["× factor", "+ pixels", "list of radii"])
         self.growth_value = number(0.01, 1e4, 1.5, decimals=2, step=0.1, tip="the factor or step")
@@ -181,9 +211,9 @@ class GalaxyCard(QtWidgets.QGroupBox):
         row.addWidget(self.growth)
         row.addWidget(self.growth_value, 1)
         row.addWidget(self.radii, 2)
-        form.addRow("Growth", tip(row, "pair_grow"))
+        manual("Growth", tip(row, "pair_grow"))
         self.schedule_note = note()
-        form.addRow(self.schedule_note)
+        manual(self.schedule_note)
         self.growth.currentIndexChanged.connect(self._growth_mode)
         self._growth_mode(0)
         for w in (self.start, self.r1, self.r0, self.growth_value):
@@ -194,7 +224,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.nr)
         row.addWidget(self.coarse, 1)
-        form.addRow("NR", tip(row, "nr"))
+        manual("NR", tip(row, "nr"))
         self.mode = QtWidgets.QComboBox()
         self.mode.addItem("elliprof's default (3, 4)", "")
         for name in MODES:
@@ -204,11 +234,11 @@ class GalaxyCard(QtWidgets.QGroupBox):
             "terms; 6 replaces 3 (a 6th-order model is checked for elliprof's PA-wrap "
             "warning, and fails with it); m: the median of each term over all ellipses"
         )
-        form.addRow("Harmonics", tip(self.mode, "pair_mode"))
+        manual("Harmonics", tip(self.mode, "pair_mode"))
         self.fixctr = QtWidgets.QComboBox()
         self.fixctr.addItems(["Free", "Fixed at X0, Y0", "Median of the fitted centres"])
         self.fixctr.setCurrentIndex(1)  # fixed centres: the more stable decomposition
-        form.addRow("Centres", tip(self.fixctr, "pair_fixctr"))
+        manual("Centres", tip(self.fixctr, "pair_fixctr"))
         self.core_mode = QtWidgets.QComboBox()
         self.core_mode.addItems(["Auto", "This radius", "Off"])
         self.core = number(0, 1e4, 30, decimals=1, tip="the semi-major axis of the core, pixels")
@@ -220,9 +250,9 @@ class GalaxyCard(QtWidgets.QGroupBox):
         row.addWidget(self.core_mode)
         row.addWidget(self.core, 1)
         other = "B" if cid == "A" else "A"
-        form.addRow(f"Core of {cid}", tip(row, "pair_core"))
+        manual(f"Core of {cid}", tip(row, "pair_core"))
         self.core_note = note(f"left out of the fit of {other}")
-        form.addRow(self.core_note)
+        manual(self.core_note)
         self.adaptive = QtWidgets.QCheckBox("Adaptive outer radius")
         self.adaptive.setToolTip(
             "If the outer isophotes fail their checks, try a smaller R1 (at most 3 times, "
@@ -230,16 +260,38 @@ class GalaxyCard(QtWidgets.QGroupBox):
         )
         self.visible = QtWidgets.QCheckBox("Show on the image")
         self.visible.setChecked(True)
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.adaptive)
-        row.addWidget(self.visible)
-        form.addRow(tip(row, "pair_adaptive"))
+        manual(tip(self.adaptive, "pair_adaptive"))
+        form.addRow(self.visible)
         for box in (self.x0, self.y0, self.r0, self.r1, self.start):
             box.valueChanged.connect(lambda _v: self.changed.emit())
         self.nr.valueChanged.connect(self._nr)
         self.visible.toggled.connect(lambda _v: self.changed.emit())
         self.core.valueChanged.connect(lambda _v: self.changed.emit())
         self._nr(self.nr.value())
+
+    def _r1_auto(self, on: bool) -> None:
+        self.r1.setEnabled(not on)
+        self.r1_pick.setEnabled(not on)
+        self.changed.emit()
+
+    def set_automatic(self, on: bool) -> None:
+        """Show only the centre, R1 (automatic or typed) and the name (automatic settings),
+        or every setting."""
+        self.automatic = on
+        for row in self._manual_rows:
+            self.form.setRowVisible(row, not on)
+
+    def auto_keywords(self) -> str:
+        """The keywords of the automatic settings: the centre, R1 (or R1=AUTO), and START,
+        NR and the centre fitting chosen on simulated pairs."""
+        parts = []
+        name = self.name.text().strip()
+        if name:
+            parts.append("NAME=" + shlex.quote(name))
+        parts += [f"X0={self.x0.value():g}", f"Y0={self.y0.value():g}", "R0=3"]
+        parts.append("R1=AUTO" if self.r1_auto.isChecked() else f"R1={self.r1.value():g}")
+        parts += ["START=AUTO", "NR=AUTO", "FIXCTR=1"]
+        return " ".join(parts)
 
     def _growth_mode(self, index: int) -> None:
         self.growth_value.setVisible(index < 2)
@@ -297,12 +349,15 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.y0.setValue(round(y, 2))
 
     def keywords(self) -> str:
+        if self.automatic:
+            return self.auto_keywords()
         parts = []
         name = self.name.text().strip()
         if name:
             parts.append("NAME=" + shlex.quote(name))
         parts += [f"X0={self.x0.value():g}", f"Y0={self.y0.value():g}"]
-        parts += [f"R0={self.r0.value():g}", f"R1={self.r1.value():g}"]
+        parts += [f"R0={self.r0.value():g}"]
+        parts.append("R1=AUTO" if self.r1_auto.isChecked() else f"R1={self.r1.value():g}")
         if self.nr.value() != 25:
             parts.append(f"NR={self.nr.value()}")
         mode = self.mode.currentData()
@@ -336,6 +391,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
             "growth": self.growth.currentIndex(),
             "growth_value": self.growth_value.value(),
             "radii": self.radii.text(),
+            "r1_auto": self.r1_auto.isChecked(),
         }
 
     def set_values(self, v: dict) -> None:
@@ -356,6 +412,8 @@ class GalaxyCard(QtWidgets.QGroupBox):
             self.growth_value.setValue(float(v["growth_value"]))
         if "radii" in v:
             self.radii.setText(str(v["radii"]))
+        if "r1_auto" in v:
+            self.r1_auto.setChecked(bool(v["r1_auto"]))
 
 
 class PairPanel(QtWidgets.QWidget):
@@ -384,6 +442,20 @@ class PairPanel(QtWidgets.QWidget):
                 "model taken out. Measure the sky, place A and B, then Fit pair."
             )
         )
+        self._manual_rows = []
+
+        def manual(*args):
+            form.addRow(*args)
+            self._manual_rows.append(form.rowCount() - 1)
+
+        self.form = form
+        self.auto = QtWidgets.QCheckBox("Automatic settings (recommended)")
+        self.auto.setChecked(True)
+        self.auto.setToolTip(
+            "Only the centres, the masks and the sky to choose; the radii, the isophotes and "
+            "the fitting recipe are those that worked best on simulated pairs"
+        )
+        form.addRow(tip(self.auto, "pair_auto"))
 
         # ---- the sky
         form.addRow(heading("1. Sky"))
@@ -465,15 +537,15 @@ class PairPanel(QtWidgets.QWidget):
         self.factor = number(
             0.5, 1.5, 1.0, decimals=5, step=0.001, tip="SKYFACTOR: the sky used = factor × base"
         )
-        form.addRow("Sky factor", tip(self.factor, "pair_skyfactor"))
+        manual("Sky factor", tip(self.factor, "pair_skyfactor"))
         self.sky_used = note()
-        form.addRow(self.sky_used)
+        manual(self.sky_used)
         self.sky_iter = whole(
             0, 50, 0, tip="SKYITER: refit, each time with the factor from the residual sky"
         )
         self.sky_iter.setSpecialValueText("off")
-        form.addRow("Refine the factor", tip(self.sky_iter, "pair_skyfactor"))
-        form.addRow(
+        manual("Refine the factor", tip(self.sky_iter, "pair_skyfactor"))
+        manual(
             note(
                 "Refine: after each pair fit, the median m of image − sky − A − B on the sky "
                 "pixels gives factor + m / base; up to this many fits, the one with the "
@@ -533,7 +605,14 @@ class PairPanel(QtWidgets.QWidget):
 
         # ---- the run
         form.addRow(heading("4. Run"))
-        form.addRow(
+        self.auto_note = note(
+            "Automatic: R1 where each galaxy's light fades into the noise; the first fits small "
+            "and growing; isophotes about 10 % apart; 8 variants of damping, centres and growth "
+            "fitted, the best kept by the residual (fixed centres unless free ones clearly "
+            "lower it). Untick Automatic settings to change any of it."
+        )
+        form.addRow(self.auto_note)
+        manual(
             note(
                 "A on D, B on D − M_A, then A on D − M_B and B on D − M_A, cycle after cycle, "
                 "the radii growing to their final R1. The galaxies are not masked from each "
@@ -544,7 +623,7 @@ class PairPanel(QtWidgets.QWidget):
             1, 50, 6, tip="CYCLES: the most A → B cycles at the final radii (after growing)"
         )
         self.niter = whole(1, 1000, 10, tip="NITER: iterations inside each elliprof call")
-        form.addRow("Max cycles at final R1", tip(self.cycles, "pair_cycles"))
+        manual("Max cycles at final R1", tip(self.cycles, "pair_cycles"))
         self.converge = number(
             0.01, 50, 2.0, decimals=2, step=0.5, tip="CONVERGE: largest change of A, B and A + B, %"
         )
@@ -556,7 +635,7 @@ class PairPanel(QtWidgets.QWidget):
         row.addWidget(QtWidgets.QLabel("% for"))
         row.addWidget(self.consecutive, 1)
         row.addWidget(QtWidgets.QLabel("cycles"))
-        form.addRow("Converged", tip(row, "pair_converge"))
+        manual("Converged", tip(row, "pair_converge"))
         self.on_fail = QtWidgets.QComboBox()
         self.on_fail.addItems(
             [
@@ -566,10 +645,10 @@ class PairPanel(QtWidgets.QWidget):
                 "stop and keep the last valid models",
             ]
         )
-        form.addRow("If a fit fails", tip(self.on_fail, "pair_onfail"))
+        manual("If a fit fails", tip(self.on_fail, "pair_onfail"))
         self.damp = number(0.05, 1.0, 0.5, decimals=2, step=0.1, tip="DAMP: share of the new model")
         self.damp.setSpecialValueText("off (1)")
-        form.addRow("Damping", tip(self.damp, "pair_damp"))
+        manual("Damping", tip(self.damp, "pair_damp"))
         self.search = QtWidgets.QGroupBox("Search for the best fit")
         self.search.setCheckable(True)
         self.search.setChecked(True)
@@ -600,13 +679,13 @@ class PairPanel(QtWidgets.QWidget):
             1,
             2,
         )
-        form.addRow(tip(self.search, "pair_search"))
-        form.addRow("NITER (each call)", tip(self.niter, "niter"))
+        manual(tip(self.search, "pair_search"))
+        manual("NITER (each call)", tip(self.niter, "niter"))
         self.masking = QtWidgets.QCheckBox("Also mask a core around the companion (older method)")
         self.masking.setToolTip("CORES: by default nothing is masked around the companion")
-        form.addRow(self.masking)
+        manual(self.masking)
         self.calls = note()
-        form.addRow(self.calls)
+        manual(self.calls)
         self.cycles.valueChanged.connect(self._summary_line)
         for card in self.cards.values():
             card.changed.connect(self._summary_line)
@@ -639,7 +718,7 @@ class PairPanel(QtWidgets.QWidget):
             adv.addRow(label, w)
         self.advanced.toggled.connect(self._fold_advanced)
         self._fold_advanced(False)
-        form.addRow(self.advanced)
+        manual(self.advanced)
         buttons = QtWidgets.QHBoxLayout()
         self.run = QtWidgets.QPushButton("Fit pair")
         self.run.setDefault(True)
@@ -717,7 +796,10 @@ class PairPanel(QtWidgets.QWidget):
         form.addRow(self.report)
         self._summary_line()
 
-    # ---- folding
+        # ---- folding
+        self.auto.toggled.connect(self.set_automatic)
+        self.set_automatic(True)
+
     def _fold_sky(self, on: bool) -> None:
         for w in self.sky_more.findChildren(QtWidgets.QWidget):
             w.setVisible(on)
@@ -916,7 +998,34 @@ class PairPanel(QtWidgets.QWidget):
         ]
 
     # ---- the command
+    def set_automatic(self, on: bool) -> None:
+        for row in self._manual_rows:
+            self.form.setRowVisible(row, not on)
+        self.auto_note.setVisible(on)
+        for card in self.cards.values():
+            card.set_automatic(on)
+            if on:
+                card.r1_auto.setChecked(True)
+        self._summary_line()
+
+    def auto_command(self, n: int) -> str:
+        """The pair command of the automatic settings."""
+        parts = [f"pair {n}", f"SKY={self.sky.value():.10g}"]
+        if self.factor.value() != 1.0:
+            parts.append(f"SKYFACTOR={self.factor.value():.6g}")
+        layers = self.ticked_layers()
+        if layers:
+            parts.append("MASK=" + ",".join(layers))
+        parts += AUTO_RUN
+        if self.views.isChecked():
+            parts.append("VIEWS")
+        parts.append("A: " + self.cards["A"].auto_keywords())
+        parts.append("B: " + self.cards["B"].auto_keywords())
+        return " ".join(parts)
+
     def command(self, n: int) -> str:
+        if self.auto.isChecked():
+            return self.auto_command(n)
         parts = [f"pair {n}", f"SKY={self.sky.value():.10g}"]
         if self.factor.value() != 1.0:
             parts.append(f"SKYFACTOR={self.factor.value():.6g}")

@@ -596,7 +596,11 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "A: … B: …",
                         "each galaxy: X0= Y0= R0= R1= NR=25 NAME= MODE= FIXCTR= CORE= ADAPTIVE "
                         "START= (first R1) with STEP= (+ pixels) or FACTOR= (×), or RADII= "
-                        "(a list); BLOCK= (left out around it during the other's first fit)",
+                        "(a list); BLOCK= (left out around it during the other's first fit); "
+                        "R1=AUTO, START=AUTO and NR=AUTO: the radii and isophotes chosen on "
+                        "simulated pairs (R1 where the light away from the other galaxy falls "
+                        "below the noise, measured again on the image minus the other's "
+                        "model)",
                     ),
                 ),
                 "pair 1 SKY=3246 MASK=u12517j CYCLES=2 A: NAME=UGC12517 X0=567 Y0=562 R0=9 "

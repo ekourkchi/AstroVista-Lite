@@ -46,6 +46,18 @@ STATUSES = (
 STABILITY = 0.02  # relative change of A, B and A + B below which a pair is stable
 CORECAP = 50.0
 NR_TEACHING = 15  # below this an NR is flagged as a coarse (teaching) fit
+NR_RATIO = 1.1  # NR=0 (automatic): isophotes about 10 % apart in Rmaj, from R0 to each R1
+NR_RANGE = (8, 40)
+
+
+def auto_nr(r0: float, r1: float) -> int:
+    """The number of isophotes NR=0 asks for: about NR_RATIO apart from r0 to r1, within
+    NR_RANGE.  A fixed NR packs a small R1 (the first fits of a growing schedule, a small
+    companion) with isophotes a fraction of a pixel apart, and noise makes them cross."""
+    n = int(round(math.log(max(r1, r0 * 1.01) / r0) / math.log(NR_RATIO))) + 1
+    return int(min(max(n, NR_RANGE[0]), NR_RANGE[1]))
+
+
 # the rogue-contour thresholds (starting values; see the plan, T7)
 JUMP_PIXELS, JUMP_FRACTION = 2.0, 0.15
 Q_EXCURSION = 0.15
@@ -214,6 +226,10 @@ class Snapshot:
     provenance: dict = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
     blocks: Dict[str, Core] = field(default_factory=dict)  # keyed by owner; BLOCK only
+    # R1=AUTO / START=AUTO: which galaxies' radii run_search measures again on the image
+    # minus the other's model (a first pass), and the noise those radii use
+    auto: Dict[str, Tuple[bool, bool]] = field(default_factory=dict)  # cid: (R1, START)
+    auto_sigma: Optional[float] = None
 
     def mask_for(self, cid: str, first: bool = False) -> np.ndarray:
         """The pixels left out while fitting component ``cid``: M0 and the other's core
@@ -443,6 +459,94 @@ def _radii(text: str, where: str) -> List[float]:
     return values
 
 
+# The automatic radii (R1=AUTO, START=AUTO), chosen on simulated pairs (see the changelog)
+AUTO_R1_SIGMA = 1.0  # R1: where the light away from the companion falls below this x sigma
+AUTO_R1_EDGE = 0.9  # ... at most this fraction of the distance to the frame's edge
+START_SHARE = 1 / 3  # the first R1: this share of the final R1, ...
+START_SEPARATION = 0.35  # ... at most this share of the distance between the centres, ...
+START_MIN = 9.0  # ... and at least this many pixels
+AUTO_FACTOR = 1.5  # the growth factor with START=AUTO
+
+
+def auto_r1(
+    light: np.ndarray,
+    masked: np.ndarray,
+    centre: Tuple[float, float],
+    other: Tuple[float, float],
+    sigma: float,
+    k: float = AUTO_R1_SIGMA,
+    width: float = 3.0,
+) -> float:
+    """R1=AUTO: the inner radius of the first annulus (``width`` px wide, from 5 px) whose
+    median ``light`` (the image minus the sky), on the half facing away from the companion
+    and on pixels not ``masked``, is below ``k`` x ``sigma``; at most AUTO_R1_EDGE of the
+    distance to the nearest edge, and at least 10 px."""
+    ny, nx = light.shape
+    x, y = centre
+    edge = min(x, y, nx - x, ny - y)
+    rmax = max(12.0, 0.95 * edge)
+    r0 = int(math.ceil(rmax)) + 2
+    i0, i1 = max(int(x) - r0, 0), min(int(x) + r0, nx)
+    j0, j1 = max(int(y) - r0, 0), min(int(y) + r0, ny)
+    yy, xx = np.mgrid[j0:j1, i0:i1]
+    dx, dy = xx + 0.5 - x, yy + 0.5 - y
+    r = np.hypot(dx, dy)
+    away = (dx * (x - other[0]) + dy * (y - other[1])) >= 0
+    sub = light[j0:j1, i0:i1]
+    ok = away & ~masked[j0:j1, i0:i1] & np.isfinite(sub)
+    cap = AUTO_R1_EDGE * edge
+    for lo in np.arange(5.0, rmax, width):
+        sel = ok & (r >= lo) & (r < lo + width)
+        if sel.sum() >= 8 and np.median(sub[sel]) < k * sigma:
+            return round(float(max(10.0, min(lo, cap))), 1)
+    return round(float(max(10.0, cap)), 1)
+
+
+def auto_start(r1: float, separation: float) -> Optional[float]:
+    """START=AUTO: START_SHARE of R1, at most START_SEPARATION of the separation (so that
+    the first fits stay off the companion's centre), at least START_MIN; None (no growth)
+    when that is not below R1."""
+    start = max(min(START_SHARE * r1, START_SEPARATION * separation), START_MIN)
+    return round(start, 1) if start < r1 - 1 else None
+
+
+def resolve_auto(
+    own: Dict[str, Dict[str, str]],
+    light: np.ndarray,
+    masked: np.ndarray,
+    sigma: float,
+) -> List[str]:
+    """Replace R1=AUTO and START=AUTO in the A: and B: keywords by numbers (in place), and
+    say what was chosen.  ``light`` is the image minus the sky; ``masked``, the fitting
+    mask."""
+    notes = []
+    try:
+        centres = {c: (float(own[c]["X0"]), float(own[c]["Y0"])) for c in ("A", "B")}
+    except (KeyError, ValueError):
+        return notes  # components_from reports it
+    separation = math.hypot(centres["A"][0] - centres["B"][0], centres["A"][1] - centres["B"][1])
+    for cid in ("A", "B"):
+        k = own[cid]
+        other = centres["B" if cid == "A" else "A"]
+        if str(k.get("R1", "")).upper() == "AUTO":
+            k["R1"] = format(auto_r1(light, masked, centres[cid], other, sigma), "g")
+            notes.append(
+                f"{cid}: R1=AUTO -> {k['R1']} (light below {AUTO_R1_SIGMA:g} sigma = "
+                f"{AUTO_R1_SIGMA * sigma:.4g}, away from the companion)"
+            )
+        if str(k.get("START", "")).upper() == "AUTO":
+            start = auto_start(float(k["R1"]), separation)
+            del k["START"]
+            if start is None:
+                notes.append(f"{cid}: START=AUTO -> no growth (R1 is small)")
+            else:
+                k["START"] = format(start, "g")
+                if not any(w in k for w in ("STEP", "FACTOR", "RADII")):
+                    k["FACTOR"] = format(AUTO_FACTOR, "g")
+                notes.append(f"{cid}: START=AUTO -> {k['START']}")
+    return notes
+
+
 def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
     out = {}
     for cid in ("A", "B"):
@@ -459,7 +563,7 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
             y0=_num(k, "Y0", where),
             r0=_num(k, "R0", where),
             r1=_num(k, "R1", where),
-            nr=_num(k, "NR", where, 25, int),
+            nr=0 if str(k.get("NR", "")).upper() == "AUTO" else _num(k, "NR", where, 25, int),
             name=k.get("NAME", ""),
             mode=mode,
             cos3x=_num(k, "COS3X", where, None, int) if "COS3X" in k else None,
@@ -475,8 +579,8 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
         )
         if not 0 < c.r0 < c.r1:
             raise PairError(f"0 < R0 < R1 is needed{where}")
-        if not 2 <= c.nr <= 100:
-            raise PairError(f"NR must be 2 to 100{where}")
+        if not (c.nr == 0 or 2 <= c.nr <= 100):
+            raise PairError(f"NR must be 2 to 100, or 0 (automatic){where}")
         if c.fixctr not in (0, 1, 2):
             raise PairError(f"FIXCTR must be 0, 1 or 2{where}")
         if c.core is not None and c.core < 0:
@@ -740,7 +844,7 @@ def prepare(
         maskops.circle(ev, c.x0, c.y0, c.r1, True)
     ev &= ~m0
     for c in (a, b):
-        if c.nr < NR_TEACHING:
+        if 0 < c.nr < NR_TEACHING:
             notes.append(f"{c.id}: NR={c.nr} is a coarse (teaching) fit")
     return Snapshot(
         image=data,
@@ -801,6 +905,11 @@ def _pa_difference(a: float, b: float) -> float:
     return min(d, 180.0 - d)
 
 
+def nr_for(comp: Component, r1: float) -> int:
+    """The NR of a call of ``comp`` at ``r1``: its own, or automatic (NR=0)."""
+    return comp.nr if comp.nr else auto_nr(comp.r0, r1)
+
+
 def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarray):
     """Whether a candidate fit passes: (ok, reason, kind, radius).  ``kind`` is "outer"
     for a failure at one isophote (a value not finite or out of range, a crossing, a rogue
@@ -809,8 +918,9 @@ def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarr
     if fit.returncode != 0 or fit.profile is None:
         return False, f"elliprof failed: {fit.message or fit.returncode}", "other", None
     p = fit.profile
-    if len(p) != comp.nr:
-        return False, f"{len(p)} isophotes instead of NR={comp.nr}", "other", None
+    nr = nr_for(comp, r1_call)
+    if len(p) != nr:
+        return False, f"{len(p)} isophotes instead of NR={nr}", "other", None
     cols = {
         name: p[name].to_numpy(dtype=float) for name in ("Rmaj", "x0", "y0", "I0", "ellip", "alpha")
     }
@@ -977,7 +1087,7 @@ def run(
                 comp.y0,
                 comp.r0,
                 r1,
-                comp.nr,
+                nr_for(comp, r1),
                 niter=s.niter,
                 sky=s.sky,
                 masked=mask,
@@ -1482,6 +1592,44 @@ def quality(result: PairResult, snap: Snapshot, inner: float = 10.0) -> dict:
     return {"score": score, "per_galaxy": per, "sigma": float(sigma), "pixels": int(outside.sum())}
 
 
+def refine_auto(snap: Snapshot, first: PairResult) -> Tuple[Snapshot, List[str]]:
+    """R1=AUTO measured again for each galaxy on the image minus the sky and minus the
+    other's model of a first pass (and START=AUTO from it).  Measured on the image itself,
+    the light of a small companion inside a large galaxy's halo never falls to the noise on
+    its far side: its R1 came out many times its size, and its model took the halo."""
+    if not first.complete or not snap.auto or not snap.auto_sigma:
+        return snap, []
+    comps, notes = dict(snap.components), []
+    separation = math.hypot(comps["A"].x0 - comps["B"].x0, comps["A"].y0 - comps["B"].y0)
+    for cid, (r1_auto, start_auto) in snap.auto.items():
+        if not r1_auto:
+            continue
+        other = "B" if cid == "A" else "A"
+        c, o = comps[cid], snap.components[other]
+        light = snap.image - snap.settings.sky - first.commits[other].model
+        r1 = auto_r1(light, snap.fit_mask, (c.x0, c.y0), (o.x0, o.y0), snap.auto_sigma)
+        if r1 <= c.r0 or r1 == c.r1:
+            continue
+        changes = {"r1": r1}
+        if start_auto:
+            start = auto_start(r1, separation)
+            changes.update(
+                start=start, factor=(c.factor or AUTO_FACTOR) if start else None, step=None
+            )
+        notes.append(
+            f"{cid}: R1=AUTO measured again on the image minus {other}'s model: "
+            f"{c.r1:g} -> {r1:g}"
+        )
+        comps[cid] = replace(c, **changes)
+    if not notes:
+        return snap, []
+    ev = np.zeros(snap.image.shape, bool)
+    for c in comps.values():
+        maskops.circle(ev, c.x0, c.y0, c.r1, True)
+    ev &= ~snap.fit_mask
+    return replace(snap, components=comps, eval=ev, notes=snap.notes + notes), notes
+
+
 def run_search(
     snap: Snapshot,
     support: Optional[np.ndarray] = None,
@@ -1491,7 +1639,17 @@ def run_search(
 ) -> PairResult:
     """Fit every variant TRY... asks for (each with SKYITER if asked) and keep the one whose
     two models describe the pair best (see choose()).  One result, not an average; every
-    variant is listed in ``search``."""
+    variant is listed in ``search``.  With R1=AUTO, a first pass (the snapshot as asked)
+    gives the models on which the radii are measured again (refine_auto)."""
+    if any(r for r, _s in snap.auto.values()):
+
+        def first_say(info):
+            if progress is not None:
+                info.update(variant="first pass (R1 on D minus the companion)")
+                progress(info)
+
+        first = run(snap, first_say, cancelled, fitter)
+        snap, _notes = refine_auto(snap, first)
     options = variants(snap)
     rows, results = [], []
     for k, (label, variant) in enumerate(options, 1):

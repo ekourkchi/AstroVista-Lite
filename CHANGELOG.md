@@ -12,6 +12,22 @@ newest is at the top.
   partial bootstrap starts that are never part of a result. The models, an unmasked
   residual, both sets of ellipses, the profiles and the change per cycle, in a worker
   thread with Stop. `pairexport` writes the inputs, settings, calls and products.
+- **Automatic pair settings** (Pair fit ▸ Automatic settings, on by default): choose the
+  sky, the masks and the two centres; the rest comes from 150 simulated pairs (Sérsic
+  galaxies with ellipticity and angle changing with radius, boxy/disky shapes, outer
+  isophotes off the inner centre, lopsided, tidal and m=1/m=3 distortions, heavy overlaps,
+  companions 0.15–1 times A's size, stars on and off the galaxies, white and correlated
+  noise, sky gradients), each run end to end (source finder, objects mask, sky, pair fit).
+  `R1=AUTO` (where the light away from the companion falls below the noise; measured again
+  on the image minus the companion's model of a first pass), `START=AUTO` (a third of R1,
+  at most 0.35 of the separation, at least 9 px), `NR=AUTO` (isophotes about 10 % apart).
+  Against the earlier defaults the pairs fitted rose from about 65 % to 91 %; capping the
+  start by the separation fixed most heavy overlaps; measuring R1 again lowered the profile
+  error of small companions from 5.6 % to 4.0 % (median).
+- **Sky with correlated noise.** `sky N SEGMENT` scales its detection noise by how much
+  more noise the filtered image has than white noise would give (1.7 on a drizzled HST
+  frame). Before, noise correlated over a few pixels was taken for sources, most of the
+  frame was masked and the level came out low (1.5 sigma on a simulated frame).
 - **Mask the other objects** (Pair fit ▸ Fitting masks): the mask layer `objects`, role
   fit, with every detected source but A and B (finding the sources first if needed).
   `mask sources` and `mask segments` take several centres to keep (`X0=xa,xb Y0=ya,yb`),

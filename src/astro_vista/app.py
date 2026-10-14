@@ -1758,6 +1758,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pair_results.set_record(record, text, residual)
             p.show_result(record.result if record else None)
             p.show_history(record.result if record else None)
+            if record is not None:  # an automatic R1: show the radius it became
+                for cid, card in p.cards.items():
+                    comp = record.job.snap.components.get(cid)
+                    if comp is not None and card.r1_auto.isChecked():
+                        card.r1.blockSignals(True)
+                        card.r1.setValue(comp.r1)
+                        card.r1.blockSignals(False)
             p.show_residual_sky(
                 record.result.sky_check if record else None,
                 residual,

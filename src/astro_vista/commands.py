@@ -852,8 +852,12 @@ class Session(ImageCommands):
             words, shared, own = pairs.parse(text)
             shared = self._with_variables("pair", shared)
             own = {c: self._with_variables("pair", k) for c, k in own.items()}
-            components = pairs.components_from(own)
             settings = pairs.settings_from(shared)
+            auto = any(
+                str(k.get(w, "")).upper() == "AUTO" for k in own.values() for w in ("R1", "START")
+            )
+            if not auto:
+                components = pairs.components_from(own)
         except pairs.PairError as e:
             raise CommandError(f"{e}\n{HELP['pair']}")
         if len(words) != 1:
@@ -933,6 +937,24 @@ class Session(ImageCommands):
                 sky_id, sigma = candidate.id, candidate.sigma
         if candidate is not None and candidate.support.sum() < 100:
             candidate = None
+        auto_notes, auto_flags, sigma_auto = [], {}, None
+        if auto:
+            auto_flags = {
+                c: (
+                    str(own[c].get("R1", "")).upper() == "AUTO",
+                    str(own[c].get("START", "")).upper() == "AUTO",
+                )
+                for c in ("A", "B")
+            }
+            sigma_auto = sigma
+            if sigma_auto is None or not np.isfinite(sigma_auto) or sigma_auto <= 0:
+                sigma_auto = skies.local_noise(image.data, np.isfinite(image.data) & ~masked)
+            light = np.asarray(image.data, float) - settings.sky
+            auto_notes = pairs.resolve_auto(own, light, masked, float(sigma_auto))
+            try:
+                components = pairs.components_from(own)
+            except pairs.PairError as e:
+                raise CommandError(f"{e}\n{HELP['pair']}")
         if settings.sky_iter and candidate is None:
             raise CommandError(
                 "SKYITER needs the sky support of a current sky measurement of this image "
@@ -981,6 +1003,9 @@ class Session(ImageCommands):
             )
         except pairs.PairError as e:
             raise CommandError(str(e))
+        snap.notes.extend(auto_notes)
+        if auto:
+            snap.auto, snap.auto_sigma = auto_flags, float(sigma_auto)
         job = PairJob(n, image, snap, outputs, "pair " + text.strip())
         job.measurement = candidate
         return job
@@ -1817,6 +1842,11 @@ Each galaxy (after A: or B:)
                 smaller galaxy to fit the larger one alone first)
   START=r       the R1 of its first fit; STEPS= (shared) grows it to R1 in steps
   ADAPTIVE      if its outer isophotes fail, try a smaller R1 (at most 3 times)
+  R1=AUTO       where its light, on the side away from the other, falls below the
+                noise sigma; measured again on the image minus the other's model of a
+                first pass before the fit
+  START=AUTO    a third of R1, at most 0.35 of the separation, at least 9 px; grows x1.5
+  NR=AUTO       isophotes about 10 % apart from R0 to each R1 (8 to 40)
 A line can go on after a \\ at its end.  The result is one of stable_valid_pair,
 valid_pair_not_stable, retained_after_failed_update, incomplete_initialization, cancelled."""
 

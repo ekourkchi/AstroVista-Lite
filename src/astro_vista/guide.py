@@ -873,6 +873,20 @@ TIPS = {
     "pair_masks": "<b>Fitting masks</b>: the layers left out of every fit of A and of B. Only "
     "layers of role <i>fit</i>, or without a role, are listed: a sky layer covers the "
     "galaxies themselves and is never used in a fit.",
+    "pair_auto": "<b>Automatic settings</b> (on by default): you choose the sky, the masks "
+    "and the two centres; the rest is what worked best on simulated pairs. R1 is where each "
+    "galaxy's light, on the side away from the other, falls below the noise sigma, measured "
+    "again on the image minus the other's model after a first pass (so a small galaxy in a "
+    "large one's halo does not take the halo); the first "
+    "fits use a third of R1 (at most 0.35 of the separation, at least 9 px) and grow by 1.5; "
+    "isophotes are about 10 % apart; centres fixed; 8 variants of damping (1, 0.5), centres "
+    "(fixed, free) and growth (x1.5, x1.25) are fitted and the best kept by the residual. "
+    "Untick it to set any of these yourself; the report and the export record every value "
+    "used.",
+    "pair_r1auto": "<b>R1</b>, the final outer radius. <b>auto</b>: where the median light in "
+    "3 px rings, on the half facing away from the other galaxy and on unmasked pixels, falls "
+    "below the noise sigma (at most 0.9 of the distance to the frame's edge). Untick it to type "
+    "or pick a radius.",
     "pair_objects": "<b>Mask the other objects</b> makes the mask layer <i>objects</i> (role "
     "fit) and ticks it: the pixels of every source the Source finder detects, grown by this "
     "many pixels, except the sources at A's and B's centres (and the segment under each "

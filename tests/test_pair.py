@@ -486,11 +486,16 @@ def test_correlated_noise_gives_an_honest_sampling_error():
     assert 0.2 * scatter < np.median(errors) < 5 * scatter
 
 
-def test_strongly_correlated_noise_is_no_usable_sky():
-    # at 0.5 sigma, noise correlated over a few pixels makes blobs as large as sources:
-    # nearly everything is masked, and the tool says so instead of giving a level
+def test_correlated_noise_is_not_taken_for_sources():
+    # noise correlated over a few pixels (as in drizzled images) averages down less in the
+    # filtered image; the detection's noise is scaled for it, so the threshold does not
+    # mask the noise itself, and the level stays close to the truth (500, sigma 10)
     r = sky.measure(synthetic.blank(correlated=2.0, n_stars=10).data, "c")
-    assert r.state != "usable_support" and r.reasons
+    assert r.state == "usable_support"
+    assert abs(r.level - 500.0) < 0.3 * 10.0
+    assert "correlated_noise" in r.detection
+    white = sky.measure(synthetic.blank(n_stars=10).data, "w")
+    assert abs(white.level - 500.0) < 0.3 * 10.0
 
 
 def test_a_halo_filling_the_frame_is_not_usable_support():
@@ -1080,6 +1085,16 @@ def test_the_pair_tool_in_the_window():
     assert window.session.masks["skymask"].visible
     panel._use_measured()
     assert panel.sky.value() == pytest.approx(panel._measurement.level, abs=1e-4)
+    # the first run had the automatic settings: R1, START and NR resolved by the engine
+    auto = record.job.line
+    assert "R1=AUTO" in auto and "START=AUTO" in auto and "TRYDAMP=" in auto
+    assert any("R1=AUTO ->" in n for n in record.job.snap.notes)
+    assert not panel.cards["A"].nr.isVisibleTo(panel)
+    panel.auto.setChecked(False)  # every setting again
+    assert panel.cards["A"].nr.isVisibleTo(panel)
+    panel.cards["A"].r1_auto.setChecked(False)
+    panel.cards["B"].r1_auto.setChecked(False)
+    panel.search.setChecked(False)
     panel.factor.setValue(0.999)
     panel.sky_iter.setValue(2)
     command = panel.command(1)
@@ -1092,7 +1107,7 @@ def test_the_pair_tool_in_the_window():
     assert panel.resid_hist.isVisibleTo(panel)
     assert window.pair_results.sky_table.rowCount() == len(record.result.sky_iterations)
     # growth and block in the panel's command, and the report on the clipboard
-    panel.cards["A"].set_values({"start": 60, "growth": 0, "growth_value": 1.5})
+    panel.cards["A"].set_values({"r1": 120, "start": 60, "growth": 0, "growth_value": 1.5})
     panel.cards["B"].set_values({"growth": 2, "radii": "20, 30, 40"})
     command = panel.command(1)
     assert "START=60 FACTOR=1.5" in command and "RADII=20,30,40" in command
@@ -1124,3 +1139,34 @@ def test_mask_segments_keeps_the_sources_at_several_centres(tmp_path):
     assert m[int(star[1]), int(star[0])]
     with pytest.raises(CommandError):
         s.execute("mask segments objects X0=1,2 Y0=3")
+
+
+def test_automatic_radii_and_isophotes():
+    # NR=AUTO: about 10 % apart, within the range
+    assert pair.auto_nr(3, 3 * 1.1**10) == 11
+    assert pair.auto_nr(3, 5) == pair.NR_RANGE[0]
+    assert pair.auto_nr(1, 1e6) == pair.NR_RANGE[1]
+    comp = pair.Component("A", 50, 50, 3.0, 120, 0)
+    assert pair.nr_for(comp, 120) == pair.auto_nr(3.0, 120)
+    # START=AUTO: a third of R1, at most 0.35 of the separation, at least 9 px; no growth
+    # when that is not below R1
+    assert pair.auto_start(120, 1000) == 40
+    assert pair.auto_start(120, 60) == 21
+    assert pair.auto_start(10, 100) is None
+    # R1=AUTO: where the light away from the companion falls below sigma
+    yy, xx = np.mgrid[0:400, 0:400]
+    light = 100.0 * np.exp(-np.hypot(xx + 0.5 - 200, yy + 0.5 - 200) / 20.0)  # 1 at r = 92
+    masked = np.zeros(light.shape, bool)
+    r1 = pair.auto_r1(light, masked, (200, 200), (300, 200), sigma=1.0)
+    assert 85 <= r1 <= 95
+    assert pair.auto_r1(light, masked, (20, 200), (300, 200), sigma=1e-9) == 18.0  # 0.9 x edge
+    own = {
+        "A": {"X0": "200", "Y0": "200", "R0": "3", "R1": "AUTO", "START": "AUTO"},
+        "B": {"X0": "300", "Y0": "200", "R0": "3", "R1": "40"},
+    }
+    notes = pair.resolve_auto(own, light, masked, 1.0)
+    assert float(own["A"]["R1"]) == r1 and own["A"]["FACTOR"] == "1.5"
+    assert float(own["A"]["START"]) == pair.auto_start(r1, 100)
+    assert any("R1=AUTO ->" in n for n in notes)
+    comps = pair.components_from(own)
+    assert comps["A"].schedule()[-1] == r1

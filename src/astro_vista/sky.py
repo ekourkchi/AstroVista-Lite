@@ -201,6 +201,31 @@ def local_noise(data: np.ndarray, good: np.ndarray, mesh: int = 32) -> float:
     return mad((filled - back.back())[good])
 
 
+def correlation_factor(
+    data: np.ndarray, good: np.ndarray, kernel: np.ndarray, mesh: int = 32
+) -> float:
+    """How much more noise the detection's filtered image has than white noise would give:
+    the MAD of the image minus a ``mesh`` background, filtered with ``kernel``, over what
+    white noise of the same pixel MAD would give (1 for white noise).  Drizzled images have
+    noise correlated between neighbouring pixels: filtered, it averages down less, and a
+    threshold in units of the pixel noise detects the noise itself.  At least 1."""
+    import sep
+    from scipy import ndimage
+
+    if good.sum() < 50:
+        return 1.0
+    filled = np.where(good, data, np.median(data[good])).astype(np.float64)
+    back = sep.Background(np.ascontiguousarray(filled), mask=~good, bw=mesh, bh=mesh, fw=3, fh=3)
+    resid = filled - back.back()
+    sigma = mad(resid[good])
+    if not np.isfinite(sigma) or sigma <= 0:
+        return 1.0
+    k = np.asarray(kernel, float)
+    filtered = ndimage.convolve(resid, k, mode="reflect")
+    white = sigma * float(np.sqrt((k * k).sum()))
+    return float(max(1.0, mad(filtered[good]) / white))
+
+
 def mad(values: np.ndarray) -> float:
     values = np.asarray(values, float)
     if values.size == 0:
@@ -367,6 +392,12 @@ def measure(
     sep.set_extract_pixstack(max(300000, data.size))
     sep.set_sub_object_limit(4096)
     level, noise = first_level, first_sigma
+    kernel = gaussian_kernel(fwhm) if fwhm > 0 else sep.default_kernel
+    rho = correlation_factor(data, valid, kernel)
+    detection["correlated_noise"] = (
+        f"the filtered image's noise is {rho:.3g} x that of white noise; the detection's "
+        "noise is scaled by it, so THRESH counts that noise"
+    )
     passes = []
     converged = False
     background = None
@@ -386,10 +417,10 @@ def measure(
             objects, segmentation = sep.extract(
                 work,
                 float(thresh),
-                err=float(noise),
+                err=float(noise * rho),
                 mask=blocked,
                 minarea=int(minarea),
-                filter_kernel=gaussian_kernel(fwhm) if fwhm > 0 else sep.default_kernel,
+                filter_kernel=kernel,
                 filter_type="matched",
                 deblend_nthresh=1,
                 deblend_cont=1.0,
