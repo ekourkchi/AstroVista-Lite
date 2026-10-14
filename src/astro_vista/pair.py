@@ -145,6 +145,11 @@ class Settings:
     converge: float = STABILITY  # CONVERGE=: the relative change below which it is stable
     consecutive: int = 0  # CONSECUTIVE=: stop after this many stable cycles at the targets
     on_fail: str = "reduce"  # ONFAIL=reduce|hold|retry|stop
+    damp: float = 1.0  # DAMP=: the share of a new model in the one subtracted (1: no damping)
+    try_damp: List[float] = field(default_factory=list)  # TRYDAMP=: variants to search
+    try_fix: List[int] = field(default_factory=list)  # TRYFIX=: centre fitting variants
+    try_factor: List[float] = field(default_factory=list)  # TRYFACTOR=: growth factors
+    polish: int = 2  # POLISH=: undamped final cycles after damped ones
 
 
 @dataclass
@@ -282,6 +287,9 @@ class PairResult:
     schedules: Dict[str, List[float]] = field(default_factory=dict)  # each galaxy's R1s
     # every call, with references to its model and the companion model it saw (not copies)
     history: List[dict] = field(default_factory=list)
+    quality: dict = field(default_factory=dict)  # see quality()
+    search: List[dict] = field(default_factory=list)  # TRY...: every variant, and its score
+    snapshot: Optional["Snapshot"] = None  # the snapshot of the fit kept, if not the job's
     notes_growth: List[str] = field(default_factory=list)  # galaxies that stopped growing
     # SKYITER: one entry per pair fit (factor, sky, residual median, status); the result is
     # the fit marked "chosen"
@@ -371,6 +379,11 @@ SHARED = {
     "CONVERGE",
     "CONSECUTIVE",
     "ONFAIL",
+    "DAMP",
+    "POLISH",
+    "TRYDAMP",
+    "TRYFIX",
+    "TRYFACTOR",
 }
 OWN = {
     "NAME",
@@ -408,6 +421,15 @@ def _num(keys, key, what, default=None, kind=float):
     if not math.isfinite(value):
         raise PairError(f"{key} must be finite{what}")
     return value
+
+
+def _numbers(keys, key) -> List[float]:
+    if key not in keys:
+        return []
+    try:
+        return [float(x) for x in re.split(r"[,\s]+", keys[key].strip()) if x]
+    except ValueError:
+        raise PairError(f"{key} must be numbers separated by commas, not {keys[key]!r}")
 
 
 def _radii(text: str, where: str) -> List[float]:
@@ -487,6 +509,11 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         converge=_num(shared, "CONVERGE", "", STABILITY),
         consecutive=_num(shared, "CONSECUTIVE", "", 1 if "STOP" in shared else 0, int),
         on_fail=shared.get("ONFAIL", "reduce").strip().lower(),
+        damp=_num(shared, "DAMP", "", 1.0),
+        try_damp=_numbers(shared, "TRYDAMP"),
+        try_fix=[int(x) for x in _numbers(shared, "TRYFIX")],
+        try_factor=_numbers(shared, "TRYFACTOR"),
+        polish=_num(shared, "POLISH", "", 2, int),
         cycles=_num(shared, "CYCLES", "", 4, int),
         niter=_num(shared, "NITER", "", 10, int),
         rlaw=_num(shared, "RLAW", "", 2, int),
@@ -514,6 +541,19 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         raise PairError("CONVERGE must be between 0 and 1 (a relative change)")
     if not 0 <= s.consecutive <= 20:
         raise PairError("CONSECUTIVE must be 0 to 20")
+    if not 0 < s.damp <= 1:
+        raise PairError("DAMP must be above 0 and at most 1 (1: no damping)")
+    if not 1 <= s.polish <= 10:
+        raise PairError("POLISH must be 1 to 10")
+    if any(not 0 < x <= 1 for x in s.try_damp):
+        raise PairError("TRYDAMP values must be above 0 and at most 1")
+    if any(x not in (0, 1, 2) for x in s.try_fix):
+        raise PairError("TRYFIX values must be 0, 1 or 2")
+    if any(x <= 1 for x in s.try_factor):
+        raise PairError("TRYFACTOR values must be above 1")
+    n = max(len(s.try_damp), 1) * max(len(s.try_fix), 1) * max(len(s.try_factor), 1)
+    if n > 16:
+        raise PairError(f"{n} variants to search: at most 16")
     if s.on_fail not in ("reduce", "hold", "retry", "stop"):
         raise PairError("ONFAIL must be reduce, hold, retry or stop")
     return s
@@ -892,7 +932,7 @@ def run(
     sched = {cid: comps[cid].schedule(s.steps) for cid in ("A", "B")}
     n_grow = max(len(v) for v in sched.values()) - 1
     result.schedules = {cid: list(v) for cid, v in sched.items()}
-    total_calls = 2 + 2 * (n_grow + s.cycles)
+    total_calls = 2 + 2 * (n_grow + s.cycles + (s.polish if s.damp < 1 else 0))
     counter = {"n": 0}
 
     def say(**info):
@@ -1058,7 +1098,7 @@ def run(
             result.stability_reason = f"A: {result.failures.get('A', '')}"
             return _finish(result, snap, start, None, committed)
         committed["A"] = a0
-        b0 = initialise("B", a0)
+        b0 = initialise("B", a0)  # B on D - M_A
         if b0 is None:
             result.status = "incomplete_initialization"
             result.stability_reason = f"B: {result.failures.get('B', '')}"
@@ -1069,26 +1109,40 @@ def run(
             checkpoint = ("0", dict(committed))
         last_ok = {"A": True, "B": True}
         held: Dict[str, float] = {}  # galaxies whose growth failed: the radius they stay at
-        streak = 0
-        stopped_on_failure = None
-        for k in range(1, n_grow + s.cycles + 1):
+        state = {"streak": 0, "stopped": None, "checkpoint": checkpoint}
+        # what is subtracted from D when the companion is fitted: its latest model, or with
+        # damping (DAMP < 1) a blend of its new and previous ones
+        used: Dict[str, object] = {"A": committed["A"], "B": committed["B"]}
+
+        def take(cid: str, cand: Commit, alpha: float) -> None:
+            committed[cid] = cand
+            if alpha >= 1:
+                used[cid] = cand
+            else:
+                used[cid] = _Used(
+                    alpha * cand.model + (1 - alpha) * used[cid].model,
+                    f"{cand.tag}, damped {alpha:g}",
+                )
+
+        def one_cycle(k: int, growing: bool, alpha: float, polish: bool) -> bool:
+            """One A -> B cycle; True when the run should stop here."""
             tag = str(k)
-            growing = k <= n_grow
             prev = dict(committed)
             prev_t = prev["A"].model + prev["B"].model
             radii = {}
+            stopped_on_failure = None
             for cid in ("A", "B"):
                 other = "B" if cid == "A" else "A"
                 want = sched[cid][min(k, len(sched[cid]) - 1)]
                 current = committed[cid]
-                grows = want > current.r1_call + 1e-9 and cid not in held
+                grows = want > current.r1_call + 1e-9 and cid not in held and not polish
                 if grows and (growing or s.on_fail in ("retry", "reduce")):
                     r1, adaptive = want, False  # a growth step
                 elif cid in held and s.on_fail in ("hold", "reduce"):
                     r1, adaptive = current.r1_call, False
                 else:
                     r1, adaptive = current.next_r1, None
-                cand = fit_component(cid, committed[other], r1, tag, adaptive=adaptive)
+                cand = fit_component(cid, used[other], r1, tag, adaptive=adaptive)
                 tried = [r1]
                 if cand is None and s.on_fail == "reduce" and r1 > current.r1_call + 1e-9:
                     # a smaller step: halfway, then a quarter of the way, from the last
@@ -1099,7 +1153,7 @@ def run(
                         if fraction * step < 0.02 * current.r1_call:
                             break
                         tried.append(r_try)
-                        cand = fit_component(cid, committed[other], r_try, tag, adaptive=False)
+                        cand = fit_component(cid, used[other], r_try, tag, adaptive=False)
                         if cand is not None:
                             r1 = r_try
                             result.notes_growth.append(
@@ -1111,7 +1165,7 @@ def run(
                 radii[cid] = r1 if cand is not None else tried[0]
                 last_ok[cid] = cand is not None
                 if cand is not None:
-                    committed[cid] = cand
+                    take(cid, cand, alpha)
                 else:
                     if tried[0] > current.r1_call + 1e-9 and cid not in held:
                         if s.on_fail in ("hold", "reduce"):
@@ -1139,6 +1193,8 @@ def run(
                 A_r1=radii.get("A"),
                 B_r1=radii.get("B"),
                 growing=growing,
+                damping=alpha,
+                polish=polish,
             )
             for cid in ("A", "B"):
                 m.update(
@@ -1161,19 +1217,40 @@ def run(
                 )
             say(phase="cycle", cycle=tag, metrics=m)
             joint = m["A_ok"] and m["B_ok"]
-            if joint and not (committed["A"].bootstrap or committed["B"].bootstrap):
-                checkpoint = (tag, dict(committed))
+            # a checkpoint is a joint cycle of undamped fits; with damping, only the
+            # final undamped (polish) cycles count, so the result is ELLIPROF's own models
+            undamped = alpha >= 1
+            if joint and undamped and not (committed["A"].bootstrap or committed["B"].bootstrap):
+                state["checkpoint"] = (tag, dict(committed))
             if stopped_on_failure:
-                break
+                state["stopped"] = stopped_on_failure
+                return True
+            if polish:
+                return False
             # converged cycles count once the radii have stopped changing
             at_target = k > n_grow and all(
                 prev[c].r1_call == committed[c].r1_call for c in ("A", "B")
             )
-            streak = streak + 1 if (at_target and joint and m["stable"]) else 0
-            m["converged_streak"] = streak
-            if s.consecutive and streak >= s.consecutive:
+            state["streak"] = state["streak"] + 1 if (at_target and joint and m["stable"]) else 0
+            m["converged_streak"] = state["streak"]
+            if s.consecutive and state["streak"] >= s.consecutive:
                 m["converged"] = True
+                return True
+            return False
+
+        k = 0
+        for k in range(1, n_grow + s.cycles + 1):
+            if one_cycle(k, k <= n_grow, s.damp, False):
                 break
+        if s.damp < 1 and not state["stopped"]:
+            # undamped final cycles: the models subtracted are the fitted models again
+            used.update(committed)
+            state["checkpoint"] = None if state["checkpoint"] is None else state["checkpoint"]
+            for j in range(1, s.polish + 1):
+                if one_cycle(k + j, False, 1.0, True):
+                    break
+        checkpoint = state["checkpoint"]
+        stopped_on_failure = state["stopped"]
         last = result.metrics[-1]
         if checkpoint is None:
             result.status = "incomplete_initialization"
@@ -1204,6 +1281,14 @@ def run(
         result.status = "cancelled"
         result.stability_reason = "stopped by the user"
     return _finish(result, snap, start, checkpoint, committed)
+
+
+@dataclass
+class _Used:
+    """A damped model: what is subtracted from D when the companion is fitted."""
+
+    model: np.ndarray
+    tag: str
 
 
 def _centre_drift(profile, comp: Component) -> Optional[float]:
@@ -1324,7 +1409,196 @@ def run_sky(
     if best is not None:
         history[best[2]]["chosen"] = True
     chosen.sky_iterations = history
+    chosen.snapshot = with_sky(snap, chosen_factor(chosen, snap.settings))
     return chosen
+
+
+def variants(snap: Snapshot) -> List[Tuple[str, Snapshot]]:
+    """The snapshots TRYDAMP=, TRYFIX= and TRYFACTOR= ask for (every combination), each
+    with a label; just the snapshot when none is asked for."""
+    s = snap.settings
+    if not (s.try_damp or s.try_fix or s.try_factor):
+        return [("", snap)]
+    out = []
+    for damp in s.try_damp or [s.damp]:
+        for fix in s.try_fix or [None]:
+            for factor in s.try_factor or [None]:
+                comps = {}
+                for cid, c in snap.components.items():
+                    changes = {}
+                    if fix is not None:
+                        changes["fixctr"] = fix
+                    if factor is not None and c.start and not c.radii:
+                        changes.update(factor=factor, step=None)
+                    comps[cid] = replace(c, **changes)
+                label = f"damp {damp:g}"
+                if fix is not None:
+                    label += ", centres " + {0: "free", 1: "fixed", 2: "median"}[fix]
+                if factor is not None:
+                    label += f", growth x{factor:g}"
+                out.append((label, replace(snap, settings=replace(s, damp=damp), components=comps)))
+    return out
+
+
+def quality(result: PairResult, snap: Snapshot, inner: float = 10.0) -> dict:
+    """How well the two models together describe the pair: the RMS of the residual (clipped
+    at 10 sigma, so unmasked stars do not dominate) over the evaluation pixels farther than
+    ``inner`` pixels from both centres, in units of the pixel noise; 1 is a residual of pure
+    noise.  Also the ring structure around each galaxy (see residual_rings) as a fraction of
+    the model plus 3 sigma.  On 12 simulated pairs this score tracked the error of A + B
+    well (median rank correlation 0.92 across fit variants) but not how the light is split
+    between A and B: a residual cannot tell that split.  Smaller is better; it compares fits
+    of one image and is not an absolute measure."""
+    from . import sky as skies
+
+    if result.residual is None:
+        return {}
+    good = snap.eval & np.isfinite(result.residual)
+    sigma = skies.local_noise(result.residual, good) if good.sum() >= 50 else float("nan")
+    if not np.isfinite(sigma) or sigma <= 0:
+        return {}
+    ny, nx = snap.image.shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    outside = good.copy()
+    for c in snap.components.values():
+        outside &= np.hypot(xx + 0.5 - c.x0, yy + 0.5 - c.y0) > inner
+    if outside.sum() < 50:
+        return {}
+    r = np.clip(result.residual[outside], -10 * sigma, 10 * sigma)
+    score = float(np.sqrt(np.mean(r * r)) / sigma)
+    rings = residual_rings(result, snap, requested=True)
+    per = {}
+    for cid, rows in rings.items():
+        vals = []
+        for x in rows:
+            asym = (
+                abs(x["facing"] - x["away"]) / 2
+                if x["facing"] is not None and x["away"] is not None
+                else 0.0
+            )
+            vals.append((abs(x["residual"]) + asym) / (abs(x["model"]) + 3 * sigma))
+        per[cid] = float(np.sqrt(np.mean(np.square(vals)))) if vals else float("nan")
+    return {"score": score, "per_galaxy": per, "sigma": float(sigma), "pixels": int(outside.sum())}
+
+
+def run_search(
+    snap: Snapshot,
+    support: Optional[np.ndarray] = None,
+    progress: Optional[Callable[[dict], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+    fitter: Fitter = fit_array,
+) -> PairResult:
+    """Fit every variant TRY... asks for (each with SKYITER if asked) and keep the one whose
+    two models describe the pair best (quality(); stable fits first).  One result, not an
+    average; every variant is listed in ``search``."""
+    options = variants(snap)
+    rows, results = [], []
+    for k, (label, variant) in enumerate(options, 1):
+        if cancelled is not None and cancelled():
+            break
+
+        def say(info, k=k, label=label):
+            if progress is not None:
+                if len(options) > 1:
+                    info.update(variant=label, variant_number=k, variants=len(options))
+                progress(info)
+
+        result = run_sky(variant, support, say, cancelled, fitter)
+        chosen_snap = result.snapshot or variant
+        result.quality = quality(result, chosen_snap)
+        results.append((result, chosen_snap))
+        rows.append(
+            {
+                "variant": label or "as asked",
+                "status": result.status,
+                "score": result.quality.get("score"),
+                "A": result.quality.get("per_galaxy", {}).get("A"),
+                "B": result.quality.get("per_galaxy", {}).get("B"),
+                "sky": chosen_snap.settings.sky,
+                "cycles": len(result.metrics),
+                "calls": len(result.calls),
+                "A_r1": result.commits["A"].r1_call if "A" in result.commits else None,
+                "B_r1": result.commits["B"].r1_call if "B" in result.commits else None,
+            }
+        )
+    if len(results) == 1:
+        result, chosen_snap = results[0]
+        result.snapshot = chosen_snap if chosen_snap is not snap else result.snapshot
+        return result
+
+    def rank(i):
+        r, _s = results[i]
+        stable = r.status == "stable_valid_pair"
+        score = r.quality.get("score", float("inf"))
+        return (not r.complete, not stable, score)
+
+    best = min(range(len(results)), key=rank)
+    rows[best]["chosen"] = True
+    result, chosen_snap = results[best]
+    result.search = rows
+    result.snapshot = chosen_snap
+    return result
+
+
+def command_for(snap: Snapshot, mask: str = "") -> str:
+    """A pair command (for buffer 1) that repeats a snapshot's fit exactly: every setting
+    explicit, the sky factor and the variant kept, no search or sky iterations."""
+    s = snap.settings
+    base = s.sky_base if s.sky_base is not None else s.sky
+    parts = [f"pair 1 SKY={base:.10g}"]
+    if s.sky_factor != 1.0:
+        parts.append(f"SKYFACTOR={s.sky_factor:.10g}")
+    if mask:
+        parts.append(mask)
+    parts += [
+        f"CORES={1 if s.cores else 0}",
+        f"CYCLES={s.cycles}",
+        f"NITER={s.niter}",
+        f"RLAW={s.rlaw}",
+        f"GAIN={s.gain:g}",
+        f"TIE={s.tie}",
+        f"CORECAP={s.corecap:g}",
+        f"TIMEOUT={s.timeout:g}",
+        f"BOOTSTRAP={1 if s.bootstrap else 0}",
+        f"ONFAIL={s.on_fail}",
+        f"CONVERGE={s.converge:g}",
+        f"CONSECUTIVE={s.consecutive}",
+    ]
+    if s.steps:
+        parts.append(f"STEPS={s.steps}")
+    if s.damp < 1:
+        parts += [f"DAMP={s.damp:g}", f"POLISH={s.polish}"]
+    if s.rmstar:
+        parts.append("RMSTAR")
+    for cid, c in snap.components.items():
+        words = [f"{cid}:"]
+        if c.name:
+            words.append("NAME=" + shlex.quote(c.name))
+        words += [f"X0={c.x0:.10g}", f"Y0={c.y0:.10g}", f"R0={c.r0:g}", f"R1={c.r1:g}"]
+        words += [f"NR={c.nr}", f"FIXCTR={c.fixctr}"]
+        if c.mode:
+            words.append(f"MODE={c.mode}")
+        else:
+            if c.cos3x is not None:
+                words.append(f"COS3X={c.cos3x}")
+            if c.cos4x is not None:
+                words.append(f"COS4X={c.cos4x}")
+        if c.core is not None:
+            words.append(f"CORE={c.core:g}")
+        if c.block:
+            words.append(f"BLOCK={c.block:g}")
+        if c.adaptive:
+            words.append("ADAPTIVE")
+        if c.radii:
+            words.append("RADII=" + ",".join(f"{r:g}" for r in c.radii))
+        elif c.start:
+            words.append(f"START={c.start:g}")
+            if c.factor:
+                words.append(f"FACTOR={c.factor:g}")
+            elif c.step:
+                words.append(f"STEP={c.step:g}")
+        parts.append(" ".join(words))
+    return " ".join(parts)
 
 
 def chosen_factor(result: PairResult, settings: Settings) -> float:
@@ -1652,10 +1926,7 @@ def export(
     ]
     if snap.provenance.get("source_run"):  # the cores came from the source finder's run
         lines.append(snap.provenance["source_run"]["command"].strip())
-    if result.sky_iterations:  # replay the fit chosen, with its factor, without iterating
-        lines.append(replay_line(requested, f"MASK=m0 SKYFACTOR={s.sky_factor:.10g}"))
-    else:
-        lines.append(replay_line(requested, "MASK=m0"))
+    lines.append(command_for(snap, "MASK=m0"))  # the fit kept, every setting explicit
     if replay:
         lines += ["", "# the route from the original files"] + replay
     text("commands.txt", "\n".join(lines) + "\n")
@@ -1760,7 +2031,9 @@ def export(
 
 
 # ---------------------------------------------------------------- the report
-def residual_rings(result: PairResult, snap: Snapshot, bins: int = 10) -> Dict[str, List[dict]]:
+def residual_rings(
+    result: PairResult, snap: Snapshot, bins: int = 10, requested: bool = False
+) -> Dict[str, List[dict]]:
     """For each galaxy: the residual in elliptical rings (the shape of its outer half),
     from R0 to 1.5 x its effective R1, as medians of the model and of the residual, on the
     side facing the other galaxy and on the side away from it.  Fitting exclusions and the
@@ -1784,7 +2057,8 @@ def residual_rings(result: PairResult, snap: Snapshot, bins: int = 10) -> Dict[s
         r = np.hypot(u, v / (1 - e))
         toward = dx * (far.x0 - comp.x0) + dy * (far.y0 - comp.y0) > 0
         good = np.isfinite(result.residual) & ~snap.fit_mask & ~snap.cores[other].masked
-        edges = np.geomspace(max(comp.r0, 2.0), 1.5 * commit.r1_call, bins + 1)
+        outer = comp.r1 if requested else commit.r1_call  # requested: the same rings for all
+        edges = np.geomspace(max(comp.r0, 2.0), 1.5 * outer, bins + 1)
         rows = []
         for lo, hi in zip(edges[:-1], edges[1:]):
             ring = good & (r >= lo) & (r < hi)
@@ -1831,8 +2105,25 @@ def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) ->
         f"result = checkpoint of cycle {result.checkpoint_cycle}; {len(result.calls)} calls, "
         f"{result.seconds:.1f} s"
     )
+    q = result.quality or quality(result, snap)
+    if q:
+        add(
+            f"residual outside the cores: RMS {q['score']:.3f} x the pixel noise "
+            f"({q['sigma']:.4g}); this judges A + B together, not how the light is split"
+        )
+    for row in result.search:
+        score = "-" if row["score"] is None else format(row["score"], ".3f")
+        add(
+            f"variant {row['variant']}: {row['status']}, score {score}"
+            + ("  <- kept" if row.get("chosen") else "")
+        )
     add("")
     add("## settings")
+    add(
+        f"damping {s.damp:g} (undamped final cycles {s.polish if s.damp < 1 else 0}), on "
+        f"failure {s.on_fail}, cores {'on' if s.cores else 'off'}, convergence "
+        f"{100 * s.converge:g} % for {s.consecutive} cycles"
+    )
     add(
         f"sky used {s.sky:.6g} = factor {s.sky_factor:.5f} x base "
         f"{(s.sky_base if s.sky_base is not None else s.sky):.6g}; measurement "

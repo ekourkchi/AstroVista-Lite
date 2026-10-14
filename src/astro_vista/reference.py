@@ -582,6 +582,16 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ),
                     ("STEPS=", "geometric growth steps for a galaxy with START alone"),
                     (
+                        "DAMP=, POLISH=",
+                        "damping of the companion model subtracted (1: none); undamped final "
+                        "cycles (2) so that the result is ELLIPROF's own models",
+                    ),
+                    (
+                        "TRYDAMP=, TRYFIX=, TRYFACTOR=",
+                        "fit every combination and keep the one whose two models describe "
+                        "the pair best (Results > Pair > Search lists them)",
+                    ),
+                    (
                         "A: … B: …",
                         "each galaxy: X0= Y0= R0= R1= NR=25 NAME= MODE= FIXCTR= CORE= ADAPTIVE "
                         "START= (first R1) with STEP= (+ pixels) or FACTOR= (×), or RADII= "

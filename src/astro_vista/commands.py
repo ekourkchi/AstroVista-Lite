@@ -986,8 +986,10 @@ class Session(ImageCommands):
         image, snap, n = job.image, job.snap, job.number
         if job.number not in self.buffers or self.buffers[n] is not image:
             pass  # the buffer was replaced meanwhile: the result keeps its own snapshot
-        if result.sky_iterations:  # the fit chosen: its snapshot has its sky factor
-            job.snap = snap = pairs.with_sky(snap, pairs.chosen_factor(result, snap.settings))
+        if result.snapshot is not None:  # the fit kept: its own sky factor and variant
+            job.snap = snap = result.snapshot
+        if not result.quality:
+            result.quality = pairs.quality(result, snap)
         measured = job.measurement
         if result.residual is not None and measured is not None:
             result.sky_check = skies.check(measured, result.residual)
@@ -1040,7 +1042,7 @@ class Session(ImageCommands):
             raise CommandError(PAIR_HELP)
         job = self.pair_prepare(text)
         support = job.measurement.support if job.measurement is not None else None
-        result = pairs.run_sky(job.snap, support)
+        result = pairs.run_search(job.snap, support)
         return self.pair_commit(job, result)
 
     def c_pair(self, words, keys) -> Reply:  # reached only through _pair_line
@@ -1119,13 +1121,10 @@ class Session(ImageCommands):
                     f"# then window 1 BOX=... (LTV1={ltv[0]}, LTV2={ltv[1]}: the window's "
                     "offset in the original)"
                 )
-            line = re.sub(r"^pair\s+\S+", "pair 1", record.job.line)
-            if result.sky_iterations:  # the factor chosen, without iterating again
-                line = re.sub(r"\s(SKYFACTOR|SKYITER)=\S+", "", line, flags=re.I)
-                line = re.sub(
-                    r"(\sSKY=\S+)", rf"\1 SKYFACTOR={snap.settings.sky_factor:.10g}", line, count=1
-                )
-            replay.append(line)
+            mask = " ".join(
+                re.findall(r"\b(?:MASK|MASKBUF|MASKFILE)=\S+", record.job.line.split(" A:")[0])
+            )
+            replay.append(pairs.command_for(snap, mask))
         try:
             pairs.export(
                 result,
@@ -1572,7 +1571,7 @@ KEYWORDS = {
     "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE=",
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
-    "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL=",
+    "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1768,6 +1767,10 @@ Shared (before A:)
   STEPS=0       growth steps (when a galaxy has START but no STEP, FACTOR or RADII)
   CONVERGE=0.02 CONSECUTIVE=0   stop after CONSECUTIVE cycles at the final radii in which
                 A, B and A + B each changed by less than CONVERGE (0: run every cycle)
+  DAMP=1        damping: subtract alpha x new + (1 - alpha) x previous companion model;
+                below 1, POLISH=2 undamped cycles end the run (the result: ELLIPROF's models)
+  TRYDAMP=1,0.5 TRYFIX=1,0 TRYFACTOR=1.5,1.25   fit every combination and keep the one
+                whose two models describe the pair best (stable fits first)
   ONFAIL=reduce on a failed fit keep the last valid model and: reduce (try halfway, then
                 a quarter of the way, and go on growing), hold (stay at its radius), retry
                 (try the radius again next cycle) or stop (end the run)

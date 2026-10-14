@@ -811,6 +811,18 @@ TIPS = {
     "<i>Final R1</i>. A and B have their own schedules; the note under them shows the R1 of "
     "each fit. After both reach their final R1, the cycles go on there until they converge "
     "or the maximum is reached.",
+    "pair_damp": "<b>Damping.</b> With a value below 1, what is subtracted from D when the "
+    "companion is fitted is a blend: this share of its new model and the rest of its previous "
+    "one (0.5 by default). On 12 simulated pairs it gave the most accurate profiles in half "
+    "of them, most of all for a lopsided or a faint companion. Two undamped cycles always end a "
+    "damped run, so the two profiles kept are ELLIPROF's own and the residual is D - sky - "
+    "M_A - M_B of those models.",
+    "pair_search": "<b>Search for the best fit.</b> Fits every combination of the damping "
+    "values, the centre fitting and the growth factors and keeps the stable one with the "
+    "smallest residual outside the cores (its RMS in units of the pixel noise; 1 is pure "
+    "noise). On simulated pairs this picks the best model of A + B together, but a residual "
+    "cannot tell how the light is split between A and B, so it does not pick the most "
+    "accurate profiles. Results > Pair > Search lists every variant.",
     "pair_converge": "<b>Convergence.</b> A cycle at the final radii counts as converged when "
     "A, B and A + B each changed by less than this fraction (their RMS change over the "
     "evaluation pixels). The run stops after this many converged cycles in a row (2 by "

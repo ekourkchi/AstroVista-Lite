@@ -23,6 +23,12 @@ newest is at the top.
   threshold down to 0.01 sigma), shows the sky mask on request, and lets the user take the
   measured median whatever the verdict (which is kept with the fit). Results ▸ Pair ▸ Sky
   lists the fits.
+- **Damping and the search for the best fit.** `DAMP=` subtracts a blend of the
+  companion's new and previous models; undamped final cycles (`POLISH=`) make the result
+  ELLIPROF's own models. `TRYDAMP=`, `TRYFIX=` and `TRYFACTOR=` fit every combination and
+  keep the one whose two models describe the pair best by a residual score (rings around
+  each galaxy, facing and away from the other); every variant is listed. The export's
+  replay command repeats the fit kept with every setting explicit.
 - **Two-galaxy iterative fit** (the Pair fit tool's default): A on D, B on D − M_A, then
   A on D − M_B and B on D − M_A each cycle, every input made afresh from the original image;
   no masking between the galaxies (`CORES=0`); each galaxy's R1 grows by its own schedule

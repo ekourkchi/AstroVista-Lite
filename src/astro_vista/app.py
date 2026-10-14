@@ -344,7 +344,7 @@ class PairWorker(QtCore.QObject):
     def _run(self) -> None:
         try:
             measured = self._job.measurement
-            result = pairs.run_sky(
+            result = pairs.run_search(
                 self._job.snap,
                 measured.support if measured is not None else None,
                 progress=self.progress.emit,
@@ -1643,6 +1643,11 @@ class MainWindow(QtWidgets.QMainWindow):
             m = info.get("metrics", {})
             text = f"Pair • cycle {info['cycle']} done: " + (
                 f"A {'ok' if m.get('A_ok') else 'failed'}, B {'ok' if m.get('B_ok') else 'failed'}"
+            )
+        if info.get("variant"):
+            text = (
+                f"Variant {info['variant_number']} of {info['variants']} ({info['variant']}) • "
+                + text
             )
         if info.get("sky_iteration"):
             text = (

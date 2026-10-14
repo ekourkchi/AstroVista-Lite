@@ -932,6 +932,60 @@ def test_the_products_and_every_iteration_are_kept():
     assert result.schedules["A"] == [8, 14, 20]
 
 
+# ---------------------------------------------------------------- damping and the search
+def test_damping_subtracts_a_blend_and_undamped_cycles_end_the_run():
+    snap = iterative_snapshot(cycles=2, damp=0.5, polish=2)
+    d = snap.image.copy()
+    f = FakeFitter()
+    result = pair.run(snap, fitter=f)
+    calls = f.calls  # FakeFitter's model = its call number
+    # cycle 1: A on D - B(init) = D - 2; B on D - (0.5 * 3 + 0.5 * 1) = D - 2
+    assert np.array_equal(calls[2]["data"], d - 2.0)
+    assert np.array_equal(calls[3]["data"], d - 2.0)
+    polish = [m for m in result.metrics if m["polish"]]
+    assert len(polish) == 2 and all(m["damping"] == 1.0 for m in polish)
+    # the result is ELLIPROF's own models of an undamped cycle
+    assert result.checkpoint_cycle == str(polish[-1]["cycle"])
+    a, b = result.commits["A"].model, result.commits["B"].model
+    assert np.array_equal(result.residual, d - 100.0 - a - b)
+    k = len(calls)  # the last B fit saw D minus the last A model itself
+    assert np.array_equal(calls[k - 1]["data"], d - float(k - 1))
+
+
+def test_the_search_fits_every_variant_and_keeps_one():
+    snap = iterative_snapshot(
+        a_kw={"start": 8, "factor": 1.5},
+        b_kw={"start": 8, "factor": 1.5},
+        try_damp=[1.0, 0.5],
+        try_fix=[1, 0],
+        try_factor=[1.5, 1.25],
+    )
+    labels = [label for label, _v in pair.variants(snap)]
+    assert len(labels) == 8 and "damp 0.5, centres free, growth x1.25" in labels
+    result = pair.run_search(snap, fitter=SteadyFitter())
+    assert len(result.search) == 8
+    assert sum(1 for r in result.search if r.get("chosen")) == 1
+    assert result.snapshot is not None and result.quality.get("score") is not None
+    with pytest.raises(pair.PairError):
+        pair.settings_from(
+            {"SKY": "1", "TRYDAMP": "1,0.8,0.6", "TRYFIX": "0,1,2", "TRYFACTOR": "1.2,1.5"}
+        )
+
+
+def test_the_replay_command_repeats_the_snapshot():
+    snap = iterative_snapshot(
+        a_kw={"start": 8, "factor": 1.5, "name": "big one"}, b_kw={"radii": [6, 12]}, damp=0.7
+    )
+    line = pair.command_for(snap, "MASK=m0")
+    words, shared, own = pair.parse(line.split(None, 1)[1])
+    s = pair.settings_from(shared)
+    comps = pair.components_from(own)
+    assert s.damp == 0.7 and s.cores is False and s.cycles == snap.settings.cycles
+    assert comps["A"].schedule() == snap.components["A"].schedule()
+    assert comps["B"].radii == [6, 12] and comps["A"].name == "big one"
+    assert shared["MASK"] == "m0"
+
+
 def test_the_pair_tool_in_the_window():
     from PySide6 import QtCore, QtWidgets
 

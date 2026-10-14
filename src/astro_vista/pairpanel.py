@@ -542,6 +542,39 @@ class PairPanel(QtWidgets.QWidget):
             ]
         )
         form.addRow("If a fit fails", tip(self.on_fail, "pair_onfail"))
+        self.damp = number(0.05, 1.0, 0.5, decimals=2, step=0.1, tip="DAMP: share of the new model")
+        self.damp.setSpecialValueText("off (1)")
+        form.addRow("Damping", tip(self.damp, "pair_damp"))
+        self.search = QtWidgets.QGroupBox("Search for the best fit")
+        self.search.setCheckable(True)
+        self.search.setChecked(False)
+        grid = QtWidgets.QGridLayout(self.search)
+        self.try_damp = QtWidgets.QLineEdit("1, 0.5")
+        self.try_fix = QtWidgets.QComboBox()
+        self.try_fix.addItems(["fixed and free", "fixed only", "free only"])
+        self.try_factor = QtWidgets.QLineEdit("1.5, 1.25")
+        for row, (label, w, tipkey) in enumerate(
+            (
+                ("Damping values", self.try_damp, "TRYDAMP"),
+                ("Centres", self.try_fix, "TRYFIX"),
+                ("Growth factors", self.try_factor, "TRYFACTOR"),
+            )
+        ):
+            w.setToolTip(tipkey)
+            grid.addWidget(QtWidgets.QLabel(label), row, 0)
+            grid.addWidget(w, row, 1)
+        grid.addWidget(
+            note(
+                "Every combination is fitted and the one with the smallest residual (outside the "
+                "cores, in noise units) is kept: one fit, not an average. A residual judges A + "
+                "B together; it cannot tell how the light is split between A and B."
+            ),
+            3,
+            0,
+            1,
+            2,
+        )
+        form.addRow(tip(self.search, "pair_search"))
         form.addRow("NITER (each call)", tip(self.niter, "niter"))
         self.masking = QtWidgets.QCheckBox("Also mask a core around the companion (older method)")
         self.masking.setToolTip("CORES: by default nothing is masked around the companion")
@@ -875,6 +908,16 @@ class PairPanel(QtWidgets.QWidget):
         on_fail = ("reduce", "hold", "retry", "stop")[self.on_fail.currentIndex()]
         if on_fail != "reduce":
             parts.append(f"ONFAIL={on_fail}")
+        if self.damp.value() < 1:
+            parts.append(f"DAMP={self.damp.value():g}")
+        if self.search.isChecked():
+            damps = ",".join(x.strip() for x in self.try_damp.text().split(",") if x.strip())
+            factors = ",".join(x.strip() for x in self.try_factor.text().split(",") if x.strip())
+            if damps:
+                parts.append(f"TRYDAMP={damps}")
+            parts.append("TRYFIX=" + ("1,0", "1", "0")[self.try_fix.currentIndex()])
+            if factors:
+                parts.append(f"TRYFACTOR={factors}")
         if self.niter.value() != 10:
             parts.append(f"NITER={self.niter.value()}")
         if self.rlaw.currentIndex() != 2:
@@ -1079,6 +1122,8 @@ class PairResultsPanel(QtWidgets.QWidget):
         sl.addWidget(self.resid_hist, 2)
         sl.addWidget(self.sky_table, 1)
         self.tabs.addTab(sky, "Sky")
+        self.search_table = plain_table()
+        self.tabs.addTab(self.search_table, "Search")
         lay.addWidget(self.tabs, 1)
         self.summary = QtWidgets.QPlainTextEdit()
         self.summary.setReadOnly(True)
@@ -1093,6 +1138,32 @@ class PairResultsPanel(QtWidgets.QWidget):
         self.draw()
         self._cycles()
         self._sky(residual)
+        self._search()
+
+    def _search(self) -> None:
+        rows = self.record.result.search if self.record else []
+        headers = ["variant", "status", "score", "rings A", "rings B", "R1 A", "R1 B", "sky", ""]
+        self.search_table.setColumnCount(len(headers))
+        self.search_table.setHorizontalHeaderLabels(headers)
+        self.search_table.setRowCount(len(rows))
+
+        def f(v, fmt):
+            return "" if v is None else format(v, fmt)
+
+        for i, r in enumerate(rows):
+            cells = [
+                r["variant"],
+                r["status"],
+                f(r["score"], ".4f"),
+                f(r["A"], ".4f"),
+                f(r["B"], ".4f"),
+                f(r["A_r1"], ".1f"),
+                f(r["B_r1"], ".1f"),
+                f(r["sky"], ".6g"),
+                "kept" if r.get("chosen") else "",
+            ]
+            for j, text in enumerate(cells):
+                self.search_table.setItem(i, j, QtWidgets.QTableWidgetItem(text))
 
     def _sky(self, residual) -> None:
         """The residual on the sky pixels, and the sky-factor fits."""
