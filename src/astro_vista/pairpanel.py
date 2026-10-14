@@ -22,6 +22,8 @@ from .flow import FlowLayout
 from .panels import heading, note, number, plain_table, tip, title_row, whole
 
 COLOURS = {"A": "#22d3ee", "B": "#ff9f1c"}
+MODES_SHOWN = ["Automatic", "Automatic, adjustable", "Manual"]
+AUTOMATIC, ADJUSTABLE, MANUAL = range(3)
 # the run of the automatic settings (chosen on simulated pairs; see the changelog)
 AUTO_RUN = [
     "CORES=0",
@@ -34,7 +36,8 @@ AUTO_RUN = [
     "TRYFACTOR=1.5,1.25",
     "TIE=-3",
     "RMSTAR",
-    "TAIL=sersic",
+    "TAIL=measured",
+    "SKYPLANE=1",
     "SKYITER=3",
 ]  # cyan and orange, as in the examples
 STATE_COLOURS = {
@@ -494,14 +497,16 @@ class PairPanel(QtWidgets.QWidget):
             self._manual_rows.append(form.rowCount() - 1)
 
         self.form = form
-        self.auto = QtWidgets.QCheckBox("Automatic settings")
-        self.auto.setChecked(False)
-        self.auto.setToolTip(
-            "Only the centres, the masks and the sky to choose; the radii, the isophotes and "
-            "the fitting recipe are those that worked best on simulated pairs (the manual "
-            "settings start from the same values)"
+        self.mode = QtWidgets.QComboBox()
+        self.mode.addItems(MODES_SHOWN)
+        self.mode.setToolTip(
+            "Automatic: only the centres, the masks and the sky to choose; the radii, the "
+            "isophotes and the recipe are those that worked best on simulated pairs.\n"
+            "Automatic, adjustable: the same values, every one shown and open to change; the "
+            "radii and isophotes stay automatic until you untick their auto boxes.\n"
+            "Manual: every setting yours, the radii typed or picked."
         )
-        form.addRow(tip(self.auto, "pair_auto"))
+        form.addRow("Settings", tip(self.mode, "pair_auto"))
 
         # ---- the sky
         form.addRow(heading("1. Sky"))
@@ -654,10 +659,10 @@ class PairPanel(QtWidgets.QWidget):
         self.auto_note = note(
             "Automatic: R1 where each galaxy's light fades into the noise; the first fits small "
             "and growing; isophotes about 30 % apart, smoothed over 3 (TIE=-3); bright outliers "
-            "rejected along each isophote (RMSTAR); a Sérsic tail beyond R1; the sky factor "
-            "refined 3 times from the residual sky; 8 variants of damping, centres and growth "
-            "fitted, the best kept by the residual. Untick Automatic settings to change any "
-            "of it."
+            "rejected along each isophote (RMSTAR); beyond R1, the light measured in rings; the sky "
+            "factor refined 3 times from the residual sky; 8 variants of damping, centres and growth "
+            "fitted, the best kept by the residual. Choose Automatic, adjustable to see and "
+            "change any of it."
         )
         form.addRow(self.auto_note)
         manual(
@@ -713,6 +718,7 @@ class PairPanel(QtWidgets.QWidget):
         manual(tip(self.rmstar, "pair_rmstar"))
         self.tail = QtWidgets.QComboBox()
         for label, key in (
+            ("measured on the image (rings of the last isophote's shape)", "measured"),
             ("Sérsic law fitted to the outer profile", "sersic"),
             ("elliprof's extrapolation (r^¼ from the last two)", "elliprof"),
             ("exponential from the outer 30 %", "exp"),
@@ -724,6 +730,13 @@ class PairPanel(QtWidgets.QWidget):
             "companion's image"
         )
         manual("Model beyond R1", tip(self.tail, "pair_tail"))
+        self.sky_plane = QtWidgets.QCheckBox("Remove a sky gradient (SKYPLANE)")
+        self.sky_plane.setChecked(True)
+        self.sky_plane.setToolTip(
+            "Fit a plane to the residual of a first pass and, when its gradient is "
+            "significant, fit the image minus its tilt (the sky level stays yours)"
+        )
+        manual(tip(self.sky_plane, "pair_skyplane"))
         self.polish = whole(0, 20, 2, tip="POLISH: undamped cycles after the damped ones")
         manual("Polish cycles", tip(self.polish, "pair_damp"))
         self.search = QtWidgets.QGroupBox("Search for the best fit")
@@ -870,8 +883,8 @@ class PairPanel(QtWidgets.QWidget):
         self._summary_line()
 
         # ---- folding
-        self.auto.toggled.connect(self.set_automatic)
-        self.set_automatic(False)
+        self.mode.currentIndexChanged.connect(self.set_mode)
+        self.set_mode(AUTOMATIC)
 
     def _fold_sky(self, on: bool) -> None:
         for w in self.sky_more.findChildren(QtWidgets.QWidget):
@@ -1071,6 +1084,49 @@ class PairPanel(QtWidgets.QWidget):
         ]
 
     # ---- the command
+    def is_automatic(self) -> bool:
+        return self.mode.currentIndex() == AUTOMATIC
+
+    def set_mode(self, index: int) -> None:
+        """Automatic (few settings shown), automatic and adjustable (every setting, at the
+        recommended values, radii automatic) or manual (every setting, radii typed)."""
+        if self.mode.currentIndex() != index:
+            self.mode.setCurrentIndex(index)  # comes back here
+            return
+        self.set_automatic(index == AUTOMATIC)
+        if index == ADJUSTABLE:
+            self.recommended()
+        elif index == MANUAL:
+            for card in self.cards.values():
+                for box in (card.r1_auto, card.start_auto, card.nr_auto):
+                    box.setChecked(False)
+
+    def recommended(self) -> None:
+        """Every setting at the values of the automatic settings."""
+        self.cycles.setValue(6)
+        self.converge.setValue(2.0)
+        self.consecutive.setValue(2)
+        self.on_fail.setCurrentIndex(0)
+        self.damp.setValue(0.5)
+        self.polish.setValue(2)
+        self.search.setChecked(True)
+        self.try_damp.setText("1, 0.5")
+        self.try_fix.setCurrentIndex(0)
+        self.try_factor.setText("1.5, 1.25")
+        self.tie.setValue(-3)
+        self.rmstar.setChecked(True)
+        self.tail.setCurrentIndex(self.tail.findData("measured"))
+        self.sky_plane.setChecked(True)
+        self.sky_iter.setValue(3)
+        self.masking.setChecked(False)
+        for card in self.cards.values():
+            card.r0.setValue(3)
+            card.fixctr.setCurrentIndex(1)
+            card.growth.setCurrentIndex(0)
+            card.growth_value.setValue(1.5)
+            for box in (card.r1_auto, card.start_auto, card.nr_auto):
+                box.setChecked(True)
+
     def set_automatic(self, on: bool) -> None:
         for row in self._manual_rows:
             self.form.setRowVisible(row, not on)
@@ -1098,7 +1154,7 @@ class PairPanel(QtWidgets.QWidget):
         return " ".join(parts)
 
     def command(self, n: int) -> str:
-        if self.auto.isChecked():
+        if self.is_automatic():
             return self.auto_command(n)
         parts = [f"pair {n}", f"SKY={self.sky.value():.10g}"]
         if self.factor.value() != 1.0:
@@ -1139,6 +1195,8 @@ class PairPanel(QtWidgets.QWidget):
             parts.append("RMSTAR")
         if self.tail.currentData() != "elliprof":
             parts.append(f"TAIL={self.tail.currentData()}")
+        if self.sky_plane.isChecked():
+            parts.append("SKYPLANE=1")
         if self.polish.value() != 2:
             parts.append(f"POLISH={self.polish.value()}")
         if self.corecap.value() != 50:

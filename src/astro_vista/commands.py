@@ -134,10 +134,12 @@ From the data and the sources
                                   the sources' Kron ellipses x SCALE, except the galaxy at
                                   X0, Y0 (by default the last ELLIPROF centre; before
                                   any fit, the largest source)
-  mask segments NAME [RUN=k] [GROW=0] [KEEP=...] [X0= Y0=] [ADD]
+  mask segments NAME [RUN=k] [GROW=0] [WIDEN=0] [KEEP=...] [X0= Y0=] [ADD]
                                   the layer becomes the sources' pixels (their
                                   segmentation), everything else unmasked (ADD: add them
-                                  to what the layer already masks); X0= and Y0=
+                                  to what the layer already masks); WIDEN=f grows each
+                                  segment by GROW + f x its equivalent radius (bright
+                                  stars' halos); X0= and Y0=
                                   may list several centres (X0=120,310 Y0=200,240): the
                                   sources there, and the segments under them, stay unmasked
 Changing a layer
@@ -1632,12 +1634,20 @@ class Session(ImageCommands):
                 numbers_ = run.columns["NUMBER"][chosen]
                 pixels = np.isin(run.segmentation, numbers_)
                 g = number(keys.get("GROW", 0), "GROW")
-                pixels = maskops.grow(pixels, g) if g > 0 else pixels
+                widen = number(keys.get("WIDEN", 0), "WIDEN")
+                if widen < 0 or g < 0:
+                    raise CommandError("GROW and WIDEN cannot be negative")
+                if widen > 0:  # each segment grown by GROW + WIDEN x its equivalent radius
+                    pixels = _grow_by_size(run.segmentation, numbers_, g, widen)
+                else:
+                    pixels = maskops.grow(pixels, g) if g > 0 else pixels
                 if any(w.upper() == "ADD" for w in rest):
                     mask.masked |= pixels
                 else:  # the layer becomes the segments: everything else unmasked
                     mask.masked[...] = pixels
                 mask.source = f"segments of run {run.number}" + (f" grown {g:g}" if g else "")
+                if widen > 0:
+                    mask.source += f" + {widen:g} x their radius"
         else:
             self._undo.pop()
             raise CommandError(f"unknown mask action {action!r}\n{MASK_HELP}")
@@ -1720,7 +1730,7 @@ KEYWORDS = {
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
-    "TIE= RMSTAR",
+    "TIE= RMSTAR SKYPLANE=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1932,7 +1942,10 @@ Shared (before A:)
   RLAW= GAIN= TIE= RMSTAR TIMEOUT=300   passed to every call
   TAIL=elliprof the model beyond each galaxy's last isophote, which is subtracted from the
                 other's image: elliprof (its r^1/4 extrapolation), sersic (a Sersic law
-                fitted to the outer profile), exp (the outer slope), cut (a taper to zero)
+                fitted to the outer profile), exp (the outer slope), cut (a taper to zero),
+                measured (the light measured in rings of the last isophote's shape)
+  SKYPLANE=1    a plane fitted to the residual of the fit kept; if significant, the search
+                again on the image minus its tilt (kept when the residual is lower)
   STOP          stop early once A, B and A + B all change by less than 2 %
   VIEWS         also make the image - sky - B and image - sky - A buffers
   TOMODELA= TOMODELB= TOMODEL= TORESID=   the result buffers (free ones by default)
@@ -1953,6 +1966,22 @@ Each galaxy (after A: or B:)
   NR=AUTO       isophotes about 10 % apart from R0 to each R1 (8 to 40)
 A line can go on after a \\ at its end.  The result is one of stable_valid_pair,
 valid_pair_not_stable, retained_after_failed_update, incomplete_initialization, cancelled."""
+
+
+def _grow_by_size(segmentation, numbers, grow: float, widen: float, largest: float = 60.0):
+    """The segments ``numbers``, each grown by grow + widen x sqrt(its area / pi) pixels (at
+    most ``largest``), grouped by whole radii."""
+    areas = np.bincount(segmentation.ravel())
+    out = np.zeros(segmentation.shape, bool)
+    numbers = np.asarray(numbers, int)
+    numbers = numbers[(numbers > 0) & (numbers < areas.size)]
+    lut = np.full(areas.size, -1.0)  # each segment's radius (-1: not masked)
+    lut[numbers] = np.round(np.minimum(grow + widen * np.sqrt(areas[numbers] / np.pi), largest))
+    per_pixel = lut[segmentation]
+    for r in np.unique(lut[numbers]):
+        pixels = per_pixel == r
+        out |= maskops.grow(pixels, float(r)) if r > 0 else pixels
+    return out
 
 
 def _mask_sum(mask: Mask) -> str:

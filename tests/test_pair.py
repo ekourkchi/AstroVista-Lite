@@ -1110,18 +1110,22 @@ def test_the_pair_tool_in_the_window():
     assert window.session.masks["skymask"].visible
     panel._use_measured()
     assert panel.sky.value() == pytest.approx(panel._measurement.level, abs=1e-4)
-    # the first run had the manual settings, which start from the simulations' choice
+    # the first run had the automatic settings (the default): radii and isophotes resolved
     first = record.job.line
-    for word in ("START=AUTO", "NR=AUTO", "TIE=-3", "RMSTAR", "TAIL=sersic", "TRYDAMP="):
+    for word in ("R1=AUTO", "START=AUTO", "NR=AUTO", "TIE=-3", "RMSTAR", "TAIL=measured"):
         assert word in first
-    assert any("START=AUTO ->" in n for n in record.job.snap.notes)
-    assert panel.cards["A"].nr.isVisibleTo(panel)
-    panel.auto.setChecked(True)  # the automatic settings: only the centres, sky and masks
+    assert any("R1=AUTO ->" in n for n in record.job.snap.notes)
     assert not panel.cards["A"].nr.isVisibleTo(panel)
+    # automatic, adjustable: every setting shown at the same values, the same command
     auto = panel.command(1)
-    assert "R1=AUTO" in auto and "SKYITER=3" in auto and "TAIL=sersic" in auto
-    panel.auto.setChecked(False)  # every setting again
-    assert panel.cards["A"].nr.isVisibleTo(panel)
+    panel.set_mode(1)
+    assert panel.cards["A"].nr.isVisibleTo(panel) and panel.cards["A"].nr_auto.isChecked()
+    adjustable = panel.command(1)
+    for word in auto.split():
+        if not word.startswith(("NAME=", "FACTOR=")):
+            assert word in adjustable.split(), word
+    panel.set_mode(2)  # manual: the radii typed
+    assert not panel.cards["A"].r1_auto.isChecked() and "R1=AUTO" not in panel.command(1)
     panel.cards["A"].r1_auto.setChecked(False)
     panel.cards["B"].r1_auto.setChecked(False)
     panel.search.setChecked(False)
@@ -1237,3 +1241,39 @@ def test_automatic_isophotes_are_about_30_percent_apart():
     assert pair.auto_nr(3, 150) == 16
     assert pair.auto_nr(3, 6) == 6  # never fewer than 6
     assert pair.auto_nr(3, 5000) == 29
+
+
+def test_the_measured_tail_follows_the_light_beyond_r1():
+    from astro_vista.fitting import fit_array
+
+    ny, nx, x0, y0 = 300, 300, 150.3, 149.6
+    yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
+    a = np.hypot(xx - x0, (yy - y0) / 0.8)
+    # an inner profile that a Sersic tail would continue too far: the halo is cut at 90 px
+    truth = 300.0 * np.exp(-((a / 15.0) ** 0.5)) * np.clip((110 - a) / 20.0, 0, 1)
+    data = truth + np.random.default_rng(4).normal(0, 0.3, truth.shape)
+    fit = fit_array(data, x0, y0, 3, 60, 15, fixctr=1)
+    beyond = (a > 66) & (a < 140)
+    measured = pair.tail_model(fit.model, fit.profile, "measured", data, np.ones_like(data, bool))
+    sersic = pair.tail_model(fit.model, fit.profile, "sersic")
+    err_m = float(np.mean(np.abs(measured - truth)[beyond]))
+    err_s = float(np.mean(np.abs(sersic - truth)[beyond]))
+    assert err_m < 0.5 * err_s and err_m < 0.5
+    assert np.all(np.diff(pair.measured_tail(data, np.ones_like(data, bool), a, 60.0, 5.0)[1]) <= 0)
+
+
+def test_a_halo_reaching_the_edge_stops_the_sky_iterations():
+    assert pair.reaches_edge(pair.AUTO_R1_EDGE * 100.0, (100.0, 400.0), (1000, 1000))
+    assert not pair.reaches_edge(60.0, (100.0, 400.0), (1000, 1000))
+
+
+def test_segments_grow_with_their_size():
+    from astro_vista.commands import _grow_by_size
+
+    seg = np.zeros((200, 200), int)
+    yy, xx = np.mgrid[0:200, 0:200]
+    seg[np.hypot(xx - 50, yy - 50) < 20] = 1  # a big source
+    seg[np.hypot(xx - 150, yy - 150) < 2] = 2  # a small one
+    out = _grow_by_size(seg, [1, 2], 1.0, 0.5)
+    assert out[50, 50 + 20 + 9] and not out[50, 50 + 20 + 13]  # 1 + 0.5 x 20 = 11 px
+    assert out[150, 150 + 3] and not out[150, 150 + 6]  # 1 + 0.5 x 2 = 2 px

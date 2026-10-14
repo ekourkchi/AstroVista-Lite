@@ -873,8 +873,11 @@ TIPS = {
     "pair_masks": "<b>Fitting masks</b>: the layers left out of every fit of A and of B. Only "
     "layers of role <i>fit</i>, or without a role, are listed: a sky layer covers the "
     "galaxies themselves and is never used in a fit.",
-    "pair_auto": "<b>Automatic settings</b> (off by default; the manual settings start "
-    "from the same values): you choose the sky, the masks and the two centres; the rest is "
+    "pair_auto": "<b>Settings</b>. <i>Automatic</i> (the default): you choose the sky, the "
+    "masks and the two centres. <i>Automatic, adjustable</i>: every setting shown at the "
+    "same values, to change any of them; the radii and the isophotes stay automatic until "
+    "their auto boxes are unticked. <i>Manual</i>: every setting, the radii typed or "
+    "picked. In the automatic settings the rest is "
     "what worked best on simulated pairs, among them pairs of ellipticals with surface "
     "brightness fluctuations, globular clusters, stars and photon noise. R1 is where each "
     "galaxy's light, on the side away from the other, falls below the noise sigma, measured "
@@ -897,6 +900,13 @@ TIPS = {
     "leaves them; RMSTAR keeps them from pulling the isophotes. On simulated pairs it "
     "brought the SBF amplitude in the residual to within 4 % of the truth for 9 galaxies in "
     "10.",
+    "pair_skyplane": "<b>Remove a sky gradient</b> (SKYPLANE=1): the pair is fitted once, a "
+    "plane is fitted to its residual (the medians of 32-pixel boxes of unmasked pixels), and "
+    "when the gradient is at least 3 times its error the image minus the plane's tilt is "
+    "fitted. The level at the frame's centre stays the sky you chose. Elliptical models "
+    "cannot take up a gradient, so the residual shows it even on frames a halo fills, where "
+    "the sky alone cannot be measured; on NGC 6768 it found 84 counts per 1000 px. The "
+    "report gives the plane.",
     "pair_tail": "<b>Model beyond R1</b> (TAIL): elliprof extends its model to the frame's "
     "corners with ln I linear in r^1/4 through the last two isophotes: right for a de "
     "Vaucouleurs profile, too bright for a shallower one or when the last two are noisy. In "

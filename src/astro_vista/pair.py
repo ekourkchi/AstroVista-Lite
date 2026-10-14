@@ -158,6 +158,7 @@ class Settings:
     consecutive: int = 0  # CONSECUTIVE=: stop after this many stable cycles at the targets
     on_fail: str = "reduce"  # ONFAIL=reduce|hold|retry|stop
     tail: str = "elliprof"  # TAIL=: the model beyond the last isophote (see tail_model)
+    sky_plane: bool = False  # SKYPLANE=1: a tilt fitted to a first pass's residual, removed
     damp: float = 1.0  # DAMP=: the share of a new model in the one subtracted (1: no damping)
     try_damp: List[float] = field(default_factory=list)  # TRYDAMP=: variants to search
     try_fix: List[int] = field(default_factory=list)  # TRYFIX=: centre fitting variants
@@ -223,6 +224,7 @@ class Snapshot:
     matches: Dict[str, Match]
     run_id: int = 0
     sky_id: str = ""  # the sky measurement S came from, or ""
+    tilt: Optional[Dict[str, float]] = None  # SKYPLANE: the plane removed from the image
     sky_sigma: Optional[float] = None
     provenance: dict = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
@@ -293,6 +295,7 @@ class PairResult:
     partial: Dict[str, Commit] = field(default_factory=dict)  # newer, not joint
     total: Optional[np.ndarray] = None
     residual: Optional[np.ndarray] = None
+    notes_extra: List[str] = field(default_factory=list)  # said by run_search (SKYPLANE)
     metrics: List[dict] = field(default_factory=list)
     calls: List[Call] = field(default_factory=list)
     attempted_r1: Dict[str, float] = field(default_factory=dict)
@@ -403,6 +406,7 @@ SHARED = {
     "TRYFIX",
     "TRYFACTOR",
     "TAIL",
+    "SKYPLANE",
 }
 OWN = {
     "NAME",
@@ -502,6 +506,15 @@ def auto_r1(
         if sel.sum() >= 8 and np.median(sub[sel]) < k * sigma:
             return round(float(max(10.0, min(lo, cap))), 1)
     return round(float(max(10.0, cap)), 1)
+
+
+def reaches_edge(r1: float, centre: Tuple[float, float], shape) -> bool:
+    """Whether an R1=AUTO stopped at its cap: the galaxy's light is still above the noise
+    near the frame's edge."""
+    ny, nx = shape
+    x, y = centre
+    edge = min(x, y, nx - x, ny - y)
+    return abs(r1 - max(10.0, AUTO_R1_EDGE * edge)) < 0.06
 
 
 def auto_start(r1: float, separation: float) -> Optional[float]:
@@ -632,6 +645,7 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         timeout=_num(shared, "TIMEOUT", "", 300.0),
         bootstrap=_num(shared, "BOOTSTRAP", "", 1, int) != 0,
         tail=shared.get("TAIL", "elliprof").strip().lower(),
+        sky_plane=_num(shared, "SKYPLANE", "", 0, int) != 0,
     )
     if s.tail not in TAILS:
         raise PairError("TAIL must be one of " + ", ".join(TAILS))
@@ -994,7 +1008,7 @@ def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarr
     return True, "", "", None
 
 
-TAILS = ("elliprof", "sersic", "exp", "cut")
+TAILS = ("measured", "sersic", "elliprof", "exp", "cut")
 
 
 def _outer_law(a: np.ndarray, lnI: np.ndarray, law: str):
@@ -1032,13 +1046,80 @@ def _outer_law(a: np.ndarray, lnI: np.ndarray, law: str):
     return None
 
 
-def tail_model(model: np.ndarray, profile, law: str) -> np.ndarray:
+def _decreasing(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """The closest non-increasing sequence (weighted least squares: pool adjacent
+    violators)."""
+    blocks = []  # [value, weight, count]
+    for v, w in zip(values, weights):
+        blocks.append([float(v), float(w), 1])
+        while len(blocks) > 1 and blocks[-2][0] < blocks[-1][0]:
+            v2, w2, n2 = blocks.pop()
+            v1, w1, n1 = blocks.pop()
+            blocks.append([(v1 * w1 + v2 * w2) / (w1 + w2), w1 + w2, n1 + n2])
+    return np.concatenate([np.full(n, v) for v, _w, n in blocks])
+
+
+def _ellipse_radius(profile_row, shape) -> np.ndarray:
+    ny, nx = shape
+    yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
+    t = np.radians(float(profile_row["alpha"]) - 90.0)
+    dx, dy = xx - float(profile_row["x0"]), yy - float(profile_row["y0"])
+    u = dx * np.cos(t) + dy * np.sin(t)
+    v = -dx * np.sin(t) + dy * np.cos(t)
+    q = max(1.0 - float(profile_row["ellip"]), 0.05)
+    return np.sqrt(u * u + (v / q) ** 2)
+
+
+TAIL_RATIO = 1.06  # the rings of the measured tail: each 6 % wider in radius (at least 3 px)
+TAIL_PIXELS = 30  # a ring is measured with at least this many pixels
+
+
+def measured_tail(
+    light: np.ndarray, usable: np.ndarray, r: np.ndarray, an: float, first: float
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """The light beyond the last isophote, measured: the median of ``light`` (the image
+    minus the sky and the companion's model) in rings of the last isophote's shape, made
+    non-increasing outwards and never negative, starting from the last isophote's
+    intensity ``first``.  Radii and values, or None when no ring has enough pixels."""
+    rmax = float(r.max())
+    edges = [an]
+    while edges[-1] < rmax:
+        edges.append(max(edges[-1] * TAIL_RATIO, edges[-1] + 3.0))
+    edges = np.array(edges)
+    sel = usable & (r > an) & np.isfinite(light)
+    idx = np.digitize(r[sel], edges) - 1
+    vals = light[sel]
+    radii, meds, counts = [an], [first], [1e9]
+    order = np.argsort(idx, kind="stable")
+    idx, vals = idx[order], vals[order]
+    bounds = np.searchsorted(idx, np.arange(len(edges) + 1))
+    for k in range(len(edges) - 1):
+        chunk = vals[bounds[k] : bounds[k + 1]]
+        if chunk.size >= TAIL_PIXELS:
+            radii.append(0.5 * (edges[k] + edges[k + 1]))
+            meds.append(float(np.median(chunk)))
+            counts.append(float(chunk.size))
+    if len(radii) < 2:
+        return None
+    meds = _decreasing(np.array(meds), np.sqrt(np.array(counts)))
+    return np.array(radii), np.maximum(meds, 0.0)
+
+
+def tail_model(
+    model: np.ndarray,
+    profile,
+    law: str,
+    light: Optional[np.ndarray] = None,
+    usable: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """elliprof extrapolates its model beyond the last isophote to the image's corners, with
-    ln I linear in a^(1/4) from the last two isophotes: right for a de Vaucouleurs profile,
+    ln I linear in r^(1/4) from the last two isophotes: right for a de Vaucouleurs profile,
     much too bright for a shallower one or when the last two are noisy.  In a pair, that
     light is subtracted from the companion's image.  Here the model beyond the last isophote
-    is replaced by the last isophote's intensity continued by ``law``, on the last isophote's
-    ellipse (without harmonics)."""
+    is replaced, on the last isophote's ellipse (without harmonics), by: ``measured``, the
+    light measured there (``light``: the image minus the sky and the companion's model, on
+    the ``usable`` pixels), continued by a Sersic law where no ring can be measured; or the
+    last isophote's intensity continued by ``law`` (sersic, exp, cut)."""
     if law == "elliprof" or model is None or profile is None:
         return model
     p = profile[np.isfinite(profile["I0"]) & (profile["I0"] > 0)]
@@ -1046,22 +1127,30 @@ def tail_model(model: np.ndarray, profile, law: str) -> np.ndarray:
         return model
     a = p["Rmaj"].to_numpy(float)
     lnI = np.log(p["I0"].to_numpy(float))
-    shape_of = _outer_law(a, lnI, law)
-    if shape_of is None:
-        return model
     last = p.iloc[-1]
-    ny, nx = model.shape
-    yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
-    t = np.radians(float(last["alpha"]) - 90.0)
-    dx, dy = xx - float(last["x0"]), yy - float(last["y0"])
-    u = dx * np.cos(t) + dy * np.sin(t)
-    v = -dx * np.sin(t) + dy * np.cos(t)
-    q = max(1.0 - float(last["ellip"]), 0.05)
-    r = np.sqrt(u * u + (v / q) ** 2)
     an = a[-1]
+    r = _ellipse_radius(last, model.shape)
     beyond = r > an
     out = model.copy()
-    out[beyond] = float(p["I0"].iloc[-1]) * np.exp(shape_of(r[beyond]))
+    first = float(last["I0"])
+    sersic = _outer_law(a, lnI, "sersic" if law == "measured" else law)
+    if law == "measured" and light is not None:
+        ok = np.ones(model.shape, bool) if usable is None else usable
+        tail = measured_tail(light, ok, r, an, first)
+        if tail is not None:
+            radii, values = tail
+            rb = r[beyond]
+            out[beyond] = np.interp(rb, radii, values)
+            further = rb > radii[-1]  # beyond the last ring measured: the Sersic law
+            if further.any() and sersic is not None and values[-1] > 0:
+                shift = sersic(np.array([radii[-1]]))[0]
+                vals = out[beyond]
+                vals[further] = values[-1] * np.exp(sersic(rb[further]) - shift)
+                out[beyond] = vals
+            return out
+    if sersic is None:
+        return model
+    out[beyond] = first * np.exp(sersic(r[beyond]))
     return out
 
 
@@ -1224,7 +1313,7 @@ def run(
             if ok:
                 support = outer_support(fit.profile, usable)
                 return Commit(
-                    model=tail_model(fit.model, fit.profile, s.tail),
+                    model=tail_model(fit.model, fit.profile, s.tail, conditional - s.sky, usable),
                     profile=fit.profile,
                     ellipses=profile_ellipses(fit.profile),
                     tag=cycle,
@@ -1704,6 +1793,46 @@ def quality(result: PairResult, snap: Snapshot, inner: float = 10.0) -> dict:
     return {"score": score, "per_galaxy": per, "sigma": float(sigma), "pixels": int(outside.sum())}
 
 
+PLANE_BOX = 32  # SKYPLANE: the boxes of the residual the tilt is fitted to (pixels)
+
+
+def remove_tilt(snap: Snapshot, first: PairResult) -> Snapshot:
+    """SKYPLANE: a plane fitted to the residual of a first pass (image - sky - A - B; the
+    medians of PLANE_BOX boxes of unmasked pixels, clipped), and, when its gradient is
+    significant (3 times its error), the image minus its tilt (zero at the frame's centre:
+    the sky level stays the one asked for).  The elliptical models cannot take up a
+    gradient, so the residual shows it where the sky alone cannot be measured."""
+    from . import sky as skies
+
+    if not first.complete or first.residual is None:
+        return replace(snap, notes=snap.notes + ["SKYPLANE: no complete first pass; no plane"])
+    res = first.residual
+    good = ~snap.fit_mask & np.isfinite(res)
+    values = res[good]
+    sigma = skies.mad(values)
+    good &= np.abs(res - np.median(values)) < 5 * sigma
+    fitted = skies.plane_by_boxes(res, good, sigma, PLANE_BOX)
+    if fitted is None:
+        return replace(snap, notes=snap.notes + ["SKYPLANE: too few boxes for a plane"])
+    plane, errors = fitted[0], fitted[1]
+    g = math.hypot(plane["gx"], plane["gy"])
+    err = math.hypot(errors["gx"], errors["gy"]) / math.sqrt(2) or float("inf")
+    text = (
+        f"SKYPLANE: gradient {1000 * plane['gx']:+.4g}, {1000 * plane['gy']:+.4g} per 1000 px "
+        f"(x, y; ± {1000 * errors['gx']:.2g}, {1000 * errors['gy']:.2g}) in the residual of "
+        "the fit kept"
+    )
+    if g < 3 * err:
+        return replace(snap, notes=snap.notes + [text + ": not significant, nothing removed"])
+    tilt = skies.plane_image(dict(plane, s0=0.0), snap.image.shape)
+    return replace(
+        snap,
+        image=snap.image - tilt,
+        tilt=dict(plane, s0=0.0),
+        notes=snap.notes + [text + ": removed from the image (zero at its centre)"],
+    )
+
+
 def refine_auto(snap: Snapshot, first: PairResult) -> Tuple[Snapshot, List[str]]:
     """R1=AUTO measured again for each galaxy on the image minus the sky and minus the
     other's model of a first pass (and START=AUTO from it).  Measured on the image itself,
@@ -1762,6 +1891,27 @@ def run_search(
 
         first = run(snap, first_say, cancelled, fitter)
         snap, _notes = refine_auto(snap, first)
+        # a halo that fills the frame takes up any change of the sky: no sky iterations
+        filling = [
+            cid
+            for cid, (r1_auto, _s) in snap.auto.items()
+            if r1_auto
+            and reaches_edge(
+                snap.components[cid].r1,
+                (snap.components[cid].x0, snap.components[cid].y0),
+                snap.image.shape,
+            )
+        ]
+        if filling and snap.settings.sky_iter > 0:
+            note = (
+                f"no sky iterations: the light of {' and '.join(filling)} is above the noise "
+                "out to the frame's edge, so the sky and the halo cannot be told apart here; "
+                "the sky asked for is kept"
+            )
+            snap = replace(
+                snap, settings=replace(snap.settings, sky_iter=0), notes=snap.notes + [note]
+            )
+    base = snap
     options = variants(snap)
     rows, results = [], []
     for k, (label, variant) in enumerate(options, 1):
@@ -1795,7 +1945,7 @@ def run_search(
     if len(results) == 1:
         result, chosen_snap = results[0]
         result.snapshot = chosen_snap if chosen_snap is not snap else result.snapshot
-        return result
+        return _with_plane(result, base, support, progress, cancelled, fitter)
 
     best, why = choose(results)
     rows[best]["chosen"] = True
@@ -1803,7 +1953,46 @@ def run_search(
     result.search = rows
     result.search_choice = why
     result.snapshot = chosen_snap
-    return result
+    return _with_plane(result, base, support, progress, cancelled, fitter)
+
+
+def _with_plane(result, base, support, progress, cancelled, fitter) -> PairResult:
+    """SKYPLANE: the search again, on the image minus the tilt of a plane fitted to the
+    residual of the fit kept (when significant); the new result is kept when its residual
+    score is lower.  The whole search, not the fit kept alone: free centres drift outwards
+    to take up a gradient, and on the flattened image fixed ones may do better."""
+    if not base.settings.sky_plane or not result.complete:
+        return result
+    probe = replace(base, image=base.image)  # the residual is the kept fit's
+    flat = remove_tilt(probe, result)
+    if flat.tilt is None:
+        result.notes_extra = [flat.notes[-1]]
+        return result
+
+    def say(info):
+        if progress is not None:
+            info["variant"] = "again on the image minus the sky's tilt: " + str(
+                info.get("variant", "")
+            )
+            progress(info)
+
+    flat = replace(flat, settings=replace(flat.settings, sky_plane=False), auto={})
+    again = run_search(flat, support, say, cancelled, fitter)
+    if not again.complete:
+        result.notes_extra = [flat.notes[-1] + "; the search on it ended incomplete: not used"]
+        return result
+    old = result.quality.get("score") if result.quality else None
+    new = again.quality.get("score") if again.quality else None
+    if old is not None and new is not None and new > old:
+        result.notes_extra = [
+            flat.notes[-1] + f"; not kept: the residual score rose from {old:.3f} to {new:.3f}"
+        ]
+        return result
+    again.notes_extra = [
+        flat.notes[-1]
+        + (f"; kept: the residual score fell from {old:.3f} to {new:.3f}" if old else "")
+    ]
+    return again
 
 
 # Free centres are kept only when they lower the residual score by more than this (in units
@@ -1884,6 +2073,8 @@ def command_for(snap: Snapshot, mask: str = "") -> str:
         parts.append("RMSTAR")
     if s.tail != "elliprof":
         parts.append(f"TAIL={s.tail}")
+    if s.sky_plane:
+        parts.append("SKYPLANE=1")
     for cid, c in snap.components.items():
         words = [f"{cid}:"]
         if c.name:
@@ -2062,7 +2253,7 @@ def summary(result: PairResult, snap: Snapshot) -> str:
             f"note: {cid} was started from a partial bootstrap fit (R1 {r1:.1f}); it only "
             "started the cycles and is not part of any result"
         )
-    for note in snap.notes:
+    for note in snap.notes + [n for n in result.notes_extra if n not in snap.notes]:
         lines.append(f"note: {note}")
     calls = len(result.calls)
     lines.append(f"{calls} elliprof calls in {result.seconds:.1f} s")
@@ -2466,7 +2657,7 @@ def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) ->
             f"source match {cid}: {m.reason}"
             + (f" (Kron a {m.a:.1f}, q {m.q:.2f})" if m.ok else "")
         )
-    for n in snap.notes:
+    for n in snap.notes + [n for n in result.notes_extra if n not in snap.notes]:
         add(f"note: {n}")
     if measured is not None:
         add(

@@ -55,9 +55,29 @@ newest is at the top.
   On the earlier suite of strongly distorted pairs the residual improved (model error 0.39 to
   0.21 sigma) but each galaxy's profile less so (A + B 2.7 % to 3.5 %, median), and a run
   takes about twice as long.
-- **Pair fit panel**: Automatic settings off by default, with every setting shown and
-  starting from the same values; new controls for the smoothing with radius, RMSTAR, the
-  model beyond R1 and the polish cycles, and auto boxes for NR and the initial R1.
+- **Pair fits on real frames** (seven HST and JWST pairs, run end to end with the
+  automatic settings). On frames a halo fills, elliprof's and the Sérsic tails left the
+  outskirts dark (NGC 6768: the model 405 against 66 in the far corners, -4 sigma on the
+  sky pixels):
+  - `TAIL=measured` (new, in the automatic settings): beyond the last isophote the model is
+    the light measured in rings of its shape on the image minus the sky and the companion
+    (medians, made non-increasing), a Sérsic law only beyond the last ring. On NGC 6768 the
+    smoothed residual beyond 1 sigma fell from 57 % of the frame to 22 %; on the simulated
+    pairs, bright patches (90th percentile) from 9 % to 1.6 % of the galaxies and B's
+    model error from 3.4 % to 2.4 %, the SBF amplitude unchanged (0.98).
+  - `SKYPLANE=1` (new, in the automatic settings): a plane fitted to the residual of the
+    fit kept; when significant, the search again on the image minus its tilt, kept if the
+    residual is lower.
+  - No sky iterations when an automatic R1 reaches the frame's edge (the halo and the sky
+    cannot be told apart); the report says so.
+  - `mask segments ... WIDEN=f`: each segment grown by GROW + f x its equivalent radius;
+    Mask the other objects uses 0.5, so bright stars' halos are covered.
+  Still open on NGC 6768: wings of bright stars beyond their masks, a glow along the top
+  edge, and weak spokes around the nucleus (about 1 % of its light).
+- **Pair fit panel**: Settings is Automatic (the default), Automatic, adjustable (every
+  setting shown at the automatic values, the radii still automatic) or Manual; new controls
+  for the smoothing with radius, RMSTAR, the model beyond R1, the sky plane and the polish
+  cycles, and auto boxes for NR and the initial R1.
 - **The window stays responsive while a command runs** (the source finder, a sky, a sky
   plane, ELLIPROF, a script): those run in a worker thread, as the pair fit does, so the
   layers can be ticked and any buffer shown meanwhile. `ASTROVISTA_MAIN_THREAD=1` runs them

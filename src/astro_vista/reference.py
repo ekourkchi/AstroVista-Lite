@@ -631,7 +631,14 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "TAIL=",
                         "the model beyond each galaxy's last isophote, which is subtracted "
                         "from the other's image: elliprof (its r^¼ extrapolation, default), "
+                        "measured (the light measured in rings of the last isophote's shape), "
                         "sersic (a Sérsic law fitted to the outer profile), exp or cut",
+                    ),
+                    (
+                        "SKYPLANE=1",
+                        "a plane fitted to the residual of the fit kept; when significant, the "
+                        "search again on the image minus its tilt, kept if the residual is "
+                        "lower",
                     ),
                     (
                         "A: … B: …",

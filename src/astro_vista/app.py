@@ -293,6 +293,11 @@ class ElidedLabel(QtWidgets.QLabel):
         return QtCore.QSize(40, super().minimumSizeHint().height())
 
 
+# Mask the other objects: each segment grows by GROW + this x its equivalent radius, so
+# that a bright star's halo is covered as well as a faint source
+OBJECTS_WIDEN = 0.5
+
+
 class Task(QtCore.QObject):
     """Runs a command's function and reports back in the window's thread.
 
@@ -1567,7 +1572,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.run_command(f"mask new {name} {n}")
         xs = ",".join(f"{x:.2f}" for x, _y in centres)
         ys = ",".join(f"{y:.2f}" for _x, y in centres)
-        self.run_command(f"mask segments {name} X0={xs} Y0={ys} GROW={grow:g}")
+        widen = float(os.environ.get("XWIDEN", OBJECTS_WIDEN))  # TEMP
+        self.run_command(f"mask segments {name} X0={xs} Y0={ys} GROW={grow:g} WIDEN={widen:g}")
         self.run_command(f"mask role {name} fit")
         self.after_commands(lambda: (self.pair_panel.tick(name), self._overlays()))
 
