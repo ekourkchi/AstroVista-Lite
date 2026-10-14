@@ -641,8 +641,18 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "lower",
                     ),
                     (
+                        "PARALLEL=",
+                        "fit this many variants of the search at the same time (1 to 16); "
+                        "with two or more fits within 5 % of the best residual, their mean "
+                        "A + B model, mean residual and the models' spread go to buffers too",
+                    ),
+                    (
                         "A: … B: …",
-                        "each galaxy: X0= Y0= R0= R1= NR=25 NAME= MODE= FIXCTR= CORE= ADAPTIVE "
+                        "each galaxy: X0= Y0= R0= R1= NR=25 NAME= FIXCTR= CORE= ADAPTIVE "
+                        "COS3X= COS4X= (ELLIPROF's harmonics in the model: 2 each isophote's, "
+                        "the default; 1 the median; 0 none; COS3X −2, −1, −3: the 6th order) "
+                        "or MODE=; TRYCOS3X= TRYCOS4X= (values tried on the fit kept, A's then "
+                        "B's, kept when the residual falls by more than 0.01 of the noise); "
                         "START= (first R1) with STEP= (+ pixels) or FACTOR= (×), or RADII= "
                         "(a list); BLOCK= (left out around it during the other's first fit); "
                         "R1=AUTO, START=AUTO and NR=AUTO (about 30 % apart): the radii and isophotes chosen on "

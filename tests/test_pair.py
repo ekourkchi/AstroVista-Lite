@@ -1277,3 +1277,116 @@ def test_segments_grow_with_their_size():
     out = _grow_by_size(seg, [1, 2], 1.0, 0.5)
     assert out[50, 50 + 20 + 9] and not out[50, 50 + 20 + 13]  # 1 + 0.5 x 20 = 11 px
     assert out[150, 150 + 3] and not out[150, 150 + 6]  # 1 + 0.5 x 2 = 2 px
+
+
+class PureFitter(FakeFitter):
+    """A fake elliprof whose answer depends only on its input (safe in threads): A's model
+    is the light in its half of the frame, scaled by ``share[cos4x]``."""
+
+    def __init__(self, share=None):
+        super().__init__()
+        self.share = share or {}
+        import threading
+
+        self.lock = threading.Lock()
+
+    def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+        with self.lock:
+            self.calls.append({"component": "A" if x0 < 50 else "B", "kw": kw})
+        model = np.zeros(data.shape)
+        if x0 < 50:
+            model[:] = 5.0 * self.share.get(kw.get("cos4x"), 0.5)
+        profile = fake_profile(x0, y0, r0, r1, nr)
+        return ArrayFit(profile, model, 0, "", "", ["fake"], 0.0, "single")
+
+
+def harmonic_snapshot(**kw):
+    snap = iterative_snapshot(**kw)
+    image = snap.image.copy()
+    image += 5.0  # A's light: all of it is fitted with COS4X=1 only
+    return replace_image(snap, image)
+
+
+def replace_image(snap, image):
+    from dataclasses import replace
+
+    return replace(snap, image=image)
+
+
+def test_parallel_fits_give_the_same_result_and_their_mean():
+    snap = iterative_snapshot(try_damp=[1.0, 0.5], try_fix=[1, 0])
+    one = pair.run_search(snap, fitter=PureFitter())
+    from dataclasses import replace
+
+    many = pair.run_search(
+        replace(snap, settings=replace(snap.settings, parallel=4)), fitter=PureFitter()
+    )
+    assert [r["score"] for r in one.search] == [r["score"] for r in many.search]
+    assert [r.get("chosen") for r in one.search] == [r.get("chosen") for r in many.search]
+    # every variant gave the same models: all are in the mean, which has no spread
+    e = many.ensemble
+    assert e["members"] == 4 and e["of"] == 4
+    assert np.allclose(e["model"], many.total) and np.allclose(e["spread"], 0)
+    assert np.allclose(e["residual"], many.residual) and e["sky"] == pytest.approx(100.0)
+    assert "mean of the 4 fits" in pair.summary(many, many.snapshot)
+    with pytest.raises(pair.PairError):
+        pair.settings_from({"SKY": "1", "PARALLEL": "0"})
+    assert pair.settings_from({"SKY": "1", "PARALLEL": "5"}).parallel == 5
+
+
+def test_each_galaxys_harmonics_are_tried_in_turn():
+    snap = harmonic_snapshot(a_kw={"try_cos4x": [0, 1, 2]}, b_kw={"try_cos3x": [0, 2]})
+    f = PureFitter(share={1: 1.0, 0: 0.0, 2: 0.5, None: 0.5})
+    result = pair.run_search(snap, fitter=f)
+    kept = result.snapshot.components
+    assert pair.effective_harmonics(kept["A"]) == (2, 1)  # the residual of A's light is gone
+    harmonic = [r for r in result.search if r.get("harmonics")]
+    # A's two other COS4X values with B as it was, then B's one other COS3X with A's best
+    assert [r["variant"] for r in harmonic] == [
+        "A COS3X=2 COS4X=0",
+        "A COS3X=2 COS4X=1",
+        "B COS3X=0 COS4X=2",
+    ]
+    assert harmonic[1].get("chosen") and "A: COS3X=2 COS4X=1 lowered" in result.search_choice
+    b_calls = [c for c in f.calls if c["component"] == "A" and c["kw"].get("cos3x") == 0]
+    assert not b_calls  # A's COS3X was never changed
+    # a change that does not lower the residual by more than 0.01 keeps the harmonics
+    assert pair.effective_harmonics(kept["B"]) == (2, 2)
+
+
+def test_harmonic_keywords_are_elliprofs_own():
+    own = {
+        "A": {"X0": "10", "Y0": "10", "R0": "2", "R1": "20", "COS3X": "-3", "COS4X": "1"},
+        "B": {"X0": "50", "Y0": "10", "R0": "2", "R1": "20", "TRYCOS4X": "0,1,2"},
+    }
+    comps = pair.components_from(own)
+    assert comps["A"].harmonics() == (-3, 1) and comps["B"].try_cos4x == [0, 1, 2]
+    assert pair.effective_harmonics(comps["B"]) == (2, 2)  # elliprof's default
+    for bad in ({"COS3X": "3"}, {"COS4X": "-1"}, {"TRYCOS4X": "0,5"}):
+        with pytest.raises(pair.PairError):
+            pair.components_from({"A": {**own["A"], "COS3X": "0", **bad}, "B": own["B"]})
+    with pytest.raises(pair.PairError):
+        pair.components_from({"A": own["A"], "B": dict(own["B"], MODE="4")})
+
+
+def test_the_panel_writes_harmonics_and_parallel_fits():
+    from PySide6 import QtWidgets
+
+    from astro_vista.pairpanel import PairPanel
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    panel = PairPanel()
+    panel.set_mode(2)
+    card = panel.cards["A"]
+    assert "COS3X" not in card.keywords()  # elliprof's default: nothing written
+    card.cos4x.setCurrentIndex(card.cos4x.findData(1))
+    card.try_cos3x.setText("0, 1")
+    words = card.keywords().split()
+    assert "COS4X=1" in words and "TRYCOS3X=0,1" in words
+    panel.parallel.setValue(4)
+    assert "PARALLEL=4" in panel.command(1).split()
+    panel.set_mode(0)
+    assert "PARALLEL=4" in panel.command(1).split()
+    card.set_values({"mode": "4m"})  # an older named mode: its COS3X and COS4X
+    assert (card.cos3x.currentData(), card.cos4x.currentData()) == (0, 1)
+    app.processEvents()

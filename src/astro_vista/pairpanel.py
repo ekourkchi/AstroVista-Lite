@@ -1,13 +1,15 @@
 """The Pair fit tool (two overlapping galaxies, fitted in turn) and its results.
 
 The panel only builds command lines (``sky N SEGMENT ...``, ``pair N ...``); the window
-runs them, as it runs every other tool's.  Galaxy A is drawn in cyan and B in orange,
+runs them, as it runs every other tool's.  Galaxy A is drawn in magenta and B in orange,
 everywhere.
 """
 
 from __future__ import annotations
 
 import math
+import os
+import re
 import shlex
 from typing import Dict, List, Optional
 
@@ -19,9 +21,20 @@ from PySide6.QtCore import Qt
 from . import guide
 from .fitting import MODES
 from .flow import FlowLayout
+from .pair import MAX_PARALLEL
 from .panels import heading, note, number, plain_table, tip, title_row, whole
 
-COLOURS = {"A": "#22d3ee", "B": "#ff9f1c"}
+COLOURS = {"A": "#ff4dff", "B": "#ff9f1c"}
+COS3X_SHOWN = [
+    (2, "2: each isophote (default)"),
+    (1, "1: median of all"),
+    (0, "0: none"),
+    (-2, "-2: 6th order, each"),
+    (-1, "-1: 6th order, median"),
+    (-3, "-3: 6th order, none"),
+]
+COS4X_SHOWN = [(2, "2: each isophote (default)"), (1, "1: median of all"), (0, "0: none")]
+DEFAULT_PARALLEL = max(1, min(5, (os.cpu_count() or 1) - 1))
 MODES_SHOWN = ["Automatic", "Automatic, adjustable", "Manual"]
 AUTOMATIC, ADJUSTABLE, MANUAL = range(3)
 # the run of the automatic settings (chosen on simulated pairs; see the changelog)
@@ -39,7 +52,7 @@ AUTO_RUN = [
     "TAIL=measured",
     "SKYPLANE=1",
     "SKYITER=3",
-]  # cyan and orange, as in the examples
+]
 STATE_COLOURS = {
     "usable_support": "#3fb950",
     "candidate_inspect_support": "#d29922",
@@ -253,16 +266,40 @@ class GalaxyCard(QtWidgets.QGroupBox):
         row.addWidget(self.nr_auto)
         row.addWidget(self.coarse, 1)
         manual("NR", tip(row, "nr"))
-        self.mode = QtWidgets.QComboBox()
-        self.mode.addItem("elliprof's default (3, 4)", "")
-        for name in MODES:
-            self.mode.addItem(name, name)
-        self.mode.setToolTip(
-            "The harmonics fitted and put in the model: 3 and 4 are the cos 3θ and cos 4θ "
-            "terms; 6 replaces 3 (a 6th-order model is checked for elliprof's PA-wrap "
-            "warning, and fails with it); m: the median of each term over all ellipses"
+        self.cos3x = QtWidgets.QComboBox()
+        for value, text in COS3X_SHOWN:
+            self.cos3x.addItem(text, value)
+        self.cos4x = QtWidgets.QComboBox()
+        for value, text in COS4X_SHOWN:
+            self.cos4x.addItem(text, value)
+        self.cos3x.setCurrentIndex(self.cos3x.findData(2))
+        self.cos4x.setCurrentIndex(self.cos4x.findData(2))
+        self.cos3x.setToolTip(
+            "COS3X: the cos 3θ term (lopsided, egg-shaped isophotes) in the model: 2 each "
+            "isophote's own, 1 the median over all isophotes, 0 none; negative values fit the "
+            "6th order instead (-2 each, -1 median, -3 none)"
         )
-        manual("Harmonics", tip(self.mode, "pair_mode"))
+        self.cos4x.setToolTip(
+            "COS4X: the cos 4θ term in the model (disky isophotes: positive; boxy: negative): "
+            "2 each isophote's own, 1 the median over all isophotes, 0 none"
+        )
+        self.try_cos3x = QtWidgets.QLineEdit()
+        self.try_cos4x = QtWidgets.QLineEdit()
+        for box, key in ((self.try_cos3x, "COS3X"), (self.try_cos4x, "COS4X")):
+            box.setPlaceholderText("try: e.g. 0, 1, 2")
+            box.setToolTip(
+                f"TRY{key}: values to try as well, on the fit kept; another is kept when it "
+                "lowers the residual by more than 0.01 of the noise"
+            )
+        grid = QtWidgets.QGridLayout()
+        grid.addWidget(QtWidgets.QLabel("COS3X"), 0, 0)
+        grid.addWidget(self.cos3x, 0, 1)
+        grid.addWidget(self.try_cos3x, 0, 2)
+        grid.addWidget(QtWidgets.QLabel("COS4X"), 1, 0)
+        grid.addWidget(self.cos4x, 1, 1)
+        grid.addWidget(self.try_cos4x, 1, 2)
+        grid.setColumnStretch(2, 1)
+        manual("Harmonics", tip(grid, "pair_mode"))
         self.fixctr = QtWidgets.QComboBox()
         self.fixctr.addItems(["Free", "Fixed at X0, Y0", "Median of the fitted centres"])
         self.fixctr.setCurrentIndex(1)  # fixed centres: the more stable decomposition
@@ -402,9 +439,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
             parts.append("NR=AUTO")
         elif self.nr.value() != 25:
             parts.append(f"NR={self.nr.value()}")
-        mode = self.mode.currentData()
-        if mode:
-            parts.append(f"MODE={mode}")
+        parts += self.harmonic_keywords()
         if self.fixctr.currentIndex():
             parts.append(f"FIXCTR={self.fixctr.currentIndex()}")
         if self.core_mode.currentIndex() == 1:
@@ -416,6 +451,18 @@ class GalaxyCard(QtWidgets.QGroupBox):
         parts += self.growth_keywords()
         return " ".join(parts)
 
+    def harmonic_keywords(self) -> List[str]:
+        """COS3X=, COS4X= (when not ELLIPROF's default) and the values to try."""
+        out = []
+        for key, box in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
+            if box.currentData() != 2:
+                out.append(f"{key}={box.currentData()}")
+        for key, box in (("TRYCOS3X", self.try_cos3x), ("TRYCOS4X", self.try_cos4x)):
+            values = [v for v in re.split(r"[,\s]+", box.text().strip()) if v]
+            if values:
+                out.append(f"{key}=" + ",".join(values))
+        return out
+
     def values(self) -> dict:
         return {
             "name": self.name.text(),
@@ -424,7 +471,10 @@ class GalaxyCard(QtWidgets.QGroupBox):
             "r0": self.r0.value(),
             "r1": self.r1.value(),
             "nr": self.nr.value(),
-            "mode": self.mode.currentIndex(),
+            "cos3x": self.cos3x.currentData(),
+            "cos4x": self.cos4x.currentData(),
+            "try_cos3x": self.try_cos3x.text(),
+            "try_cos4x": self.try_cos4x.text(),
             "fixctr": self.fixctr.currentIndex(),
             "core_mode": self.core_mode.currentIndex(),
             "core": self.core.value(),
@@ -445,7 +495,17 @@ class GalaxyCard(QtWidgets.QGroupBox):
                 getattr(self, key).setValue(float(v[key]))
         if "nr" in v:
             self.nr.setValue(int(v["nr"]))
-        for key in ("mode", "fixctr", "core_mode"):
+        if "mode" in v:  # a named mode (older settings): its COS3X and COS4X
+            name = v["mode"] if isinstance(v["mode"], str) else ([""] + list(MODES))[v["mode"]]
+            v = dict(v, **dict(zip(("cos3x", "cos4x"), MODES.get(name, (2, 2)))))
+        for key in ("cos3x", "cos4x"):
+            if key in v:
+                box = getattr(self, key)
+                box.setCurrentIndex(max(box.findData(int(v[key])), 0))
+        for key in ("try_cos3x", "try_cos4x"):
+            if key in v:
+                getattr(self, key).setText(str(v[key]))
+        for key in ("fixctr", "core_mode"):
             if key in v:
                 getattr(self, key).setCurrentIndex(int(v[key]))
         if "adaptive" in v:
@@ -507,6 +567,18 @@ class PairPanel(QtWidgets.QWidget):
             "Manual: every setting yours, the radii typed or picked."
         )
         form.addRow("Settings", tip(self.mode, "pair_auto"))
+        self.parallel = whole(1, MAX_PARALLEL, DEFAULT_PARALLEL)
+        self.parallel.setToolTip(
+            "PARALLEL: how many fits of the search run at the same time (each ELLIPROF call is "
+            "a process of its own). The fit kept does not depend on it, only the time. With "
+            "two or more fits close to the best, their mean model, mean residual and the "
+            "models' spread are put in buffers too"
+        )
+        self.parallel_note = note(f"this computer has {os.cpu_count() or 1} cores")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.parallel)
+        row.addWidget(self.parallel_note, 1)
+        form.addRow("Parallel fits", tip(row, "pair_parallel"))
 
         # ---- the sky
         form.addRow(heading("1. Sky"))
@@ -1147,6 +1219,8 @@ class PairPanel(QtWidgets.QWidget):
             parts.append("MASK=" + ",".join(layers))
         # the sky iterations need a measured sky (its support); a typed sky goes as typed
         parts += [p for p in AUTO_RUN if self.sky_id or not p.startswith("SKYITER")]
+        if self.parallel.value() > 1:
+            parts.append(f"PARALLEL={self.parallel.value()}")
         if self.views.isChecked():
             parts.append("VIEWS")
         parts.append("A: " + self.cards["A"].auto_keywords())
@@ -1207,6 +1281,8 @@ class PairPanel(QtWidgets.QWidget):
             parts.append("BOOTSTRAP=0")
         if self.views.isChecked():
             parts.append("VIEWS")
+        if self.parallel.value() > 1:
+            parts.append(f"PARALLEL={self.parallel.value()}")
         parts.append("A: " + self.cards["A"].keywords())
         parts.append("B: " + self.cards["B"].keywords())
         return " ".join(parts)
@@ -1431,7 +1507,14 @@ class PairResultsPanel(QtWidgets.QWidget):
                 f(r["A_r1"], ".1f"),
                 f(r["B_r1"], ".1f"),
                 f(r["sky"], ".6g"),
-                ("kept: " + self.record.result.search_choice) if r.get("chosen") else "",
+                "; ".join(
+                    x
+                    for x in (
+                        ("kept: " + self.record.result.search_choice) if r.get("chosen") else "",
+                        "in the mean" if r.get("mean") else "",
+                    )
+                    if x
+                ),
             ]
             for j, text in enumerate(cells):
                 self.search_table.setItem(i, j, QtWidgets.QTableWidgetItem(text))

@@ -266,9 +266,9 @@ class Viewer(QtWidgets.QWidget):
         self.radii.setZValue(39)
         self.radii.setParentItem(self.group)
         self.radius_from = None  # while picking a radius: the centre it is measured from
-        # the pair fit: guides (dashed) and fitted ellipses of A (cyan) and B (orange)
+        # the pair fit: guides (dashed) and fitted ellipses of A (magenta) and B (orange)
         self.pair_items = {}
-        for cid, colour in (("A", "#22d3ee"), ("B", "#ff9f1c")):
+        for cid, colour in (("A", "#ff4dff"), ("B", "#ff9f1c")):
             for kind, width, style, z in (
                 ("guide", 1.2, Qt.DashLine, 38),
                 ("core", 1.2, Qt.DotLine, 38),

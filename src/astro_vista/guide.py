@@ -853,10 +853,22 @@ TIPS = {
     "within 3 pixels of a found source takes the source's centre, and the card says so; "
     "Alt-click places the centre exactly where you click. The fit refines the centre of "
     "every ellipse (unless <i>Centres</i> says otherwise).",
-    "pair_mode": "<b>Harmonics</b>: the cos 3θ and cos 4θ terms fitted along each ellipse and "
-    "put into the model (boxy or discy shapes). <i>6</i> replaces 3 by the 6th order; such a "
-    "model is wrong beyond a turn of the position angle through 0/180 degrees, and a fit "
-    "where elliprof warns of it fails. <i>m</i>: the median of each term over all ellipses.",
+    "pair_mode": "<b>Harmonics</b> (ELLIPROF's COS3X and COS4X): every isophote's fit measures "
+    "the cos 3θ and cos 4θ terms; these choose what goes into the model. 2 puts in each "
+    "isophote's own (ELLIPROF's default), 1 the median over all isophotes, 0 none. COS4X "
+    "describes disky (positive) and boxy (negative) isophotes; COS3X lopsided ones. A "
+    "negative COS3X fits the 6th order instead of the 3rd (-2 each, -1 median, -3 none); "
+    "such a model is wrong beyond a turn of the position angle through 0/180 degrees, and a "
+    "fit where elliprof warns of it fails. <i>Try</i> lists values to fit as well, on the fit "
+    "kept (TRYCOS3X=, TRYCOS4X=): A's values with B as it is, then B's with A's best; one replaces "
+    "the fit kept only when it lowers the residual by more than 0.01 of the noise.",
+    "pair_parallel": "<b>Parallel fits</b> (PARALLEL=): the search fits each variant on its own "
+    "(damping, centres, growth, harmonics); this many run at the same time, each ELLIPROF "
+    "call a process of its own. The fit kept is the same whatever the number; only the time "
+    "changes (on NGC 6768, 56 s one at a time, 24 s five at a time). When two or more fits "
+    "are within 5 % of the best residual, their mean A + B model, mean residual and the "
+    "spread of their models (pixel by pixel) are put in buffers as well: the spread shows "
+    "where the answer depends on the choices searched.",
     "pair_fixctr": "<b>Centres</b>: <i>Free</i> lets every ellipse find its own centre (the "
     "default; a drift towards the other galaxy shows in the centre track); <i>Fixed</i> keeps "
     "all at X0, Y0; <i>Median</i> sets all to the median of the fitted centres after each "
@@ -911,9 +923,12 @@ TIPS = {
     "corners with ln I linear in r^1/4 through the last two isophotes: right for a de "
     "Vaucouleurs profile, too bright for a shallower one or when the last two are noisy. In "
     "a pair that light is subtracted from the companion's image and leaves dark regions. "
-    "<i>Sérsic</i> (recommended) continues the last isophote by a Sérsic law fitted to the "
-    "outer 60 % of the profile, on the last isophote's ellipse; <i>exponential</i> by the "
-    "outer slope; <i>cut off</i> tapers it to zero; <i>elliprof</i> keeps elliprof's.",
+    "<i>Measured</i> (recommended, the automatic settings) takes the light measured in rings "
+    "of the last isophote's shape on the image minus the companion, never rising outwards, "
+    "and a Sérsic law beyond the last ring; <i>Sérsic</i> continues the last isophote by a "
+    "Sérsic law fitted to the outer 60 % of the profile, on the last isophote's ellipse; "
+    "<i>exponential</i> by the outer slope; <i>cut off</i> tapers it to zero; <i>elliprof</i> "
+    "keeps elliprof's.",
     "pair_r1auto": "<b>R1</b>, the final outer radius. <b>auto</b> (also for the initial R1 "
     "and NR): where the median light in "
     "3 px rings, on the half facing away from the other galaxy and on unmasked pixels, falls "

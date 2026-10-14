@@ -380,6 +380,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._residual_display = None  # (stretch, limits) to restore after a residual
         self._residual_shown = None
         self._pair_worker = None
+        self._pair_live, self._pair_live_key = {}, None
+        self._live_timer = QtCore.QTimer(self, singleShot=True, interval=300)
+        self._live_timer.timeout.connect(self._overlays)
         self._task = None
         self._running: Optional[str] = None  # the command being run, if any
         self._patch_cache = None  # (key, labels) for the Ctrl-hover outline
@@ -1670,6 +1673,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._enable_runs(False)
         self.pair_panel.set_running(True)
         self._pair_stop = False
+        self._pair_live = {}
+        self._pair_live_key = job.image.key
         worker = PairWorker(job, lambda: self._pair_stop, self)
         worker.progress.connect(self._pair_progress)
         worker.done.connect(lambda result: self._pair_done(line, job, result))
@@ -1681,6 +1686,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _pair_progress(self, info: dict) -> None:
         if info.get("phase") == "call":
             self.pair_panel.add_iteration(info)
+            if info.get("ellipses"):  # the isophotes as they are fitted
+                self._pair_live[info["component"]] = info["ellipses"]
+                if not self._live_timer.isActive():  # at most a few redraws a second
+                    self._live_timer.start()
             return
         if info.get("phase") == "fit":
             cycle = info["cycle"]
@@ -1724,6 +1733,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _pair_done(self, line: str, job, result) -> None:
         self._pair_worker = None
+        self._pair_live = {}
         self.pair_panel.set_running(False)
         self.pair_panel.progress.setText("")
         if job.snap.run_id != result.run_id:
@@ -1770,6 +1780,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _pair_failed(self, line: str, message: str) -> None:
         self._pair_worker = None
+        self._pair_live = {}
         self.pair_panel.set_running(False)
         self.pair_panel.progress.setText("")
         self._finished(line, None, message)
@@ -1837,7 +1848,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 d["centre"] = (x, y)
                 radii = (card.r0.value(), card.r1.value(), card.start.value())
                 d["guide"] = [(x, y, r, r, 0.0) for r in radii if r > 0]
-            if record is not None:
+            live = self._pair_live.get(cid) if self._pair_live_key == image.key else None
+            if live and shown("isophotes"):  # a fit running: its latest isophotes
+                d["fit"] = live
+                d["track"] = [(e[0], e[1]) for e in live]
+            elif record is not None:
                 snap, result = record.job.snap, record.result
                 core = snap.cores.get(cid)
                 if core is not None and core.shape != "none" and shown_tool:

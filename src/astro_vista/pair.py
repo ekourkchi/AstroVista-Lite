@@ -97,6 +97,8 @@ class Component:
     step: Optional[float] = None  # STEP: R1 grows by this many pixels per cycle
     factor: Optional[float] = None  # FACTOR: R1 grows by this factor per cycle
     radii: Optional[List[float]] = None  # RADII: the R1 of each fit, listed
+    try_cos3x: List[int] = field(default_factory=list)  # TRYCOS3X=: harmonics to search
+    try_cos4x: List[int] = field(default_factory=list)  # TRYCOS4X=
 
     @property
     def first_r1(self) -> float:
@@ -164,6 +166,7 @@ class Settings:
     try_fix: List[int] = field(default_factory=list)  # TRYFIX=: centre fitting variants
     try_factor: List[float] = field(default_factory=list)  # TRYFACTOR=: growth factors
     polish: int = 2  # POLISH=: undamped final cycles after damped ones
+    parallel: int = 1  # PARALLEL=: variants fitted at the same time (threads)
 
 
 @dataclass
@@ -315,7 +318,10 @@ class PairResult:
     # SKYITER: one entry per pair fit (factor, sky, residual median, status); the result is
     # the fit marked "chosen"
     sky_iterations: List[dict] = field(default_factory=list)
+    # PARALLEL / the search: the mean of the fits close to the best (see ensemble())
+    ensemble: dict = field(default_factory=dict)
     seconds: float = 0.0
+    wall: float = 0.0  # run_search: the whole search, from start to end (parallel or not)
     run_id: int = 0
 
     @property
@@ -407,6 +413,7 @@ SHARED = {
     "TRYFACTOR",
     "TAIL",
     "SKYPLANE",
+    "PARALLEL",
 }
 OWN = {
     "NAME",
@@ -426,6 +433,8 @@ OWN = {
     "STEP",
     "FACTOR",
     "RADII",
+    "TRYCOS3X",
+    "TRYCOS4X",
 }
 FLAGS = {"RMSTAR", "STOP", "ADAPTIVE", "VIEWS"}
 
@@ -562,6 +571,20 @@ def resolve_auto(
     return notes
 
 
+# ELLIPROF's harmonic keywords, which choose what goes into the model (every isophote's fit
+# measures the terms): 0 none; 1 the median coefficients over all isophotes; 2 each
+# isophote its own (the default); a negative COS3X fits the 6th order instead of the 3rd
+# (-2 each, -1 median, -3 none)
+COS3X_VALUES = (-3, -2, -1, 0, 1, 2)
+COS4X_VALUES = (0, 1, 2)
+DEFAULT_HARMONICS = (2, 2)
+HARMONIC_COMBINATIONS = 18  # TRYCOS3X x TRYCOS4X of one galaxy: at most this many to fit
+
+
+def _listed(values) -> str:
+    return ", ".join(str(v) for v in values)
+
+
 def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
     out = {}
     for cid in ("A", "B"):
@@ -591,11 +614,27 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
             step=_num(k, "STEP", where) if "STEP" in k else None,
             factor=_num(k, "FACTOR", where) if "FACTOR" in k else None,
             radii=_radii(k["RADII"], where) if "RADII" in k else None,
+            try_cos3x=[int(x) for x in _numbers(k, "TRYCOS3X")],
+            try_cos4x=[int(x) for x in _numbers(k, "TRYCOS4X")],
         )
         if not 0 < c.r0 < c.r1:
             raise PairError(f"0 < R0 < R1 is needed{where}")
         if not (c.nr == 0 or 2 <= c.nr <= 100):
             raise PairError(f"NR must be 2 to 100, or 0 (automatic){where}")
+        for key, value, allowed in (
+            ("COS3X", c.cos3x, COS3X_VALUES),
+            ("COS4X", c.cos4x, COS4X_VALUES),
+        ):
+            if value is not None and value not in allowed:
+                raise PairError(f"{key} must be one of {_listed(allowed)}{where}")
+        for key, values, allowed in (
+            ("TRYCOS3X", c.try_cos3x, COS3X_VALUES),
+            ("TRYCOS4X", c.try_cos4x, COS4X_VALUES),
+        ):
+            if any(v not in allowed for v in values):
+                raise PairError(f"{key} values must be among {_listed(allowed)}{where}")
+        if mode and (c.try_cos3x or c.try_cos4x):
+            raise PairError(f"give MODE= or TRYCOS3X=/TRYCOS4X= for {cid}, not both")
         if c.fixctr not in (0, 1, 2):
             raise PairError(f"FIXCTR must be 0, 1 or 2{where}")
         if c.core is not None and c.core < 0:
@@ -614,6 +653,9 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
             raise PairError(f"RADII must lie between R0 and R1{where}")
         out[cid] = c
     return out
+
+
+MAX_PARALLEL = 16
 
 
 def settings_from(shared: Dict[str, str]) -> Settings:
@@ -646,9 +688,12 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         bootstrap=_num(shared, "BOOTSTRAP", "", 1, int) != 0,
         tail=shared.get("TAIL", "elliprof").strip().lower(),
         sky_plane=_num(shared, "SKYPLANE", "", 0, int) != 0,
+        parallel=_num(shared, "PARALLEL", "", 1, int),
     )
     if s.tail not in TAILS:
         raise PairError("TAIL must be one of " + ", ".join(TAILS))
+    if not 1 <= s.parallel <= MAX_PARALLEL:
+        raise PairError(f"PARALLEL must be 1 to {MAX_PARALLEL}")
     if s.cycles < 1 or s.cycles > 50:
         raise PairError("CYCLES must be 1 to 50")
     if s.niter < 1 or s.niter > 1000:
@@ -1309,6 +1354,7 @@ def run(
                 reason=reason,
                 drift=drift,
                 index=len(result.calls),
+                ellipses=profile_ellipses(fit.profile) if ok else None,
             )
             if ok:
                 support = outer_support(fit.profile, usable)
@@ -1881,7 +1927,18 @@ def run_search(
     """Fit every variant TRY... asks for (each with SKYITER if asked) and keep the one whose
     two models describe the pair best (see choose()).  One result, not an average; every
     variant is listed in ``search``.  With R1=AUTO, a first pass (the snapshot as asked)
-    gives the models on which the radii are measured again (refine_auto)."""
+    gives the models on which the radii are measured again (refine_auto).
+
+    PARALLEL=n fits n variants at a time.  TRYCOS3X= and TRYCOS4X= then try each galaxy's
+    harmonics on the fit kept (choose_harmonics).  The mean of the fits close to the best is
+    kept as well (ensemble())."""
+    t0 = time.perf_counter()
+    result = _search(snap, support, progress, cancelled, fitter)
+    result.wall = time.perf_counter() - t0
+    return result
+
+
+def _search(snap, support, progress, cancelled, fitter) -> PairResult:
     if any(r for r, _s in snap.auto.values()):
 
         def first_say(info):
@@ -1913,12 +1970,78 @@ def run_search(
             )
     base = snap
     options = variants(snap)
-    rows, results = [], []
-    for k, (label, variant) in enumerate(options, 1):
-        if cancelled is not None and cancelled():
-            break
+    results = _fit_each(options, support, progress, cancelled, fitter, snap.settings.parallel)
+    rows = [_search_row(label, r, sn) for label, r, sn in results]
+    if not results:
+        return run(snap, progress, cancelled, fitter)  # cancelled before any variant ran
+    pairs_ = [(r, sn) for _l, r, sn in results]
+    if len(pairs_) == 1:
+        best, why = 0, ""
+    else:
+        best, why = choose(pairs_)
+        rows[best]["chosen"] = True
+    result, chosen_snap = pairs_[best]
+    # TRYCOS3X / TRYCOS4X: each galaxy's harmonics in turn, tried on the fit kept
+    for cid in ("A", "B"):
+        tried = harmonic_variants(chosen_snap, cid)
+        if not tried or (cancelled is not None and cancelled()):
+            continue
+        tried = [
+            (label, replace(sn, settings=replace(sn.settings, sky_iter=0))) for label, sn in tried
+        ]
+        more = _fit_each(tried, None, progress, cancelled, fitter, snap.settings.parallel)
+        extra = [_search_row(label, r, sn) for label, r, sn in more]
+        for row in extra:
+            row["harmonics"] = cid
+        k, why_h = choose_harmonics(result, [(r, sn) for _l, r, sn in more])
+        if k is not None:
+            for row in rows:
+                row.pop("chosen", None)
+            extra[k]["chosen"] = True
+            result, chosen_snap = more[k][1], more[k][2]
+        if k is not None:
+            why_h = f"{_harmonic_words(chosen_snap.components[cid])} {why_h}"
+        why = (why + "; " if why else "") + f"{cid}: {why_h}"
+        rows += extra
+        pairs_ += [(r, sn) for _l, r, sn in more]
+    base = replace(
+        base,
+        components={
+            cid: replace(
+                c,
+                mode=chosen_snap.components[cid].mode,
+                cos3x=chosen_snap.components[cid].cos3x,
+                cos4x=chosen_snap.components[cid].cos4x,
+            )
+            for cid, c in base.components.items()
+        },
+    )
+    base = replace(
+        base,
+        components={
+            cid: replace(c, try_cos3x=[], try_cos4x=[]) for cid, c in base.components.items()
+        },
+    )
+    result.ensemble = ensemble(pairs_, rows)
+    if len(rows) > 1:
+        result.search = rows
+        result.search_choice = why
+    result.snapshot = chosen_snap if chosen_snap is not snap else result.snapshot
+    return _with_plane(result, base, support, progress, cancelled, fitter)
 
-        def say(info, k=k, label=label):
+
+def _fit_each(options, support, progress, cancelled, fitter, workers: int):
+    """run_sky on every (label, snapshot), ``workers`` at a time: a Python thread each,
+    since the time goes into elliprof's subprocesses (and NumPy, which mostly lets go of
+    the interpreter lock).  Returns (label, result, the snapshot of the fit) in the order
+    given; a variant not started before a stop is left out."""
+
+    def one(item):
+        k, (label, variant) = item
+        if cancelled is not None and cancelled():
+            return None
+
+        def say(info):
             if progress is not None:
                 if len(options) > 1:
                     info.update(variant=label, variant_number=k, variants=len(options))
@@ -1927,33 +2050,130 @@ def run_search(
         result = run_sky(variant, support, say, cancelled, fitter)
         chosen_snap = result.snapshot or variant
         result.quality = quality(result, chosen_snap)
-        results.append((result, chosen_snap))
-        rows.append(
-            {
-                "variant": label or "as asked",
-                "status": result.status,
-                "score": result.quality.get("score"),
-                "A": result.quality.get("per_galaxy", {}).get("A"),
-                "B": result.quality.get("per_galaxy", {}).get("B"),
-                "sky": chosen_snap.settings.sky,
-                "cycles": len(result.metrics),
-                "calls": len(result.calls),
-                "A_r1": result.commits["A"].r1_call if "A" in result.commits else None,
-                "B_r1": result.commits["B"].r1_call if "B" in result.commits else None,
-            }
-        )
-    if len(results) == 1:
-        result, chosen_snap = results[0]
-        result.snapshot = chosen_snap if chosen_snap is not snap else result.snapshot
-        return _with_plane(result, base, support, progress, cancelled, fitter)
+        return label, result, chosen_snap
 
-    best, why = choose(results)
-    rows[best]["chosen"] = True
-    result, chosen_snap = results[best]
-    result.search = rows
-    result.search_choice = why
-    result.snapshot = chosen_snap
-    return _with_plane(result, base, support, progress, cancelled, fitter)
+    items = list(enumerate(options, 1))
+    if workers <= 1 or len(items) <= 1:
+        out = [one(item) for item in items]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(
+            max_workers=min(workers, len(items)), thread_name_prefix="astrovista-variant"
+        ) as pool:
+            out = list(pool.map(one, items))
+    return [x for x in out if x is not None]
+
+
+def _search_row(label: str, result: PairResult, chosen_snap: Snapshot) -> dict:
+    return {
+        "variant": label or "as asked",
+        "status": result.status,
+        "score": result.quality.get("score"),
+        "A": result.quality.get("per_galaxy", {}).get("A"),
+        "B": result.quality.get("per_galaxy", {}).get("B"),
+        "sky": chosen_snap.settings.sky,
+        "cycles": len(result.metrics),
+        "calls": len(result.calls),
+        "A_r1": result.commits["A"].r1_call if "A" in result.commits else None,
+        "B_r1": result.commits["B"].r1_call if "B" in result.commits else None,
+        "seconds": result.seconds,
+    }
+
+
+def effective_harmonics(c: Component) -> Tuple[int, int]:
+    """COS3X and COS4X as ELLIPROF uses them (unset: its default, DEFAULT_HARMONICS)."""
+    c3, c4 = c.harmonics()
+    return (DEFAULT_HARMONICS[0] if c3 is None else c3, DEFAULT_HARMONICS[1] if c4 is None else c4)
+
+
+def _harmonic_words(c: Component) -> str:
+    c3, c4 = effective_harmonics(c)
+    return f"COS3X={c3} COS4X={c4}"
+
+
+def harmonic_variants(snap: Snapshot, cid: str) -> List[Tuple[str, Snapshot]]:
+    """The snapshots TRYCOS3X= and TRYCOS4X= of galaxy ``cid`` ask for (every combination of
+    its two lists, the other galaxy as it is), but not the snapshot's own."""
+    c = snap.components[cid]
+    if not (c.try_cos3x or c.try_cos4x):
+        return []
+    c3, c4 = effective_harmonics(c)
+    own = (c3, c4)
+    out = []
+    for a in c.try_cos3x or [c3]:
+        for b in c.try_cos4x or [c4]:
+            if (a, b) == own:
+                continue
+            comps = dict(snap.components)
+            comps[cid] = replace(c, mode="", cos3x=a, cos4x=b)
+            out.append((f"{cid} COS3X={a} COS4X={b}", replace(snap, components=comps)))
+    return out[:HARMONIC_COMBINATIONS]
+
+
+# A harmonic variant replaces the fit kept only when it lowers the residual score by more
+# than this (in units of the pixel noise), as free centres must (FREE_GAIN): more terms
+# always fit the noise a little better.
+HARMONIC_GAIN = 0.01
+
+
+def choose_harmonics(kept: PairResult, tried: List[Tuple[PairResult, Snapshot]]):
+    """The index of the harmonic variant to keep instead of ``kept`` (None: keep it), and
+    why."""
+    score = kept.quality.get("score", float("inf")) if kept.quality else float("inf")
+    good = [
+        (r.quality.get("score", float("inf")), i)
+        for i, (r, _s) in enumerate(tried)
+        if r.complete
+        and r.quality
+        and (r.status == "stable_valid_pair" or kept.status != "stable_valid_pair")
+    ]
+    if not good:
+        return None, "no other harmonics gave as complete and stable a fit: its own kept"
+    best, i = min(good)
+    if best < score - HARMONIC_GAIN:
+        return i, f"lowered the residual by {score - best:.3f}"
+    return None, (
+        f"its harmonics kept: the best others lowered the residual by {max(score - best, 0):.3f}, "
+        f"not more than {HARMONIC_GAIN:g}"
+    )
+
+
+# The mean of a search: the fits whose residual score is within this share of the best
+ENSEMBLE_SHARE = 0.05
+
+
+def ensemble(fits: List[Tuple[PairResult, Snapshot]], rows: List[dict]) -> dict:
+    """The mean sky, A + B model and residual of the complete fits of a search whose score
+    is within ENSEMBLE_SHARE of the best, and the spread of their models (the standard
+    deviation, pixel by pixel): how much the answer depends on the choices searched.
+    Empty with fewer than two such fits.  Marks the members' rows with "mean"."""
+    scores = [
+        (r.quality.get("score"), i)
+        for i, (r, _s) in enumerate(fits)
+        if r.complete and r.residual is not None and r.quality and r.quality.get("score")
+    ]
+    if len(scores) < 2:
+        return {}
+    best = min(sc for sc, _i in scores)
+    members = [i for sc, i in scores if sc <= best * (1 + ENSEMBLE_SHARE)]
+    if len(members) < 2:
+        return {}
+    totals = np.stack([fits[i][0].total for i in members])
+    residuals = np.stack([fits[i][0].residual for i in members])
+    skies_ = np.array([fits[i][1].settings.sky for i in members])
+    for i in members:
+        rows[i]["mean"] = True
+    return {
+        "members": len(members),
+        "of": len(fits),
+        "share": ENSEMBLE_SHARE,
+        "sky": float(skies_.mean()),
+        "sky_spread": float(skies_.std(ddof=1)),
+        "model": totals.mean(axis=0),
+        "residual": residuals.mean(axis=0),
+        "spread": totals.std(axis=0, ddof=1),
+    }
 
 
 def _with_plane(result, base, support, progress, cancelled, fitter) -> PairResult:
@@ -1977,7 +2197,7 @@ def _with_plane(result, base, support, progress, cancelled, fitter) -> PairResul
             progress(info)
 
     flat = replace(flat, settings=replace(flat.settings, sky_plane=False), auto={})
-    again = run_search(flat, support, say, cancelled, fitter)
+    again = _search(flat, support, say, cancelled, fitter)
     if not again.complete:
         result.notes_extra = [flat.notes[-1] + "; the search on it ended incomplete: not used"]
         return result
@@ -2253,10 +2473,29 @@ def summary(result: PairResult, snap: Snapshot) -> str:
             f"note: {cid} was started from a partial bootstrap fit (R1 {r1:.1f}); it only "
             "started the cycles and is not part of any result"
         )
+    if result.search:
+        harmonic = [r for r in result.search if r.get("harmonics")]
+        lines.append(
+            f"search: {len(result.search) - len(harmonic)} variants"
+            + (f" and {len(harmonic)} harmonic variants" if harmonic else "")
+            + f", {snap.settings.parallel} at a time; kept: "
+            + next((r["variant"] for r in result.search if r.get("chosen")), "?")
+            + (f" ({result.search_choice})" if result.search_choice else "")
+        )
+    e = result.ensemble
+    if e:
+        lines.append(
+            f"mean of the {e['members']} fits within {100 * e['share']:g} % of the best score "
+            f"(of {e['of']}): sky {e['sky']:.6g} ± {e['sky_spread']:.2g}; the A + B models "
+            f"differ by {float(np.median(e['spread'])):.3g} (median per pixel)"
+        )
     for note in snap.notes + [n for n in result.notes_extra if n not in snap.notes]:
         lines.append(f"note: {note}")
     calls = len(result.calls)
-    lines.append(f"{calls} elliprof calls in {result.seconds:.1f} s")
+    lines.append(
+        f"{calls} elliprof calls in {result.seconds:.1f} s"
+        + (f"; the whole search {result.wall:.1f} s" if result.wall > result.seconds + 0.5 else "")
+    )
     lines.append(
         "Passing these checks and a small change do not prove a unique separation of the "
         "two galaxies, nor that the residual is ready for SBF."
@@ -2493,7 +2732,7 @@ def export(
         atomic(f"{cid}_profile.csv", lambda p, c=c: c.profile.to_csv(p, index=False))
 
         def reg(p, c=c, cid=cid):
-            colour = "cyan" if cid == "A" else "orange"
+            colour = "magenta" if cid == "A" else "orange"
             rows = [
                 "# Region file format: DS9 version 4.1",
                 f"global color={colour} width=1",
@@ -2621,6 +2860,7 @@ def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) ->
         score = "-" if row["score"] is None else format(row["score"], ".3f")
         add(
             f"variant {row['variant']}: {row['status']}, score {score}"
+            + ("  (in the mean)" if row.get("mean") else "")
             + ("  <- kept" if row.get("chosen") else "")
         )
     if result.search_choice:

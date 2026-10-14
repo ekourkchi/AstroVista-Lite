@@ -1161,6 +1161,21 @@ class Session(ImageCommands):
                 self.buffers[m] = image.derived(name, data)
                 self.buffers[m].note = job.line
                 made.append(f"{m} {name.split(' pair ', 1)[1]}")
+            e = result.ensemble
+            if e:
+                taken = set(job.outputs.values()) | {n}
+                for kind, data in (
+                    ("pair mean A+B model", e["model"]),
+                    ("pair mean residual", e["residual"]),
+                    ("pair model spread", e["spread"]),
+                ):
+                    m = self.output_buffer(n, kind)
+                    while m in taken:
+                        m = self.free_buffer(m)
+                    taken.add(m)
+                    self.buffers[m] = image.derived(f"{image.name} {kind}", data)
+                    self.buffers[m].note = job.line
+                    made.append(f"{m} {kind.split('pair ', 1)[1]}")
             reply.text += "\nbuffers: " + "; ".join(made)
             reply.changed |= {"buffers", "data"}
         return reply
@@ -1730,7 +1745,7 @@ KEYWORDS = {
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
-    "TIE= RMSTAR SKYPLANE=",
+    "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1946,12 +1961,20 @@ Shared (before A:)
                 measured (the light measured in rings of the last isophote's shape)
   SKYPLANE=1    a plane fitted to the residual of the fit kept; if significant, the search
                 again on the image minus its tilt (kept when the residual is lower)
+  PARALLEL=1    fit this many variants at the same time (1 to 16); with two or more fits
+                within 5 % of the best score, their mean sky, mean A + B model, mean
+                residual and the models' spread are made as well
   STOP          stop early once A, B and A + B all change by less than 2 %
   VIEWS         also make the image - sky - B and image - sky - A buffers
   TOMODELA= TOMODELB= TOMODEL= TORESID=   the result buffers (free ones by default)
 Each galaxy (after A: or B:)
   X0= Y0= R0= R1=   its centre (ELLIPROF's coordinates) and radii (semi-major, pixels)
-  NR=25  NAME="..."  MODE=none|3|4|3,4|4,6|3m|4m|6m,4m (or COS3X= COS4X=)  FIXCTR=0|1|2
+  NR=25  NAME="..."  FIXCTR=0|1|2
+  COS3X=2 COS4X=2   ELLIPROF's harmonics in the model: 0 none, 1 the median over all
+                isophotes, 2 each isophote its own (the default); COS3X=-2, -1, -3 fit
+                the 6th order instead (each, median, none); or MODE=none|3|4|3,4|4,6|...
+  TRYCOS3X=0,2 TRYCOS4X=0,1,2   harmonics to try on the fit kept: A's combinations with
+                B as it is, then B's with A's best; kept when the residual falls by > 0.01
   START=r STEP=dr | FACTOR=f | RADII=r1,r2,...   its radius schedule: the first R1,
                 then + dr or x f each cycle, or the listed radii; always ending at R1
   CORE=r        the core centred on THIS galaxy, left out while the other is fitted

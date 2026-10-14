@@ -5,6 +5,24 @@ newest is at the top.
 
 ## Unreleased
 
+- **Parallel pair fits.** `PARALLEL=n` (Pair fit ▸ Parallel fits, 5 by default on a
+  computer with 6 cores or more) fits n variants of the search at the same time; the fit
+  kept does not depend on it. On NGC 6768 the automatic search took 24 s instead of 56 s.
+  When two or more fits are within 5 % of the best residual, their mean A + B model, mean
+  residual and the spread of their models go to buffers, and the report gives their mean
+  sky.
+- **Harmonics in ELLIPROF's terms.** Each galaxy's `COS3X=` and `COS4X=` (2 each isophote's
+  own, the default; 1 the median; 0 none; COS3X −2, −1, −3 the 6th order) in the panel
+  and the command, and `TRYCOS3X=`/`TRYCOS4X=` to try other values on the fit kept: A's
+  with B as it is, then B's with A's best, kept when the residual falls by more than 0.01
+  of the noise. On 36 hard simulated pairs (boxy and disky galaxies with |a4| 0.01–0.04,
+  overlaps, halos filling the frame, bright stars, small companions in a giant's halo,
+  galaxies cut by the edge) ELLIPROF's default already followed the boxy and disky
+  shapes; the search changed 7 scenes, mostly next to a bright star, and is not part of
+  the automatic settings.
+- **The pair's isophotes while it runs.** Each galaxy's latest isophotes are drawn as
+  every ELLIPROF call ends; galaxy A is magenta (it was cyan, the colour of the source
+  finder's ellipses, which hid it).
 - **Pairs of galaxies.** `pair N SKY= ... A: ... B: ...` and Tools ▸ Pair fit: two
   overlapping galaxies fitted in turn with ELLIPROF, each with the other's model taken
   out; frozen sky and cores; a model is kept only when its fit passes every check; a
