@@ -603,6 +603,7 @@ class PlaneFit:
     sky: SkyResult  # the measurement on the image minus the final tilt (the flat image)
     image_id: str  # checksum of the image fitted
     flat: np.ndarray  # float32: the image minus the tilt (the level kept)
+    source: str = ""  # the name of the image fitted (made from it, buffers share its fit)
     plane: Optional[Dict[str, float]] = None  # s0, gx, gy (per pixel), xc, yc
     errors: Dict[str, float] = field(default_factory=dict)  # 1 sigma of s0, gx, gy
     boxes: int = 0  # boxes used

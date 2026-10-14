@@ -635,6 +635,27 @@ def test_sky_iterations_refit_until_the_residual_sky_is_zero():
     assert plain.sky_iterations == []
 
 
+class AbsorbingFitter(FakeFitter):
+    """A fake elliprof whose models take up most of any change of the sky (as a halo that
+    fills the frame does)."""
+
+    def __call__(self, data, *args, **kw):
+        fit = super().__call__(data, *args, **kw)
+        fit.model[:] = (float(np.median(data)) - kw["sky"] - 5.0) / 2.0
+        return fit
+
+
+def test_sky_iterations_stop_when_the_sky_is_degenerate_with_the_galaxies():
+    snap = tiny_snapshot(cycles=1)
+    snap.settings.sky_base, snap.settings.sky_iter = 105.0, 6
+    snap = pair.with_sky(snap, 1.0)
+    result = pair.run_sky(snap, np.ones(snap.image.shape, bool), fitter=AbsorbingFitter())
+    rows = result.sky_iterations
+    assert len(rows) == 2 and rows[1]["response"] < pair.SKY_RESPONSE
+    assert "degenerate" in rows[1]["note"]
+    assert rows[0].get("chosen") and pair.chosen_factor(result, snap.settings) == 1.0
+
+
 def test_skyiter_needs_a_sky_measurement_and_replays_the_factor_kept(tmp_path):
     s = Session()
     s.execute(f"rd 1 {EXAMPLE / 'pair.fits'}")
@@ -661,7 +682,11 @@ def test_skyiter_needs_a_sky_measurement_and_replays_the_factor_kept(tmp_path):
     commands = (tmp_path / "out" / "commands.txt").read_text()
     pair_lines = [x for x in commands.splitlines() if x.startswith("pair 1")]
     assert pair_lines and all("SKYITER" not in x for x in pair_lines)
-    assert all(f"SKYFACTOR={kept['factor']:.10g}" in x for x in pair_lines)
+    if kept["factor"] != 1.0:
+        assert all(f"SKYFACTOR={kept['factor']:.10g}" in x for x in pair_lines)
+    else:  # here the sky is degenerate with the halo: the sky asked for is kept
+        assert "degenerate" in rows[-1].get("note", "")
+        assert all("SKYFACTOR" not in x for x in pair_lines)
 
 
 def test_the_sky_filter_and_a_level_without_support_verdict():
@@ -1085,11 +1110,16 @@ def test_the_pair_tool_in_the_window():
     assert window.session.masks["skymask"].visible
     panel._use_measured()
     assert panel.sky.value() == pytest.approx(panel._measurement.level, abs=1e-4)
-    # the first run had the automatic settings: R1, START and NR resolved by the engine
-    auto = record.job.line
-    assert "R1=AUTO" in auto and "START=AUTO" in auto and "TRYDAMP=" in auto
-    assert any("R1=AUTO ->" in n for n in record.job.snap.notes)
+    # the first run had the manual settings, which start from the simulations' choice
+    first = record.job.line
+    for word in ("START=AUTO", "NR=AUTO", "TIE=-3", "RMSTAR", "TAIL=sersic", "TRYDAMP="):
+        assert word in first
+    assert any("START=AUTO ->" in n for n in record.job.snap.notes)
+    assert panel.cards["A"].nr.isVisibleTo(panel)
+    panel.auto.setChecked(True)  # the automatic settings: only the centres, sky and masks
     assert not panel.cards["A"].nr.isVisibleTo(panel)
+    auto = panel.command(1)
+    assert "R1=AUTO" in auto and "SKYITER=3" in auto and "TAIL=sersic" in auto
     panel.auto.setChecked(False)  # every setting again
     assert panel.cards["A"].nr.isVisibleTo(panel)
     panel.cards["A"].r1_auto.setChecked(False)
@@ -1107,7 +1137,9 @@ def test_the_pair_tool_in_the_window():
     assert panel.resid_hist.isVisibleTo(panel)
     assert window.pair_results.sky_table.rowCount() == len(record.result.sky_iterations)
     # growth and block in the panel's command, and the report on the clipboard
-    panel.cards["A"].set_values({"r1": 120, "start": 60, "growth": 0, "growth_value": 1.5})
+    panel.cards["A"].set_values(
+        {"r1": 120, "start": 60, "start_auto": False, "growth": 0, "growth_value": 1.5}
+    )
     panel.cards["B"].set_values({"growth": 2, "radii": "20, 30, 40"})
     command = panel.command(1)
     assert "START=60 FACTOR=1.5" in command and "RADII=20,30,40" in command
@@ -1142,8 +1174,8 @@ def test_mask_segments_keeps_the_sources_at_several_centres(tmp_path):
 
 
 def test_automatic_radii_and_isophotes():
-    # NR=AUTO: about 10 % apart, within the range
-    assert pair.auto_nr(3, 3 * 1.1**10) == 11
+    # NR=AUTO: about 30 % apart, within the range
+    assert pair.auto_nr(3, 3 * 1.3**10) == 11
     assert pair.auto_nr(3, 5) == pair.NR_RANGE[0]
     assert pair.auto_nr(1, 1e6) == pair.NR_RANGE[1]
     comp = pair.Component("A", 50, 50, 3.0, 120, 0)
@@ -1170,3 +1202,38 @@ def test_automatic_radii_and_isophotes():
     assert any("R1=AUTO ->" in n for n in notes)
     comps = pair.components_from(own)
     assert comps["A"].schedule()[-1] == r1
+
+
+def test_the_tail_beyond_r1_follows_a_shallow_profile():
+    from scipy.special import gammaincinv
+
+    from astro_vista.fitting import fit_array
+
+    ny, nx, x0, y0, re, n = 300, 300, 150.3, 149.6, 30.0, 2.0
+    b = gammaincinv(2 * n, 0.5)
+    yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
+    t, q = np.radians(20.0), 0.75
+    u = (xx - x0) * np.cos(t) + (yy - y0) * np.sin(t)
+    v = -(xx - x0) * np.sin(t) + (yy - y0) * np.cos(t)
+    a = np.hypot(u, v / q)
+    truth = 200.0 * np.exp(-b * ((np.maximum(a, 0.3) / re) ** (1 / n) - 1))
+    data = truth + np.random.default_rng(3).normal(0, 0.5, truth.shape)
+    fit = fit_array(data, x0, y0, 3, 60, 15, fixctr=1)
+    assert fit.model is not None
+    beyond = (a > 66) & (a < 130)
+    err = {}
+    for law in pair.TAILS:
+        m = pair.tail_model(fit.model, fit.profile, law)
+        err[law] = float(np.median(np.abs(m - truth)[beyond] / truth[beyond]))
+    # elliprof's r^1/4 extrapolation is far too bright for n = 2; the Sersic fit follows it
+    assert err["elliprof"] > 0.1  # 14 % here
+    assert err["sersic"] < 0.01 and err["sersic"] < err["exp"]
+    inside = (a > 5) & (a < 55)
+    m = pair.tail_model(fit.model, fit.profile, "sersic")
+    assert np.array_equal(m[inside], fit.model[inside])  # nothing changes within R1
+
+
+def test_automatic_isophotes_are_about_30_percent_apart():
+    assert pair.auto_nr(3, 150) == 16
+    assert pair.auto_nr(3, 6) == 6  # never fewer than 6
+    assert pair.auto_nr(3, 5000) == 29

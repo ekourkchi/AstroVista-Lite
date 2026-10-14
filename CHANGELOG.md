@@ -12,7 +12,7 @@ newest is at the top.
   partial bootstrap starts that are never part of a result. The models, an unmasked
   residual, both sets of ellipses, the profiles and the change per cycle, in a worker
   thread with Stop. `pairexport` writes the inputs, settings, calls and products.
-- **Automatic pair settings** (Pair fit ▸ Automatic settings, on by default): choose the
+- **Automatic pair settings** (Pair fit ▸ Automatic settings): choose the
   sky, the masks and the two centres; the rest comes from 150 simulated pairs (Sérsic
   galaxies with ellipticity and angle changing with radius, boxy/disky shapes, outer
   isophotes off the inner centre, lopsided, tidal and m=1/m=3 distortions, heavy overlaps,
@@ -20,10 +20,51 @@ newest is at the top.
   noise, sky gradients), each run end to end (source finder, objects mask, sky, pair fit).
   `R1=AUTO` (where the light away from the companion falls below the noise; measured again
   on the image minus the companion's model of a first pass), `START=AUTO` (a third of R1,
-  at most 0.35 of the separation, at least 9 px), `NR=AUTO` (isophotes about 10 % apart).
+  at most 0.35 of the separation, at least 9 px), `NR=AUTO` (isophotes about 10 % apart;
+  30 % since the SBF suite).
   Against the earlier defaults the pairs fitted rose from about 65 % to 91 %; capping the
   start by the separation fixed most heavy overlaps; measuring R1 again lowered the profile
   error of small companions from 5.6 % to 4.0 % (median).
+- **Pair fits for SBF.** A second simulation suite, closer to SBF data: pairs of
+  PSF-convolved Sérsic ellipticals (n 2.5–5, with ellipticity gradients, twists, boxy or
+  disky isophotes and tidal stretching) with surface brightness fluctuations, globular
+  clusters (a cored system, the turnover at about one pixel of the galaxy at re), foreground
+  stars, photon and read noise and sometimes a tilted sky; each run end to end. Judged
+  against the truth on 32 scenes not used to choose the settings: the model of A + B within
+  1.5 % of the truth (median, where the galaxies are brighter than the sky; 0.5 % to 2.5 %),
+  dark or bright patches in the smoothed residual over less than 1 % of the galaxies in 27
+  scenes in 32, the sky within 0.04 sigma (median), and the SBF amplitude measured on the
+  residual 0.98 times that measured with the true model (within 10 % for 4 galaxies in 5).
+  What it took, in the automatic settings and as the starting values of the manual ones:
+  - `TAIL=sersic` (new): elliprof extrapolates its model beyond the last isophote with ln I
+    linear in r^¼; for a shallower profile, or noisy last isophotes, that tail is far too
+    bright, and in a pair it is subtracted from the companion's image: the dark regions in
+    pair residuals. The tail is now a Sérsic law fitted to the outer profile.
+  - `RMSTAR`: globular clusters on a galaxy belong to its detection segment and stay
+    unmasked; rejecting bright samples along each isophote brought the SBF amplitude
+    within 4 % of the truth for 9 galaxies in 10 (from within 28 %).
+  - `TIE=-3`: the shapes smoothed over 3 isophotes (the isophote-to-isophote jitter showed
+    as four-leaved patterns).
+  - `NR=AUTO` isophotes about 30 % apart instead of 10 %: closer isophotes take up part of
+    the fluctuations (20 % apart: 0.95 of the SBF amplitude; 30 %: 0.98).
+  - `SKYITER=3` with a measured sky: the sky error fell from up to 0.9 sigma to 0.04 sigma
+    (median). Each step
+    is now at most 2 sigma, and the iterations stop, keeping the sky asked for, when the
+    residual does not follow the sky (a halo that fills the frame takes up any change: on
+    N6768 the sky ran from 2911 to 2311 without it).
+  On the earlier suite of strongly distorted pairs the residual improved (model error 0.39 to
+  0.21 sigma) but each galaxy's profile less so (A + B 2.7 % to 3.5 %, median), and a run
+  takes about twice as long.
+- **Pair fit panel**: Automatic settings off by default, with every setting shown and
+  starting from the same values; new controls for the smoothing with radius, RMSTAR, the
+  model beyond R1 and the polish cycles, and auto boxes for NR and the initial R1.
+- **The window stays responsive while a command runs** (the source finder, a sky, a sky
+  plane, ELLIPROF, a script): those run in a worker thread, as the pair fit does, so the
+  layers can be ticked and any buffer shown meanwhile. `ASTROVISTA_MAIN_THREAD=1` runs them
+  in the window's thread as before.
+- **A sky plane buffer is shown linear from its minimum to its maximum**, not as one grey,
+  and the Sky plane panel no longer calls its fit stale when another buffer made from the
+  image is shown.
 - **The sky as a plane.** `skyplane N` and Tools ▸ Sky plane fit the sky as a level and a
   gradient, each with its error: the sources are found on the image minus the plane's tilt
   (so a bright side of the frame is not taken for a source), the plane is fitted to the

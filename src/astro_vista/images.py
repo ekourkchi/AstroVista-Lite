@@ -29,6 +29,7 @@ class Image:
     family: Optional[str] = None  # the image a model or residual was made from
     tag: str = ""  # a name given by the user (tag="...")
     note: str = ""  # how it was made (the command or the arithmetic)
+    display: str = ""  # how to show it first: "" (the display chosen) or "smooth" (min to max)
 
     @property
     def label(self) -> str:

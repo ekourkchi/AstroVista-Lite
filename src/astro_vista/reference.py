@@ -583,7 +583,10 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "SKYITER=",
                         "refit up to this many times, each with the factor + m / SKY, m the "
                         "clipped median of image − sky − A − B on the sky pixels of the image's "
-                        "sky measurement; the fit with the smallest |m| is kept (0: off)",
+                        "sky measurement; the fit with the smallest |m| is kept (0: off). "
+                        "Each step moves the sky by at most 2 sigma; when the residual follows "
+                        "less than half a step (the galaxies' light fills the frame and takes "
+                        "it up), it stops and keeps the sky asked for",
                     ),
                     (
                         "MASK=, MASKFILE=, MASKBUF=",
@@ -620,11 +623,22 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "than 0.01 of the noise (Results > Pair > Search lists them)",
                     ),
                     (
+                        "TIE=, RMSTAR",
+                        "passed to every call: smoothing with radius (−3: over 3 isophotes) "
+                        "and the rejection of bright samples along each isophote",
+                    ),
+                    (
+                        "TAIL=",
+                        "the model beyond each galaxy's last isophote, which is subtracted "
+                        "from the other's image: elliprof (its r^¼ extrapolation, default), "
+                        "sersic (a Sérsic law fitted to the outer profile), exp or cut",
+                    ),
+                    (
                         "A: … B: …",
                         "each galaxy: X0= Y0= R0= R1= NR=25 NAME= MODE= FIXCTR= CORE= ADAPTIVE "
                         "START= (first R1) with STEP= (+ pixels) or FACTOR= (×), or RADII= "
                         "(a list); BLOCK= (left out around it during the other's first fit); "
-                        "R1=AUTO, START=AUTO and NR=AUTO: the radii and isophotes chosen on "
+                        "R1=AUTO, START=AUTO and NR=AUTO (about 30 % apart): the radii and isophotes chosen on "
                         "simulated pairs (R1 where the light away from the other galaxy falls "
                         "below the noise, measured again on the image minus the other's "
                         "model)",

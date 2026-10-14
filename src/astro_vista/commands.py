@@ -830,6 +830,7 @@ class Session(ImageCommands):
             )
         except (RuntimeError, ValueError) as e:
             raise CommandError(str(e))
+        fit.source = image.name
         self.planes[image.key] = fit
         reply = Reply(fit.summary(), {"masks", "sky"})
         self._remember(target)
@@ -853,9 +854,9 @@ class Session(ImageCommands):
         }
         tilt = fit.tilt(image.shape)
         if "TOPLANE" in outputs:
-            self.buffers[outputs["TOPLANE"]] = image.derived(
-                f"{image.name} sky plane", tilt + p["s0"]
-            )
+            plane = image.derived(f"{image.name} sky plane", tilt + p["s0"])
+            plane.display = "smooth"
+            self.buffers[outputs["TOPLANE"]] = plane
             reply.text += f"\nthe plane in buffer {outputs['TOPLANE']}"
         if "TOSUB" in outputs:
             self.buffers[outputs["TOSUB"]] = Image(
@@ -1718,7 +1719,8 @@ KEYWORDS = {
     "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE=",
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
-    "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR=",
+    "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
+    "TIE= RMSTAR",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1928,6 +1930,9 @@ Shared (before A:)
   NITER=10      iterations inside each elliprof call
   CORECAP=50    the largest core (pixels) left out around the other galaxy
   RLAW= GAIN= TIE= RMSTAR TIMEOUT=300   passed to every call
+  TAIL=elliprof the model beyond each galaxy's last isophote, which is subtracted from the
+                other's image: elliprof (its r^1/4 extrapolation), sersic (a Sersic law
+                fitted to the outer profile), exp (the outer slope), cut (a taper to zero)
   STOP          stop early once A, B and A + B all change by less than 2 %
   VIEWS         also make the image - sky - B and image - sky - A buffers
   TOMODELA= TOMODELB= TOMODEL= TORESID=   the result buffers (free ones by default)

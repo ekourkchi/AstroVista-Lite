@@ -46,8 +46,8 @@ STATUSES = (
 STABILITY = 0.02  # relative change of A, B and A + B below which a pair is stable
 CORECAP = 50.0
 NR_TEACHING = 15  # below this an NR is flagged as a coarse (teaching) fit
-NR_RATIO = 1.1  # NR=0 (automatic): isophotes about 10 % apart in Rmaj, from R0 to each R1
-NR_RANGE = (8, 40)
+NR_RATIO = 1.3  # NR=0 (automatic): isophotes about 30 % apart in Rmaj, from R0 to each R1
+NR_RANGE = (6, 40)
 
 
 def auto_nr(r0: float, r1: float) -> int:
@@ -157,6 +157,7 @@ class Settings:
     converge: float = STABILITY  # CONVERGE=: the relative change below which it is stable
     consecutive: int = 0  # CONSECUTIVE=: stop after this many stable cycles at the targets
     on_fail: str = "reduce"  # ONFAIL=reduce|hold|retry|stop
+    tail: str = "elliprof"  # TAIL=: the model beyond the last isophote (see tail_model)
     damp: float = 1.0  # DAMP=: the share of a new model in the one subtracted (1: no damping)
     try_damp: List[float] = field(default_factory=list)  # TRYDAMP=: variants to search
     try_fix: List[int] = field(default_factory=list)  # TRYFIX=: centre fitting variants
@@ -401,6 +402,7 @@ SHARED = {
     "TRYDAMP",
     "TRYFIX",
     "TRYFACTOR",
+    "TAIL",
 }
 OWN = {
     "NAME",
@@ -629,7 +631,10 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         early_stop="STOP" in shared,
         timeout=_num(shared, "TIMEOUT", "", 300.0),
         bootstrap=_num(shared, "BOOTSTRAP", "", 1, int) != 0,
+        tail=shared.get("TAIL", "elliprof").strip().lower(),
     )
+    if s.tail not in TAILS:
+        raise PairError("TAIL must be one of " + ", ".join(TAILS))
     if s.cycles < 1 or s.cycles > 50:
         raise PairError("CYCLES must be 1 to 50")
     if s.niter < 1 or s.niter > 1000:
@@ -989,6 +994,77 @@ def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarr
     return True, "", "", None
 
 
+TAILS = ("elliprof", "sersic", "exp", "cut")
+
+
+def _outer_law(a: np.ndarray, lnI: np.ndarray, law: str):
+    """ln I(a) / I(a_n) beyond the last isophote a_n, from the outer profile: a function of a,
+    or None (keep elliprof's own)."""
+    an = a[-1]
+    if law == "sersic":  # ln I = c - k a^(1/n), n chosen on a grid, on the outer 60 %
+        sel = a >= 0.4 * an
+        if sel.sum() < 4:
+            sel = np.arange(a.size) >= a.size - 4
+        best = None
+        for n in np.arange(0.5, 8.01, 0.1):
+            x = a[sel] ** (1 / n)
+            k, c = np.polyfit(x, lnI[sel], 1)
+            if k >= 0:
+                continue
+            err = float(np.sum((lnI[sel] - (c + k * x)) ** 2))
+            if best is None or err < best[0]:
+                best = (err, n, k)
+        if best is None:
+            return None
+        _, n, k = best
+        return lambda r: k * (r ** (1 / n) - an ** (1 / n))
+    if law == "exp":  # the outer 30 %: ln I linear in a
+        sel = a >= 0.7 * an
+        if sel.sum() < 3:
+            sel = np.arange(a.size) >= a.size - 3
+        k = np.polyfit(a[sel], lnI[sel], 1)[0]
+        if k >= 0:
+            return None
+        return lambda r: k * (r - an)
+    if law == "cut":  # a Gaussian taper over a tenth of R1
+        w = 0.1 * an
+        return lambda r: -(((r - an) / w) ** 2)
+    return None
+
+
+def tail_model(model: np.ndarray, profile, law: str) -> np.ndarray:
+    """elliprof extrapolates its model beyond the last isophote to the image's corners, with
+    ln I linear in a^(1/4) from the last two isophotes: right for a de Vaucouleurs profile,
+    much too bright for a shallower one or when the last two are noisy.  In a pair, that
+    light is subtracted from the companion's image.  Here the model beyond the last isophote
+    is replaced by the last isophote's intensity continued by ``law``, on the last isophote's
+    ellipse (without harmonics)."""
+    if law == "elliprof" or model is None or profile is None:
+        return model
+    p = profile[np.isfinite(profile["I0"]) & (profile["I0"] > 0)]
+    if len(p) < 4:
+        return model
+    a = p["Rmaj"].to_numpy(float)
+    lnI = np.log(p["I0"].to_numpy(float))
+    shape_of = _outer_law(a, lnI, law)
+    if shape_of is None:
+        return model
+    last = p.iloc[-1]
+    ny, nx = model.shape
+    yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
+    t = np.radians(float(last["alpha"]) - 90.0)
+    dx, dy = xx - float(last["x0"]), yy - float(last["y0"])
+    u = dx * np.cos(t) + dy * np.sin(t)
+    v = -dx * np.sin(t) + dy * np.cos(t)
+    q = max(1.0 - float(last["ellip"]), 0.05)
+    r = np.sqrt(u * u + (v / q) ** 2)
+    an = a[-1]
+    beyond = r > an
+    out = model.copy()
+    out[beyond] = float(p["I0"].iloc[-1]) * np.exp(shape_of(r[beyond]))
+    return out
+
+
 def outer_support(profile, usable: np.ndarray, count: int = 3, points: int = 180) -> List[dict]:
     """For the outermost isophotes: the fraction of points inside the frame and the
     fraction on usable pixels (in the frame, not left out of the fit)."""
@@ -1148,7 +1224,7 @@ def run(
             if ok:
                 support = outer_support(fit.profile, usable)
                 return Commit(
-                    model=fit.model,
+                    model=tail_model(fit.model, fit.profile, s.tail),
                     profile=fit.profile,
                     ellipses=profile_ellipses(fit.profile),
                     tag=cycle,
@@ -1451,6 +1527,10 @@ def with_sky(snap: Snapshot, factor: float) -> Snapshot:
     return replace(snap, settings=replace(s, sky=factor * base, sky_factor=factor))
 
 
+SKY_RESPONSE = 0.5  # the least share of a sky change the residual sky must follow
+SKY_STEP = 2.0  # the largest change of the sky from one sky fit to the next, in sigma
+
+
 def run_sky(
     snap: Snapshot,
     support: Optional[np.ndarray] = None,
@@ -1464,7 +1544,13 @@ def run_sky(
     after each fit, the 3-sigma clipped median m of image - sky - A - B on the support gives
     the next factor, f + m / base.  It stops early once |m| is below 0.01 sigma of the
     residual.  The result is the complete fit with the smallest |m|; every fit is listed in
-    ``sky_iterations``.  Without SKYITER (or support) it is :func:`run`."""
+    ``sky_iterations``.  Without SKYITER (or support) it is :func:`run`.
+
+    When the galaxies' light fills the frame, the sky and their outer light are degenerate:
+    a lower sky makes the outer isophotes (and the model beyond R1) brighter by as much,
+    the residual on the sky pixels does not change, and the factor would run away.  So
+    when the residual follows less than SKY_RESPONSE of a change of the sky, the iterations
+    stop and the fit at the sky asked for is kept."""
     from . import sky as skies
 
     s = snap.settings
@@ -1476,6 +1562,9 @@ def run_sky(
     history: List[dict] = []
     best: Optional[Tuple[float, PairResult, int]] = None
     last = None
+    first: Optional[Tuple[float, PairResult, int]] = None
+    previous = None  # (sky, median) of the last fit
+    degenerate = False
     for k in range(s.sky_iter):
         current = with_sky(snap, factor)
 
@@ -1504,6 +1593,22 @@ def run_sky(
         history.append(entry)
         if "median" not in level:
             break
+        if first is None:
+            first = (abs(level["median"]), result, k)
+        step = current.settings.sky - previous[0] if previous is not None else 0.0
+        if step and abs(step) >= 0.5 * level["sigma"]:  # big enough to measure the response
+            # the median falls by the sky's rise when the models stay; 0 when they absorb it
+            response = (previous[1] - level["median"]) / step
+            entry["response"] = response
+            if response < SKY_RESPONSE:
+                entry["note"] = (
+                    f"the residual sky followed {100 * response:.0f} % of the sky's change: the "
+                    "sky and the galaxies' outer light are degenerate on this frame; the fit "
+                    "at the sky asked for is kept"
+                )
+                degenerate = True
+                break
+        previous = (current.settings.sky, level["median"])
         if best is None or abs(level["median"]) < best[0]:
             best = (abs(level["median"]), result, k)
         if result.status == "cancelled" or (cancelled is not None and cancelled()):
@@ -1515,7 +1620,14 @@ def run_sky(
         if nxt is None or not 0.5 <= nxt <= 1.5:
             entry["note"] = "the next factor would leave 0.5 to 1.5: stopped"
             break
+        # at most SKY_STEP sigma at a time: a degenerate sky is caught before it runs away
+        largest = SKY_STEP * level["sigma"] / base if base else abs(nxt - factor)
+        if abs(nxt - factor) > largest:
+            nxt = factor + math.copysign(largest, nxt - factor)
+            entry["note"] = f"the step was limited to {SKY_STEP:g} sigma"
         factor = nxt
+    if degenerate and first is not None:
+        best = first
     chosen = best[1] if best is not None else last
     if best is not None:
         history[best[2]]["chosen"] = True
@@ -1770,6 +1882,8 @@ def command_for(snap: Snapshot, mask: str = "") -> str:
         parts += [f"DAMP={s.damp:g}", f"POLISH={s.polish}"]
     if s.rmstar:
         parts.append("RMSTAR")
+    if s.tail != "elliprof":
+        parts.append(f"TAIL={s.tail}")
     for cid, c in snap.components.items():
         words = [f"{cid}:"]
         if c.name:
@@ -2085,6 +2199,7 @@ def export(
                 "tie": s.tie,
                 "rlaw": s.rlaw,
                 "rmstar": s.rmstar,
+                "model_beyond_r1": s.tail,
                 "timeout_seconds": s.timeout,
             },
             "pair": {

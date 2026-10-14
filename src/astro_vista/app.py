@@ -9,6 +9,7 @@ settings are not commands: they never change pixel values.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 import sys
@@ -295,12 +296,12 @@ class ElidedLabel(QtWidgets.QLabel):
 class Task(QtCore.QObject):
     """Runs a command's function and reports back in the window's thread.
 
-    Data commands run in the window's thread, from the event loop, so that no Python code
-    runs beside Qt's: PySide6 (6.11, and more often 6.12) can let the two overlap without
-    Python's interpreter lock, which corrupts reference counts and crashes Python 3.10 and
-    3.11 on Linux.  Shell commands (``threaded``) run in a Python thread, so that the window
-    stays alive to stop them with Ctrl+C; their signals arrive queued in the window's
-    thread, where this object lives."""
+    Slow commands (``threaded``) run in a Python thread, as the pair fit does, so that the
+    window stays alive while they run: buffers can be shown, layers ticked and the view
+    changed, and shell commands can be stopped with Ctrl+C.  The thread makes no Qt object;
+    its signals arrive queued in the window's thread, where this object lives.  PySide6
+    6.12.0, which let the two overlap without Python's interpreter lock, is excluded by the
+    requirements; ASTROVISTA_MAIN_THREAD=1 runs them in the window's thread instead."""
 
     done = QtCore.Signal(object)
     failed = QtCore.Signal(str)
@@ -1051,7 +1052,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._enable_runs(False)
             self._running = line
             shell = self.session.is_shell(line)
-            self._task = Task(lambda: self.session.execute(line), self, threaded=shell)
+            threaded = shell or os.environ.get("ASTROVISTA_MAIN_THREAD", "") != "1"
+            self._task = Task(lambda: self.session.execute(line), self, threaded=threaded)
             self._task.done.connect(lambda reply: self._finished(line, reply, None))
             self._task.failed.connect(lambda message: self._finished(line, None, message))
             self._task.start()
@@ -1216,6 +1218,8 @@ class MainWindow(QtWidgets.QMainWindow):
         same = previous is not None and image is not None and previous.key == image.key
         self.shown = n if image is not None else None
         self.viewer.set_image(image, keep_view=same, keep_limits=keep_limits)
+        if image is not None and image.display == "smooth":
+            self._show_smooth(n)
         self.buffer_list.blockSignals(True)
         for k in range(self.buffer_list.count()):
             item = self.buffer_list.item(k)
@@ -1235,7 +1239,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if item is not None:
             n = item.data(Qt.UserRole)
             if n != self.shown:
-                self.run_command(f"tv {n}")
+                if self.busy():  # a command is running: show it now, without queueing tv
+                    self.show_buffer(n)
+                else:
+                    self.run_command(f"tv {n}")
 
     def _buffer_menu(self, pos) -> None:
         item = self.buffer_list.itemAt(pos)
@@ -1684,11 +1691,13 @@ class MainWindow(QtWidgets.QMainWindow):
             text = f"Pair • cycle {info['cycle']} done: " + (
                 f"A {'ok' if m.get('A_ok') else 'failed'}, B {'ok' if m.get('B_ok') else 'failed'}"
             )
-        if info.get("variant"):
+        if info.get("variant_number"):
             text = (
                 f"Variant {info['variant_number']} of {info['variants']} ({info['variant']}) • "
                 + text
             )
+        elif info.get("variant"):  # the first pass of R1=AUTO
+            text = f"{info['variant'][:1].upper()}{info['variant'][1:]} • " + text
         if info.get("sky_iteration"):
             text = (
                 f"Sky fit {info['sky_iteration']} of at most {info['sky_iterations']} "
@@ -1721,6 +1730,22 @@ class MainWindow(QtWidgets.QMainWindow):
         n = job.outputs.get("TORESID")
         if result.complete and n in self.session.buffers:
             self.show_residual(n)
+
+    def _show_smooth(self, n: int) -> None:
+        """A smooth image (a sky plane): linear, from its minimum to its maximum, where a
+        percentile or logarithmic stretch would show it as one flat grey; the display is
+        restored for the next buffer."""
+        data = self.session.buffers[n].data
+        finite = data[np.isfinite(data)]
+        if not finite.size:
+            return
+        v = self.viewer
+        if self._residual_display is None:
+            self._residual_display = (v.stretch_box.currentText(), v.limit_mode.currentText())
+        self._residual_shown = n
+        v.stretch_box.setCurrentText("Linear")
+        lo, hi = float(finite.min()), float(finite.max())
+        v.set_limits(lo, hi if hi > lo else lo + 1.0)
 
     def show_residual(self, n: int) -> None:
         """Show a residual: grey, linear, symmetric about 0 (5 robust sigma each way)."""
@@ -1968,8 +1993,10 @@ class MainWindow(QtWidgets.QMainWindow):
         image = self.viewer.image
         fit = self.session.planes.get(image.key) if image is not None else None
         stale = None
-        if fit is not None and (
-            image.shape != fit.flat.shape or skies.checksum(image.data) != fit.image_id
+        if (
+            fit is not None
+            and image.name == fit.source
+            and (image.shape != fit.flat.shape or skies.checksum(image.data) != fit.image_id)
         ):
             stale = "the image has changed since the plane was fitted"
         self.skyplane.show_fit(fit, stale)

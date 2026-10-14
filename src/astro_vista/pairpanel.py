@@ -32,6 +32,10 @@ AUTO_RUN = [
     "TRYDAMP=1,0.5",
     "TRYFIX=1,0",
     "TRYFACTOR=1.5,1.25",
+    "TIE=-3",
+    "RMSTAR",
+    "TAIL=sersic",
+    "SKYITER=3",
 ]  # cyan and orange, as in the examples
 STATE_COLOURS = {
     "usable_support": "#3fb950",
@@ -189,6 +193,16 @@ class GalaxyCard(QtWidgets.QGroupBox):
             b.setToolTip(f"Click on the image at the distance {label} from {cid}'s centre")
             b.clicked.connect(lambda _c=False, k=key: self.pick_requested.emit(k))
             row.addWidget(b)
+            if key == "start":
+                self.start_pick = b
+                self.start_auto = QtWidgets.QCheckBox("auto")
+                self.start_auto.setChecked(True)
+                self.start_auto.setToolTip(
+                    "START=AUTO: a third of R1, at most 0.35 of the separation, at least 9 px "
+                    "(worked out when the fit starts)"
+                )
+                self.start_auto.toggled.connect(self._start_auto)
+                row.addWidget(self.start_auto)
             if key == "r1":
                 self.r1_pick = b
                 self.r1_auto = QtWidgets.QCheckBox("auto")
@@ -201,6 +215,8 @@ class GalaxyCard(QtWidgets.QGroupBox):
                 form.addRow(label, tip(row, "pair_r1auto"))
             else:
                 manual(label, tip(row, "pair_grow" if key == "start" else key))
+        self.start.setEnabled(False)
+        self.start_pick.setEnabled(False)
         self.growth = QtWidgets.QComboBox()
         self.growth.addItems(["× factor", "+ pixels", "list of radii"])
         self.growth_value = number(0.01, 1e4, 1.5, decimals=2, step=0.1, tip="the factor or step")
@@ -221,8 +237,17 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.radii.textChanged.connect(lambda _t: self._show_schedule())
         self.nr = whole(2, 100, 25, tip="NR: the number of isophotes from R0 to R1")
         self.coarse = note()
+        self.nr_auto = QtWidgets.QCheckBox("auto")
+        self.nr_auto.setChecked(True)
+        self.nr_auto.setToolTip(
+            "NR=AUTO: isophotes about 30 % apart in radius, for every R1 of the growth (6 to "
+            "40); closer isophotes take up part of the SBF signal on simulated pairs"
+        )
+        self.nr_auto.toggled.connect(lambda on: self.nr.setEnabled(not on))
+        self.nr.setEnabled(False)
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.nr)
+        row.addWidget(self.nr_auto)
         row.addWidget(self.coarse, 1)
         manual("NR", tip(row, "nr"))
         self.mode = QtWidgets.QComboBox()
@@ -269,6 +294,11 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.core.valueChanged.connect(lambda _v: self.changed.emit())
         self._nr(self.nr.value())
 
+    def _start_auto(self, on: bool) -> None:
+        self.start.setEnabled(not on)
+        self.start_pick.setEnabled(not on)
+        self._show_schedule()
+
     def _r1_auto(self, on: bool) -> None:
         self.r1.setEnabled(not on)
         self.r1_pick.setEnabled(not on)
@@ -307,9 +337,12 @@ class GalaxyCard(QtWidgets.QGroupBox):
         if index == 2:
             text = ",".join(x for x in self.radii.text().replace(" ", ",").split(",") if x)
             return [f"RADII={text}"] if text else []
-        if not self.r0.value() < self.start.value() < self.r1.value():
+        if self.start_auto.isChecked():
+            out = ["START=AUTO"]
+        elif not self.r0.value() < self.start.value() < self.r1.value():
             return []
-        out = [f"START={self.start.value():g}"]
+        else:
+            out = [f"START={self.start.value():g}"]
         out.append(
             f"FACTOR={self.growth_value.value():g}"
             if index == 0
@@ -332,6 +365,10 @@ class GalaxyCard(QtWidgets.QGroupBox):
             return []
 
     def _show_schedule(self) -> None:
+        if self.start_auto.isChecked() and self.growth.currentIndex() < 2:
+            self.schedule_note.setText("initial R1: chosen when the fit starts (START=AUTO)")
+            self.changed.emit()
+            return
         radii = self.schedule()
         self.schedule_note.setText(
             "R1 per cycle: " + ", ".join(f"{r:g}" for r in radii) if radii else "not valid"
@@ -358,7 +395,9 @@ class GalaxyCard(QtWidgets.QGroupBox):
         parts += [f"X0={self.x0.value():g}", f"Y0={self.y0.value():g}"]
         parts += [f"R0={self.r0.value():g}"]
         parts.append("R1=AUTO" if self.r1_auto.isChecked() else f"R1={self.r1.value():g}")
-        if self.nr.value() != 25:
+        if self.nr_auto.isChecked():
+            parts.append("NR=AUTO")
+        elif self.nr.value() != 25:
             parts.append(f"NR={self.nr.value()}")
         mode = self.mode.currentData()
         if mode:
@@ -392,6 +431,8 @@ class GalaxyCard(QtWidgets.QGroupBox):
             "growth_value": self.growth_value.value(),
             "radii": self.radii.text(),
             "r1_auto": self.r1_auto.isChecked(),
+            "nr_auto": self.nr_auto.isChecked(),
+            "start_auto": self.start_auto.isChecked(),
         }
 
     def set_values(self, v: dict) -> None:
@@ -414,6 +455,10 @@ class GalaxyCard(QtWidgets.QGroupBox):
             self.radii.setText(str(v["radii"]))
         if "r1_auto" in v:
             self.r1_auto.setChecked(bool(v["r1_auto"]))
+        if "nr_auto" in v:
+            self.nr_auto.setChecked(bool(v["nr_auto"]))
+        if "start_auto" in v:
+            self.start_auto.setChecked(bool(v["start_auto"]))
 
 
 class PairPanel(QtWidgets.QWidget):
@@ -449,11 +494,12 @@ class PairPanel(QtWidgets.QWidget):
             self._manual_rows.append(form.rowCount() - 1)
 
         self.form = form
-        self.auto = QtWidgets.QCheckBox("Automatic settings (recommended)")
-        self.auto.setChecked(True)
+        self.auto = QtWidgets.QCheckBox("Automatic settings")
+        self.auto.setChecked(False)
         self.auto.setToolTip(
             "Only the centres, the masks and the sky to choose; the radii, the isophotes and "
-            "the fitting recipe are those that worked best on simulated pairs"
+            "the fitting recipe are those that worked best on simulated pairs (the manual "
+            "settings start from the same values)"
         )
         form.addRow(tip(self.auto, "pair_auto"))
 
@@ -541,7 +587,7 @@ class PairPanel(QtWidgets.QWidget):
         self.sky_used = note()
         manual(self.sky_used)
         self.sky_iter = whole(
-            0, 50, 0, tip="SKYITER: refit, each time with the factor from the residual sky"
+            0, 50, 3, tip="SKYITER: refit, each time with the factor from the residual sky"
         )
         self.sky_iter.setSpecialValueText("off")
         manual("Refine the factor", tip(self.sky_iter, "pair_skyfactor"))
@@ -607,9 +653,11 @@ class PairPanel(QtWidgets.QWidget):
         form.addRow(heading("4. Run"))
         self.auto_note = note(
             "Automatic: R1 where each galaxy's light fades into the noise; the first fits small "
-            "and growing; isophotes about 10 % apart; 8 variants of damping, centres and growth "
-            "fitted, the best kept by the residual (fixed centres unless free ones clearly "
-            "lower it). Untick Automatic settings to change any of it."
+            "and growing; isophotes about 30 % apart, smoothed over 3 (TIE=-3); bright outliers "
+            "rejected along each isophote (RMSTAR); a Sérsic tail beyond R1; the sky factor "
+            "refined 3 times from the residual sky; 8 variants of damping, centres and growth "
+            "fitted, the best kept by the residual. Untick Automatic settings to change any "
+            "of it."
         )
         form.addRow(self.auto_note)
         manual(
@@ -649,6 +697,35 @@ class PairPanel(QtWidgets.QWidget):
         self.damp = number(0.05, 1.0, 0.5, decimals=2, step=0.1, tip="DAMP: share of the new model")
         self.damp.setSpecialValueText("off (1)")
         manual("Damping", tip(self.damp, "pair_damp"))
+        self.tie = whole(-50, 10, -3, tip="TIE")
+        self.tie.setToolTip(
+            "TIE: smooth the ellipticity, angle and centre with radius. -3: a running average "
+            "over 3 isophotes (chosen on simulated SBF pairs); -1: none; k >= 0: a polynomial "
+            "of order k in r^1/4"
+        )
+        manual("Smoothing with radius", tip(self.tie, "pair_tie"))
+        self.rmstar = QtWidgets.QCheckBox("Reject bright outliers along each isophote (RMSTAR)")
+        self.rmstar.setChecked(True)
+        self.rmstar.setToolTip(
+            "Samples brighter than the median + 4 x (upper quartile - median) are ignored: "
+            "globular clusters and faint stars that no mask covers"
+        )
+        manual(tip(self.rmstar, "pair_rmstar"))
+        self.tail = QtWidgets.QComboBox()
+        for label, key in (
+            ("Sérsic law fitted to the outer profile", "sersic"),
+            ("elliprof's extrapolation (r^¼ from the last two)", "elliprof"),
+            ("exponential from the outer 30 %", "exp"),
+            ("cut off (a taper over 0.1 R1)", "cut"),
+        ):
+            self.tail.addItem(label, key)
+        self.tail.setToolTip(
+            "TAIL: the model beyond the last isophote, which is subtracted from the "
+            "companion's image"
+        )
+        manual("Model beyond R1", tip(self.tail, "pair_tail"))
+        self.polish = whole(0, 20, 2, tip="POLISH: undamped cycles after the damped ones")
+        manual("Polish cycles", tip(self.polish, "pair_damp"))
         self.search = QtWidgets.QGroupBox("Search for the best fit")
         self.search.setCheckable(True)
         self.search.setChecked(True)
@@ -697,8 +774,6 @@ class PairPanel(QtWidgets.QWidget):
         self.rlaw.addItems(["0: linear", "1: logarithmic", "2: r^¼ (default)"])
         self.rlaw.setCurrentIndex(2)
         self.gain = number(0.01, 10, 1.0, decimals=2, step=0.1, tip="GAIN: 1 by default")
-        self.tie = whole(-50, 10, -1, tip="TIE: -1 = no smoothing of the parameters with radius")
-        self.rmstar = QtWidgets.QCheckBox("RMSTAR")
         self.corecap = number(0, 1e4, 50, decimals=1, tip="the largest core, pixels")
         self.timeout = number(1, 36000, 300, decimals=0, tip="seconds per elliprof call")
         self.bootstrap = QtWidgets.QCheckBox("Partial bootstrap start if a first fit fails")
@@ -708,8 +783,6 @@ class PairPanel(QtWidgets.QWidget):
         for label, w in (
             ("RLAW", self.rlaw),
             ("GAIN", self.gain),
-            ("TIE", self.tie),
-            ("", self.rmstar),
             ("Core cap (px)", self.corecap),
             ("Timeout (s)", self.timeout),
             ("", self.bootstrap),
@@ -798,7 +871,7 @@ class PairPanel(QtWidgets.QWidget):
 
         # ---- folding
         self.auto.toggled.connect(self.set_automatic)
-        self.set_automatic(True)
+        self.set_automatic(False)
 
     def _fold_sky(self, on: bool) -> None:
         for w in self.sky_more.findChildren(QtWidgets.QWidget):
@@ -1016,7 +1089,8 @@ class PairPanel(QtWidgets.QWidget):
         layers = self.ticked_layers()
         if layers:
             parts.append("MASK=" + ",".join(layers))
-        parts += AUTO_RUN
+        # the sky iterations need a measured sky (its support); a typed sky goes as typed
+        parts += [p for p in AUTO_RUN if self.sky_id or not p.startswith("SKYITER")]
         if self.views.isChecked():
             parts.append("VIEWS")
         parts.append("A: " + self.cards["A"].auto_keywords())
@@ -1029,7 +1103,7 @@ class PairPanel(QtWidgets.QWidget):
         parts = [f"pair {n}", f"SKY={self.sky.value():.10g}"]
         if self.factor.value() != 1.0:
             parts.append(f"SKYFACTOR={self.factor.value():.6g}")
-        if self.sky_iter.value():
+        if self.sky_iter.value() and self.sky_id:
             parts.append(f"SKYITER={self.sky_iter.value()}")
         layers = self.ticked_layers()
         if layers:
@@ -1063,6 +1137,10 @@ class PairPanel(QtWidgets.QWidget):
             parts.append(f"TIE={self.tie.value()}")
         if self.rmstar.isChecked():
             parts.append("RMSTAR")
+        if self.tail.currentData() != "elliprof":
+            parts.append(f"TAIL={self.tail.currentData()}")
+        if self.polish.value() != 2:
+            parts.append(f"POLISH={self.polish.value()}")
         if self.corecap.value() != 50:
             parts.append(f"CORECAP={self.corecap.value():g}")
         if self.timeout.value() != 300:
