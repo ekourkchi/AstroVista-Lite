@@ -1050,6 +1050,27 @@ def test_the_pair_tool_in_the_window():
     assert window.pair_results.record is record
     drawing = window._pair_drawing()
     assert drawing["A"]["fit"] and drawing["B"]["fit"]
+    # the layer ticks hide the pair's isophotes (Isophotes) and everything of the pair (Pair)
+    window.layers.set_checked("isophotes", False)
+    settle(1)
+    assert not window._pair_drawing()["A"].get("fit")
+    assert window.viewer.pair_items[("A", "fit")]._path.isEmpty()
+    window.layers.set_checked("isophotes", True)
+    window.layers.set_checked("pair", False)
+    settle(1)
+    assert window._pair_drawing() == {"A": {}, "B": {}}
+    window.layers.set_checked("pair", True)
+    settle(1)
+    assert window._pair_drawing()["B"]["fit"]
+    # every detected object but A and B, in the mask layer 'objects', ticked for the fit
+    window.pair_mask_objects(2.0)
+    settle(60)
+    objects = window.session.masks["objects"]
+    assert objects.role == "fit" and "objects" in panel.ticked_layers()
+    assert objects.count() > 0
+    for cid in "AB":
+        x, y = panel.cards[cid].centre()
+        assert not objects.masked[int(y), int(x)]
     window.blink_pair()
     assert len(window.viewer.blink_choice()) == 4
     # the sky: its histogram, the user's decision, the factor and the residual sky
@@ -1085,3 +1106,21 @@ def test_the_pair_tool_in_the_window():
     window.copy_pair_report()
     assert "## calls" in QtWidgets.QApplication.clipboard().text()
     window.close()
+
+
+def test_mask_segments_keeps_the_sources_at_several_centres(tmp_path):
+    scene = synthetic.pair()
+    s = Session()
+    s.buffers[1] = Image("pair.fits", scene.data.copy())
+    s.execute("sources 1")
+    s.execute("mask new objects 1")
+    a, b = scene.galaxies["A"], scene.galaxies["B"]
+    reply = s.execute(f"mask segments objects X0={a.x:.2f},{b.x:.2f} Y0={a.y:.2f},{b.y:.2f} GROW=1")
+    m = s.masks["objects"].masked
+    assert "kept unmasked" in reply.text
+    for g in (a, b):
+        assert not m[int(g.y), int(g.x)]
+    star = next(st for st in scene.stars if st[2] > 500)
+    assert m[int(star[1]), int(star[0])]
+    with pytest.raises(CommandError):
+        s.execute("mask segments objects X0=1,2 Y0=3")

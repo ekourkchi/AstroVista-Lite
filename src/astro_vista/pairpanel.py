@@ -106,6 +106,13 @@ class SkyMap(QtWidgets.QWidget):
         p.end()
 
 
+def _box(layout) -> QtWidgets.QWidget:
+    w = QtWidgets.QWidget()
+    layout.setContentsMargins(0, 0, 0, 0)
+    w.setLayout(layout)
+    return w
+
+
 class GalaxyCard(QtWidgets.QGroupBox):
     """One galaxy of the pair: its centre, radii and how it is fitted."""
 
@@ -363,6 +370,7 @@ class PairPanel(QtWidgets.QWidget):
     blink_requested = QtCore.Signal()
     report_requested = QtCore.Signal()
     iteration_requested = QtCore.Signal(int)  # a call's number (1, 2, ...): show its images
+    objects_requested = QtCore.Signal(float)  # mask every detected object but A and B (grow)
     changed = QtCore.Signal()  # something drawn on the image changed
 
     def __init__(self, parent=None):
@@ -505,6 +513,23 @@ class PairPanel(QtWidgets.QWidget):
         self._ticked = set()
         self.layers.itemChanged.connect(self._tick_changed)
         form.addRow(tip(self.layers, "pair_masks"))
+        row = QtWidgets.QHBoxLayout()
+        self.mask_objects = QtWidgets.QPushButton("Mask the other objects")
+        self.mask_objects.setToolTip(
+            "Make the mask layer 'objects': every source the Source finder detects (its "
+            "segmentation pixels), except the sources at A's and B's centres"
+        )
+        self.mask_objects.clicked.connect(
+            lambda: self.objects_requested.emit(self.objects_grow.value())
+        )
+        row.addWidget(self.mask_objects)
+        row.addWidget(QtWidgets.QLabel("grow"))
+        self.objects_grow = number(
+            0, 50, 2, decimals=1, tip="GROW: pixels added around each object"
+        )
+        row.addWidget(self.objects_grow)
+        row.addStretch(1)
+        form.addRow(tip(_box(row), "pair_objects"))
 
         # ---- the run
         form.addRow(heading("4. Run"))

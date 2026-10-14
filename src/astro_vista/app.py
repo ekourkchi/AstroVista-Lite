@@ -910,6 +910,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pp.blink_requested.connect(self.blink_pair)
         pp.report_requested.connect(self.copy_pair_report)
         pp.iteration_requested.connect(self.show_pair_iteration)
+        pp.objects_requested.connect(self.pair_mask_objects)
         pp.changed.connect(self._overlays)
         self.finder.show_sources.toggled.connect(lambda on: self.layers.set_checked("sources", on))
 
@@ -1524,6 +1525,30 @@ class MainWindow(QtWidgets.QMainWindow):
         elif on:
             self.statusBar().showMessage("No sky mask yet: press Measure sky")
 
+    def pair_mask_objects(self, grow: float) -> None:
+        """The mask layer 'objects' (role fit, ticked in the Pair panel): every source the
+        Source finder detects but those at A's and B's centres; finds the sources first if
+        the image has none."""
+        n = self._current_number()
+        if n is None:
+            return
+        centres = [card.centre() for card in self.pair_panel.cards.values()]
+        if not all(x or y for x, y in centres):
+            QtWidgets.QMessageBox.information(self, TITLE, "Set A's and B's centres first.")
+            return
+        image = self.session.buffers[n]
+        if not any(r.image_key == image.key for r in self.session.runs):
+            self.run_command(f"sources {n}")
+        name = "objects"
+        self.run_command(
+            f"mask clear {name}" if name in self.session.masks else f"mask new {name} {n}"
+        )
+        xs = ",".join(f"{x:.2f}" for x, _y in centres)
+        ys = ",".join(f"{y:.2f}" for _x, y in centres)
+        self.run_command(f"mask segments {name} X0={xs} Y0={ys} GROW={grow:g}")
+        self.run_command(f"mask role {name} fit")
+        self.after_commands(lambda: (self.pair_panel.tick(name), self._overlays()))
+
     def pair_pick(self, cid: str, what: str) -> None:
         if self.viewer.image is None:
             return
@@ -1748,9 +1773,10 @@ class MainWindow(QtWidgets.QMainWindow):
         shown_tool = (
             self.side.currentWidget() is self.tools and self.tools.currentWidget().widget() is p
         )
+        shown = self.layers.checked
         for cid, card in p.cards.items():
             d = {}
-            if not card.visible.isChecked():
+            if not card.visible.isChecked() or not shown("pair"):
                 out[cid] = d
                 continue
             x, y = card.centre()
@@ -1764,7 +1790,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if core is not None and core.shape != "none" and shown_tool:
                     d["core"] = [(core.x, core.y, core.a, core.b, core.angle)]
                 commit = result.commits.get(cid)
-                if commit is not None:
+                if commit is not None and shown("isophotes"):
                     d["fit"] = commit.ellipses
                     d["track"] = [(e[0], e[1]) for e in commit.ellipses]
                     if not d.get("centre"):

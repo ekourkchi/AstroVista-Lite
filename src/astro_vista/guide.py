@@ -873,6 +873,13 @@ TIPS = {
     "pair_masks": "<b>Fitting masks</b>: the layers left out of every fit of A and of B. Only "
     "layers of role <i>fit</i>, or without a role, are listed: a sky layer covers the "
     "galaxies themselves and is never used in a fit.",
+    "pair_objects": "<b>Mask the other objects</b> makes the mask layer <i>objects</i> (role "
+    "fit) and ticks it: the pixels of every source the Source finder detects, grown by this "
+    "many pixels, except the sources at A's and B's centres (and the segment under each "
+    "centre). It finds the sources first if this image has no source-finder run, with the "
+    "Source finder's settings; a lower threshold there masks more of the faint objects. The "
+    "galaxies are never masked from each other. Edit the layer with the mask tools, or "
+    "untick it to fit without it. Command: mask segments objects X0=xa,xb Y0=ya,yb GROW=2.",
     "pair_cycles": "<b>Cycles</b>: after the start (A, then B on the image minus A), each "
     "cycle fits A on the image minus B, then B on the image minus the new A. 4 cycles make "
     "10 elliprof calls. More cycles do not guarantee a stable result.",

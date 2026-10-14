@@ -1110,6 +1110,7 @@ OVERLAYS = (
     ("isophotes", "Isophotes (ELLIPROF)", "#7CFC00", True),
     ("sources", "Sources (Source finder)", "#00d5ff", True),
     ("centre", "ELLIPROF centre, R0 and R1", "#ff4d4d", True),
+    ("pair", "Pair fit (A and B: guides and isophotes)", "#22d3ee", True),
     ("contours", "Contours", "#ffd84a", False),
     ("crosshair", "Crosshair", "#ff9f40", False),
 )

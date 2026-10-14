@@ -741,7 +741,11 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "centre (the source at X0, Y0, default; before any fit, the largest "
                         "source), none, or a source NUMBER",
                     ),
-                    ("X0=, Y0=", "the centre to keep (default: the last ELLIPROF centre)"),
+                    (
+                        "X0=, Y0=",
+                        "the centre to keep (default: the last ELLIPROF centre); a list keeps "
+                        "several, with the segment under each (X0=120,310 Y0=200,240: a pair)",
+                    ),
                     ("IDS=", "only these source numbers"),
                     (
                         "WHERE=",
@@ -752,7 +756,8 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ("GROW=", "pixels added around each segment (segments)"),
                 ),
                 "mask new found 1\nmask sources found SCALE=1.5\n"
-                "mask sources found WHERE='FLUX_RADIUS < 2.5'\nmask segments found GROW=2",
+                "mask sources found WHERE='FLUX_RADIUS < 2.5'\nmask segments found GROW=2\n"
+                "mask segments found X0=120,310 Y0=200,240 GROW=2",
             ),
             _c(
                 "mask grow shrink invert clear fill show hide",

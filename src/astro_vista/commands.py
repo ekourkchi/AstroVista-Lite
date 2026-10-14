@@ -129,7 +129,9 @@ From the data and the sources
                                   X0, Y0 (by default the last ELLIPROF centre; before
                                   any fit, the largest source)
   mask segments NAME [RUN=k] [GROW=0] [KEEP=...] [X0= Y0=]
-                                  the sources' pixels (their segmentation)
+                                  the sources' pixels (their segmentation); X0= and Y0=
+                                  may list several centres (X0=120,310 Y0=200,240): the
+                                  sources there, and the segments under them, stay unmasked
 Changing a layer
   mask grow|shrink NAME R;  mask invert|clear|fill NAME;  mask show|hide NAME
   mask role NAME fit|sky|candidate|none   what the layer is for: fit (left out of fits),
@@ -1458,10 +1460,26 @@ class Session(ImageCommands):
             if run.segmentation is not None and run.segmentation.shape != mask.shape:
                 raise CommandError(f"run {run.number} was on an image of another size")
             scale = number(keys.get("SCALE", 1.5), "SCALE")
-            centre = self.centre
+            centres = [self.centre]
             if "X0" in keys and "Y0" in keys:
-                centre = (number(keys["X0"], "X0"), number(keys["Y0"], "Y0"))
-            keep = self._kept_source(run, keys.get("KEEP", "centre"), scale, centre)
+                xs = [number(t, "X0") for t in str(keys["X0"]).split(",") if t.strip()]
+                ys = [number(t, "Y0") for t in str(keys["Y0"]).split(",") if t.strip()]
+                if len(xs) != len(ys) or not xs:
+                    raise CommandError("X0= and Y0= need the same number of values")
+                centres = list(zip(xs, ys))
+            centre = centres[0]
+            kept = [self._kept_source(run, keys.get("KEEP", "centre"), scale, c) for c in centres]
+            if run.segmentation is not None and str(keys.get("KEEP", "centre")).lower() == "centre":
+                # the segment under each centre too (a pair blended into one segment keeps it)
+                ny, nx = run.segmentation.shape
+                for c in centres:
+                    if c is None:
+                        continue
+                    i, j = int(np.floor(c[0])), int(np.floor(c[1]))
+                    if 0 <= i < nx and 0 <= j < ny and run.segmentation[j, i] > 0:
+                        rows = np.flatnonzero(run.columns["NUMBER"] == run.segmentation[j, i])
+                        kept += [int(r) for r in rows]
+            kept = sorted({k for k in kept if k is not None})
             chosen = np.ones(len(run), bool)
             if "IDS" in keys:
                 ids = [integer(t, "IDS") for t in re.split(r"[,\s]+", keys["IDS"]) if t]
@@ -1471,9 +1489,10 @@ class Session(ImageCommands):
                     chosen &= maskops.where(run.columns, keys["WHERE"])
                 except ValueError as e:
                     raise CommandError(str(e))
-            if keep is not None:
-                chosen[keep] = False
-                kept_note = f" (source {int(run.columns['NUMBER'][keep])} kept unmasked"
+            if kept:
+                chosen[kept] = False
+                numbers_kept = ", ".join(str(int(run.columns["NUMBER"][k])) for k in kept)
+                kept_note = f" (source{'s' if len(kept) > 1 else ''} {numbers_kept} kept unmasked"
                 if centre is None and str(keys.get("KEEP", "centre")).lower() == "centre":
                     kept_note += ": the largest, as there is no ELLIPROF centre yet"
                 kept_note += ")"
