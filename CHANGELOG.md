@@ -15,7 +15,9 @@ newest is at the top.
 - **Mask the other objects** (Pair fit ▸ Fitting masks): the mask layer `objects`, role
   fit, with every detected source but A and B (finding the sources first if needed).
   `mask sources` and `mask segments` take several centres to keep (`X0=xa,xb Y0=ya,yb`),
-  and also keep the segment under each centre. The Layers panel has a **Pair fit** row,
+  and also keep the segment under each centre. `mask segments` makes the layer exactly the segments:
+  everything else is unmasked (`ADD` adds them to the layer instead); Masks ▸ Mask the
+  found sources' segments writes its own layer, `segments`. The Layers panel has a **Pair fit** row,
   and unticking **Isophotes** hides the pair's fitted isophotes too.
 - **The sky by segmentation.** `sky N SEGMENT`: every source down to 0.5 sigma left out;
   the level, cell medians, a fitted gradient, sampling and spatial uncertainties, and a

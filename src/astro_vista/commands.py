@@ -128,8 +128,10 @@ From the data and the sources
                                   the sources' Kron ellipses x SCALE, except the galaxy at
                                   X0, Y0 (by default the last ELLIPROF centre; before
                                   any fit, the largest source)
-  mask segments NAME [RUN=k] [GROW=0] [KEEP=...] [X0= Y0=]
-                                  the sources' pixels (their segmentation); X0= and Y0=
+  mask segments NAME [RUN=k] [GROW=0] [KEEP=...] [X0= Y0=] [ADD]
+                                  the layer becomes the sources' pixels (their
+                                  segmentation), everything else unmasked (ADD: add them
+                                  to what the layer already masks); X0= and Y0=
                                   may list several centres (X0=120,310 Y0=200,240): the
                                   sources there, and the segments under them, stay unmasked
 Changing a layer
@@ -1507,7 +1509,11 @@ class Session(ImageCommands):
                 numbers_ = run.columns["NUMBER"][chosen]
                 pixels = np.isin(run.segmentation, numbers_)
                 g = number(keys.get("GROW", 0), "GROW")
-                mask.masked |= maskops.grow(pixels, g) if g > 0 else pixels
+                pixels = maskops.grow(pixels, g) if g > 0 else pixels
+                if any(w.upper() == "ADD" for w in rest):
+                    mask.masked |= pixels
+                else:  # the layer becomes the segments: everything else unmasked
+                    mask.masked[...] = pixels
                 mask.source = f"segments of run {run.number}" + (f" grown {g:g}" if g else "")
         else:
             self._undo.pop()

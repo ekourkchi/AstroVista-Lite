@@ -729,9 +729,11 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "mask sources segments",
                 "mask sources NAME [RUN=k] [SCALE=1.5] [KEEP=centre|none|number] [X0= Y0=] "
                 "[IDS=1,5,9] [WHERE='condition']  ·  mask segments NAME [RUN=k] [GROW=0] "
-                "[KEEP=...] [X0= Y0=]",
+                "[KEEP=...] [X0= Y0=] [ADD]",
                 "Mask the found sources: their Kron ellipses enlarged by SCALE (sources), or "
-                "their own pixels from the segmentation grown by GROW pixels (segments). The "
+                "their own pixels from the segmentation grown by GROW pixels (segments: the "
+                "layer becomes exactly the segments, everything else unmasked; ADD adds them "
+                "instead). The "
                 "galaxy at ELLIPROF's centre is kept unmasked unless KEEP= says otherwise.",
                 (
                     ("RUN=", "the source-finder run (default: the last on that image)"),

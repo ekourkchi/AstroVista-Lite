@@ -335,8 +335,8 @@ mask unpatch edges 812 440</code></pre>
 <pre><code>mask nan edges 1
 mask range edges 1 60000 1e9</code></pre>
 <h3><code>mask sources segments</code> <span class='monsta'>MONSTA name</span></h3>
-<p><code>mask sources NAME [RUN=k] [SCALE=1.5] [KEEP=centre|none|number] [X0= Y0=] [IDS=1,5,9] [WHERE='condition']  ·  mask segments NAME [RUN=k] [GROW=0] [KEEP=...] [X0= Y0=]</code></p>
-<p>Mask the found sources: their Kron ellipses enlarged by SCALE (sources), or their own pixels from the segmentation grown by GROW pixels (segments). The galaxy at ELLIPROF's centre is kept unmasked unless KEEP= says otherwise.</p>
+<p><code>mask sources NAME [RUN=k] [SCALE=1.5] [KEEP=centre|none|number] [X0= Y0=] [IDS=1,5,9] [WHERE='condition']  ·  mask segments NAME [RUN=k] [GROW=0] [KEEP=...] [X0= Y0=] [ADD]</code></p>
+<p>Mask the found sources: their Kron ellipses enlarged by SCALE (sources), or their own pixels from the segmentation grown by GROW pixels (segments: the layer becomes exactly the segments, everything else unmasked; ADD adds them instead). The galaxy at ELLIPROF's centre is kept unmasked unless KEEP= says otherwise.</p>
 <table cellspacing='4'><tr><td><code>RUN=</code></td><td>the source-finder run (default: the last on that image)</td></tr><tr><td><code>SCALE=</code></td><td>the Kron ellipses × SCALE (default 1.5)</td></tr><tr><td><code>KEEP=</code></td><td>centre (the source at X0, Y0, default; before any fit, the largest source), none, or a source NUMBER</td></tr><tr><td><code>X0=, Y0=</code></td><td>the centre to keep (default: the last ELLIPROF centre); a list keeps several, with the segment under each (X0=120,310 Y0=200,240: a pair)</td></tr><tr><td><code>IDS=</code></td><td>only these source numbers</td></tr><tr><td><code>WHERE=</code></td><td>only the sources meeting a condition: catalogue columns compared with numbers, joined by and / or, read from left to right: WHERE='MAG_AUTO &lt; 22 and FWHM_IMAGE &lt; 3'</td></tr><tr><td><code>GROW=</code></td><td>pixels added around each segment (segments)</td></tr></table>
 <pre><code>mask new found 1
 mask sources found SCALE=1.5

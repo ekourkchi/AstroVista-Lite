@@ -674,7 +674,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_mask_sources = a("Mask the found sources", self.mask_sources)
         self.a_mask_where = a("Mask the sources where…", self.mask_sources_where)
         self.a_mask_selected = a("Mask the selected source", self.mask_selected_source)
-        self.a_mask_segments = a("Mask the found sources' segments…", self.mask_segments)
+        self.a_mask_segments = a(
+            "Mask the found sources' segments (layer segments)…", self.mask_segments
+        )
         self.a_mask_nan = a("Mask the pixels that are not finite", self.mask_nan)
         self.a_mask_range = a("Mask a range of values…", self.mask_range)
         self.a_grow = a("Grow the mask…", lambda: self._active_radius("grow"))
@@ -1540,9 +1542,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not any(r.image_key == image.key for r in self.session.runs):
             self.run_command(f"sources {n}")
         name = "objects"
-        self.run_command(
-            f"mask clear {name}" if name in self.session.masks else f"mask new {name} {n}"
-        )
+        if name not in self.session.masks:
+            self.run_command(f"mask new {name} {n}")
         xs = ",".join(f"{x:.2f}" for x, _y in centres)
         ys = ",".join(f"{y:.2f}" for _x, y in centres)
         self.run_command(f"mask segments {name} X0={xs} Y0={ys} GROW={grow:g}")
@@ -2161,11 +2162,13 @@ class MainWindow(QtWidgets.QMainWindow):
             1,
         )
         if ok:
-            self._ensure_mask()
+            # its own layer: the segments replace what it masked, so not the active layer
+            name = "segments"
+            if name not in self.session.masks:
+                self.run_command(f"mask new {name} {self.shown}")
             x0, y0 = self.elliprof.x0.value(), self.elliprof.y0.value()
             self.run_command(
-                f"mask segments {self.active_mask} RUN={run.number} GROW={grow:g} "
-                f"X0={x0:g} Y0={y0:g}"
+                f"mask segments {name} RUN={run.number} GROW={grow:g} X0={x0:g} Y0={y0:g}"
             )
 
     def mask_nan(self) -> None:

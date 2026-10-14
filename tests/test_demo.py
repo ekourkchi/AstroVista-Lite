@@ -775,6 +775,14 @@ def test_source_finder_finds_the_galaxy_and_the_stars(tmp_path):
     s.execute("mask new seg 1")
     s.execute("mask segments seg GROW=2 X0=150 Y0=140")
     assert s.masks["seg"].masked[49, 39] and not s.masks["seg"].masked[139, 149]
+    # the segments replace what the layer masked; ADD adds them
+    s.execute("mask fill seg")
+    s.execute("mask segments seg X0=150 Y0=140")
+    seg = s.runs[-1].segmentation
+    assert np.array_equal(s.masks["seg"].masked[seg == 0], np.zeros((seg == 0).sum(), bool))
+    s.execute("mask fill seg")
+    s.execute("mask segments seg X0=150 Y0=140 ADD")
+    assert s.masks["seg"].masked.all()
     with pytest.raises(CommandError, match="unknown setting"):
         s.execute("sources 1 DETECT_THRESHOLD=3")
 
