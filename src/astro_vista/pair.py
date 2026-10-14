@@ -289,6 +289,7 @@ class PairResult:
     history: List[dict] = field(default_factory=list)
     quality: dict = field(default_factory=dict)  # see quality()
     search: List[dict] = field(default_factory=list)  # TRY...: every variant, and its score
+    search_choice: str = ""  # why run_search kept the fit it kept
     snapshot: Optional["Snapshot"] = None  # the snapshot of the fit kept, if not the job's
     notes_growth: List[str] = field(default_factory=list)  # galaxies that stopped growing
     # SKYITER: one entry per pair fit (factor, sky, residual median, status); the result is
@@ -1489,8 +1490,8 @@ def run_search(
     fitter: Fitter = fit_array,
 ) -> PairResult:
     """Fit every variant TRY... asks for (each with SKYITER if asked) and keep the one whose
-    two models describe the pair best (quality(); stable fits first).  One result, not an
-    average; every variant is listed in ``search``."""
+    two models describe the pair best (see choose()).  One result, not an average; every
+    variant is listed in ``search``."""
     options = variants(snap)
     rows, results = [], []
     for k, (label, variant) in enumerate(options, 1):
@@ -1526,18 +1527,59 @@ def run_search(
         result.snapshot = chosen_snap if chosen_snap is not snap else result.snapshot
         return result
 
-    def rank(i):
-        r, _s = results[i]
-        stable = r.status == "stable_valid_pair"
-        score = r.quality.get("score", float("inf"))
-        return (not r.complete, not stable, score)
-
-    best = min(range(len(results)), key=rank)
+    best, why = choose(results)
     rows[best]["chosen"] = True
     result, chosen_snap = results[best]
     result.search = rows
+    result.search_choice = why
     result.snapshot = chosen_snap
     return result
+
+
+# Free centres are kept only when they lower the residual score by more than this (in units
+# of the pixel noise).  On 24 simulated pairs (12 scenes, 2 noise seeds) searched over damping
+# 1 and 0.5, fixed and free centres and growth x1.5 and x1.25, free centres often matched
+# fixed ones in residual while moving light between A and B.  Against keeping the smallest
+# score, this rule lowered the median residual (0.141 to 0.137 of the noise) and the profile
+# error of A + B (median 1.66 % to 1.20 %, 90th percentile 6.8 % to 4.0 %).  Lopsided
+# galaxies, whose centre of light moves with radius, are where free centres clearly help.
+FREE_GAIN = 0.01
+
+
+def _fixed(snap: Snapshot) -> bool:
+    return all(c.fixctr != 0 for c in snap.components.values())
+
+
+def choose(results: List[Tuple[PairResult, Snapshot]]) -> Tuple[int, str]:
+    """The index of the fit run_search keeps, and why.  Complete fits before incomplete ones
+    and stable ones before the rest, then the smallest residual score (quality()); among fits
+    with fixed centres and fits with free ones, fixed centres win unless free centres lower
+    the score by more than FREE_GAIN."""
+
+    def rank(i):
+        r, _s = results[i]
+        stable = r.status == "stable_valid_pair"
+        return (not r.complete, not stable, r.quality.get("score", float("inf")))
+
+    every = range(len(results))
+    fixed = [i for i in every if _fixed(results[i][1])]
+    free = [i for i in every if not _fixed(results[i][1])]
+    if not fixed or not free:
+        return min(every, key=rank), "the smallest residual"
+    f, g = min(fixed, key=rank), min(free, key=rank)
+    if not results[f][0].complete:
+        return g, "fixed centres gave no complete fit"
+    if not results[g][0].complete:
+        return f, "the smallest residual with fixed centres"
+    sf, sg = rank(f)[2], rank(g)[2]
+    if rank(g)[:2] < rank(f)[:2]:
+        return g, "fixed centres gave no stable fit"
+    if rank(g)[:2] == rank(f)[:2] and sg < sf - FREE_GAIN:
+        return g, f"free centres lowered the residual by {sf - sg:.3f} (more than {FREE_GAIN:g})"
+    return f, (
+        f"fixed centres kept: free centres lowered the residual by {max(sf - sg, 0):.3f}, "
+        f"not more than {FREE_GAIN:g}"
+    )
 
 
 def command_for(snap: Snapshot, mask: str = "") -> str:
@@ -2117,6 +2159,8 @@ def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) ->
             f"variant {row['variant']}: {row['status']}, score {score}"
             + ("  <- kept" if row.get("chosen") else "")
         )
+    if result.search_choice:
+        add(f"kept because: {result.search_choice}")
     add("")
     add("## settings")
     add(

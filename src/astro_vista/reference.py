@@ -588,8 +588,9 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ),
                     (
                         "TRYDAMP=, TRYFIX=, TRYFACTOR=",
-                        "fit every combination and keep the one whose two models describe "
-                        "the pair best (Results > Pair > Search lists them)",
+                        "fit every combination and keep the stable one with the smallest "
+                        "residual, with fixed centres unless free centres lower it by more "
+                        "than 0.01 of the noise (Results > Pair > Search lists them)",
                     ),
                     (
                         "A: … B: …",

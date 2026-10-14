@@ -972,6 +972,25 @@ def test_the_search_fits_every_variant_and_keeps_one():
         )
 
 
+def test_the_search_prefers_fixed_centres_unless_free_ones_clearly_win():
+    snap = iterative_snapshot(try_fix=[1, 0])
+    fixed, free = [v for _label, v in pair.variants(snap)]
+
+    def fit(score, status="stable_valid_pair"):
+        r = pair.PairResult(status, checkpoint_cycle="1")
+        r.commits = {"A": object(), "B": object()}
+        r.quality = {"score": score}
+        return r
+
+    assert pair.choose([(fit(1.010), fixed), (fit(1.005), free)])[0] == 0
+    k, why = pair.choose([(fit(1.030), fixed), (fit(1.005), free)])
+    assert k == 1 and "free centres lowered" in why
+    # a stable fit beats an unstable one whatever the scores
+    assert pair.choose([(fit(1.001, "valid_pair_not_stable"), fixed), (fit(1.2), free)])[0] == 1
+    # without both kinds of centres, the smallest score
+    assert pair.choose([(fit(1.02), fixed), (fit(1.01), fixed)])[0] == 1
+
+
 def test_the_replay_command_repeats_the_snapshot():
     snap = iterative_snapshot(
         a_kw={"start": 8, "factor": 1.5, "name": "big one"}, b_kw={"radii": [6, 12]}, damp=0.7

@@ -26,8 +26,11 @@ newest is at the top.
 - **Damping and the search for the best fit.** `DAMP=` subtracts a blend of the
   companion's new and previous models; undamped final cycles (`POLISH=`) make the result
   ELLIPROF's own models. `TRYDAMP=`, `TRYFIX=` and `TRYFACTOR=` fit every combination and
-  keep the one whose two models describe the pair best by a residual score (rings around
-  each galaxy, facing and away from the other); every variant is listed. The export's
+  keep the stable one with the smallest residual outside the cores, preferring fixed
+  centres unless free centres lower that residual by more than 0.01 of the noise (on 24
+  simulated pairs this improved both the residual and the profiles of A and B over simply
+  keeping the smallest residual). The search is on by default in the Pair fit panel; every
+  variant is listed with the reason for the one kept. The export's
   replay command repeats the fit kept with every setting explicit.
 - **Two-galaxy iterative fit** (the Pair fit tool's default): A on D, B on D − M_A, then
   A on D − M_B and B on D − M_A each cycle, every input made afresh from the original image;

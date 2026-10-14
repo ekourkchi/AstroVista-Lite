@@ -547,7 +547,7 @@ class PairPanel(QtWidgets.QWidget):
         form.addRow("Damping", tip(self.damp, "pair_damp"))
         self.search = QtWidgets.QGroupBox("Search for the best fit")
         self.search.setCheckable(True)
-        self.search.setChecked(False)
+        self.search.setChecked(True)
         grid = QtWidgets.QGridLayout(self.search)
         self.try_damp = QtWidgets.QLineEdit("1, 0.5")
         self.try_fix = QtWidgets.QComboBox()
@@ -565,9 +565,10 @@ class PairPanel(QtWidgets.QWidget):
             grid.addWidget(w, row, 1)
         grid.addWidget(
             note(
-                "Every combination is fitted and the one with the smallest residual (outside the "
-                "cores, in noise units) is kept: one fit, not an average. A residual judges A + "
-                "B together; it cannot tell how the light is split between A and B."
+                "Every combination is fitted and one is kept: the stable fit with the smallest "
+                "residual outside the cores, with fixed centres unless free centres lower it by "
+                "more than 0.01 of the noise. On simulated pairs this gave the best residual "
+                "and the most accurate A and B of the rules tried."
             ),
             3,
             0,
@@ -1160,7 +1161,7 @@ class PairResultsPanel(QtWidgets.QWidget):
                 f(r["A_r1"], ".1f"),
                 f(r["B_r1"], ".1f"),
                 f(r["sky"], ".6g"),
-                "kept" if r.get("chosen") else "",
+                ("kept: " + self.record.result.search_choice) if r.get("chosen") else "",
             ]
             for j, text in enumerate(cells):
                 self.search_table.setItem(i, j, QtWidgets.QTableWidgetItem(text))

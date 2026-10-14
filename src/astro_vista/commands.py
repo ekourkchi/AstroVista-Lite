@@ -1770,7 +1770,8 @@ Shared (before A:)
   DAMP=1        damping: subtract alpha x new + (1 - alpha) x previous companion model;
                 below 1, POLISH=2 undamped cycles end the run (the result: ELLIPROF's models)
   TRYDAMP=1,0.5 TRYFIX=1,0 TRYFACTOR=1.5,1.25   fit every combination and keep the one
-                whose two models describe the pair best (stable fits first)
+                whose two models describe the pair best: stable fits first, then the
+                smallest residual, fixed centres unless free ones lower it by > 0.01
   ONFAIL=reduce on a failed fit keep the last valid model and: reduce (try halfway, then
                 a quarter of the way, and go on growing), hold (stay at its radius), retry
                 (try the radius again next cycle) or stop (end the run)
