@@ -5,6 +5,23 @@ newest is at the top.
 
 ## Unreleased
 
+- **Repeat runs, averaged.** `RUNS=n` (Pair fit ▸ Runs to average) fits the fit kept
+  again n − 1 times, each with every galaxy's R0 and R1 changed at random by 10–15 %
+  (`JITTER=0.15`, `SEED=`), and averages the complete runs: buffers get the mean A, B and
+  A + B models, the mean residual and the spread of the models, and the report the mean
+  sky and every run.
+- **Every harmonic searched.** `HARMONICS=AUTO` (Search every harmonic) tries every
+  `COS3X` and `COS4X` for A, then for B, on the fit kept, and keeps the stable fit with
+  the smallest residual.
+- **Star wings and spikes.** `WINGS=1` masks the light of bright sources beyond their
+  masks (a star's wings, its diffraction spikes) that the residual of a first pass shows,
+  joined to their masks and never near a galaxy's centre.
+- **Pairs that failed at their first fit.** A fitting mask that covers a galaxy's own
+  centre (NGC 4825: a mask made to fit A alone hid B) is lifted there, with a note; when
+  the innermost isophotes (within 10 px) fail, the fit starts from a larger R0 (NGC 5090:
+  its isophotes at 3 and 4.5 px crossed); a close pair whose first radius (~10 px) is too
+  small for ELLIPROF is started further out. All four such failures (two real, two
+  simulated) now fit.
 - **Parallel pair fits.** `PARALLEL=n` (Pair fit ▸ Parallel fits, 5 by default on a
   computer with 6 cores or more) fits n variants of the search at the same time; the fit
   kept does not depend on it. On NGC 6768 the automatic search took 24 s instead of 56 s.

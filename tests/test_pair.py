@@ -1390,3 +1390,93 @@ def test_the_panel_writes_harmonics_and_parallel_fits():
     card.set_values({"mode": "4m"})  # an older named mode: its COS3X and COS4X
     assert (card.cos3x.currentData(), card.cos4x.currentData()) == (0, 1)
     app.processEvents()
+
+
+def test_repeat_runs_change_r0_and_r1_and_are_averaged():
+    from dataclasses import replace
+
+    snap = iterative_snapshot()
+    snap = replace(snap, settings=replace(snap.settings, runs=4, jitter=0.15, parallel=2))
+    result = pair.run_search(snap, fitter=PureFitter())
+    rows = result.repeats
+    assert len(rows) == 4 and rows[0]["variant"] == "the fit kept"
+    labels = [r["variant"] for r in rows[1:]]
+    for label in labels:
+        r0 = float(label.split("A R0 ")[1].split()[0])
+        r1 = float(label.split(", ")[0].split(" R1 ")[1])
+        assert 0.1 - 1e-6 <= abs(r0 / 2 - 1) <= 0.15 + 1e-6
+        assert 0.1 - 1e-6 <= abs(r1 / 20 - 1) <= 0.15 + 1e-6
+    e = result.ensemble
+    assert e["repeats"] and e["members"] == 4
+    assert np.allclose(e["A"] + e["B"], e["model"])
+    assert "mean of 4 runs of 4" in pair.summary(result, result.snapshot)
+    # the same seed, the same changes
+    again = pair.run_search(snap, fitter=PureFitter())
+    assert [r["variant"] for r in again.repeats] == [r["variant"] for r in rows]
+    with pytest.raises(pair.PairError):
+        pair.settings_from({"SKY": "1", "RUNS": "0"})
+    with pytest.raises(pair.PairError):
+        pair.settings_from({"SKY": "1", "HARMONICS": "yes"})
+
+
+def test_every_harmonic_is_searched_with_harmonics_auto():
+    from dataclasses import replace
+
+    snap = harmonic_snapshot()
+    snap = replace(snap, settings=replace(snap.settings, harmonic_search=True, parallel=4))
+    f = PureFitter(share={1: 1.0, 0: 0.0, 2: 0.5, None: 0.5})
+    result = pair.run_search(snap, fitter=f)
+    tried = [r for r in result.search if r.get("harmonics") == "A"]
+    assert len(tried) == len(pair.COS3X_VALUES) * len(pair.COS4X_VALUES) - 1
+    assert pair.effective_harmonics(result.snapshot.components["A"])[1] == 1
+
+
+def test_a_failed_innermost_isophote_starts_further_out():
+    class InnerFitter(SteadyFitter):
+        def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+            fit = super().__call__(data, x0, y0, r0, r1, nr, **kw)
+            if x0 < 50 and r0 < 3:  # A's first isophotes cross while R0 is 2
+                fit.profile.loc[1, "Rmaj"] = fit.profile.loc[0, "Rmaj"]
+                fit.profile.loc[0, "ellip"] = 0.99
+            return fit
+
+    snap = iterative_snapshot()
+    result = pair.run(snap, fitter=InnerFitter())
+    assert result.complete and result.r0_raised["A"] == pytest.approx(3.0)
+    assert "fitted from R0 3" in pair.summary(result, snap)
+
+
+def test_a_mask_over_a_galaxys_centre_is_lifted_there():
+    from astro_vista.commands import _uncover_centres
+
+    masked = np.zeros((60, 120), bool)
+    masked[20:40, 80:100] = True  # over B
+    masked[5:10, 5:10] = True  # elsewhere
+    notes = _uncover_centres(masked, {"A": {"X0": "30", "Y0": "30"}, "B": {"X0": "90", "Y0": "30"}})
+    assert not masked[20:40, 80:100].any() and masked[5:10, 5:10].all()
+    assert len(notes) == 1 and "B's centre" in notes[0]
+
+
+def test_wings_beyond_a_mask_are_masked_and_specks_are_not():
+    from dataclasses import replace
+
+    snap = iterative_snapshot()
+    rng = np.random.default_rng(3)
+    residual = rng.normal(0, 1, snap.image.shape)
+    yy, xx = np.mgrid[0:60, 0:120]
+    star = np.hypot(xx - 60, yy - 50) < 4  # a masked star, with wings out to 9 px
+    residual += 6 * np.exp(-np.hypot(xx - 60, yy - 50) / 4)
+    residual[10, 100] += 30  # a speck, joined to no mask
+    fit_mask = snap.fit_mask | star
+    snap = replace(snap, fit_mask=fit_mask)
+    first = pair.PairResult("stable_valid_pair", residual=residual)
+    first.commits = {"A": object(), "B": object()}
+    old = pair.WING_SEED
+    pair.WING_SEED = 20
+    try:
+        out = pair.mask_wings(snap, first)
+    finally:
+        pair.WING_SEED = old
+    added = out.fit_mask & ~fit_mask
+    assert added.sum() > 50 and added[50, 66] and not added[10, 100]
+    assert "WINGS:" in out.notes[-1]

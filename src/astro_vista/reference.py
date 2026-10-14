@@ -647,6 +647,22 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "A + B model, mean residual and the models' spread go to buffers too",
                     ),
                     (
+                        "RUNS=, JITTER=, SEED=",
+                        "fit the fit kept again RUNS − 1 times with R0 and R1 changed at random "
+                        "by 10–15 % (JITTER=0.15); the mean A, B and A + B models, residual and "
+                        "sky of the runs, and their spread, go to buffers",
+                    ),
+                    (
+                        "HARMONICS=AUTO",
+                        "try every COS3X and COS4X for each galaxy on the fit kept, and keep "
+                        "the stable fit with the smallest residual",
+                    ),
+                    (
+                        "WINGS=1",
+                        "mask the wings and spikes of bright sources that a first "
+                        "pass's residual shows beyond their masks",
+                    ),
+                    (
                         "A: … B: …",
                         "each galaxy: X0= Y0= R0= R1= NR=25 NAME= FIXCTR= CORE= ADAPTIVE "
                         "COS3X= COS4X= (ELLIPROF's harmonics in the model: 2 each isophote's, "

@@ -981,6 +981,7 @@ class Session(ImageCommands):
                 raise CommandError(f"no mask file {path}")
             masked |= maskops.load(path, image.shape)
             label.append(path.name)
+        uncovered = _uncover_centres(masked, own)
         # output buffers: given, or free ones; never the image, a mask buffer or each other
         taken = {n} | {integer(t, "MASKBUF") for t in maskbuf}
         outputs = {}
@@ -1103,7 +1104,7 @@ class Session(ImageCommands):
             )
         except pairs.PairError as e:
             raise CommandError(str(e))
-        snap.notes.extend(auto_notes)
+        snap.notes.extend(uncovered + auto_notes)
         if auto:
             snap.auto, snap.auto_sigma = auto_flags, float(sigma_auto)
         job = PairJob(n, image, snap, outputs, "pair " + text.strip())
@@ -1165,6 +1166,8 @@ class Session(ImageCommands):
             if e:
                 taken = set(job.outputs.values()) | {n}
                 for kind, data in (
+                    ("pair mean A model", e["A"]),
+                    ("pair mean B model", e["B"]),
                     ("pair mean A+B model", e["model"]),
                     ("pair mean residual", e["residual"]),
                     ("pair model spread", e["spread"]),
@@ -1745,7 +1748,8 @@ KEYWORDS = {
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
-    "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X=",
+    "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X= RUNS= JITTER= SEED= "
+    "HARMONICS= WINGS=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1962,8 +1966,16 @@ Shared (before A:)
   SKYPLANE=1    a plane fitted to the residual of the fit kept; if significant, the search
                 again on the image minus its tilt (kept when the residual is lower)
   PARALLEL=1    fit this many variants at the same time (1 to 16); with two or more fits
-                within 5 % of the best score, their mean sky, mean A + B model, mean
-                residual and the models' spread are made as well
+                within 5 % of the best score, their mean sky, mean A, B and A + B models,
+                mean residual and the models' spread are made as well
+  RUNS=1        fit the fit kept again RUNS - 1 times with each galaxy's R0 and R1 changed
+                at random by 2/3 JITTER to JITTER (JITTER=0.15: 10 to 15 %), up or down;
+                the mean of the complete runs (all but those 50 % above the best score)
+                gives the mean models, residual, sky and spread  [SEED= the random numbers]
+  HARMONICS=AUTO   try every COS3X and COS4X for each galaxy, A's then B's, on the fit
+                kept (as TRYCOS3X=-3,-2,-1,0,1,2 TRYCOS4X=0,1,2)
+  WINGS=1       mask the light beyond the masks of bright sources (star wings, spikes)
+                that the residual of a first pass shows, joined to their masks
   STOP          stop early once A, B and A + B all change by less than 2 %
   VIEWS         also make the image - sky - B and image - sky - A buffers
   TOMODELA= TOMODELB= TOMODEL= TORESID=   the result buffers (free ones by default)
@@ -1989,6 +2001,32 @@ Each galaxy (after A: or B:)
   NR=AUTO       isophotes about 10 % apart from R0 to each R1 (8 to 40)
 A line can go on after a \\ at its end.  The result is one of stable_valid_pair,
 valid_pair_not_stable, retained_after_failed_update, incomplete_initialization, cancelled."""
+
+
+def _uncover_centres(masked: np.ndarray, own) -> List[str]:
+    """A fitting mask over a galaxy's own centre (a mask made to fit the other galaxy alone
+    hides this one): the masked patch that holds the centre is left out of the mask, in
+    place, and a note says so."""
+    from scipy import ndimage
+
+    notes = []
+    ny, nx = masked.shape
+    for cid in ("A", "B"):
+        try:
+            x, y = float(own[cid]["X0"]), float(own[cid]["Y0"])
+        except (KeyError, ValueError):
+            continue
+        i, j = int(np.floor(x)), int(np.floor(y))
+        if not (0 <= i < nx and 0 <= j < ny) or not masked[j, i]:
+            continue
+        labels, _n = ndimage.label(masked)
+        patch = labels == labels[j, i]
+        masked[patch] = False
+        notes.append(
+            f"the fitting mask covered {cid}'s centre: its masked patch there "
+            f"({int(patch.sum())} px) is not used"
+        )
+    return notes
 
 
 def _grow_by_size(segmentation, numbers, grow: float, widen: float, largest: float = 60.0):

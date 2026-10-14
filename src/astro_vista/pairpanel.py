@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt
 from . import guide
 from .fitting import MODES
 from .flow import FlowLayout
-from .pair import MAX_PARALLEL
+from .pair import MAX_PARALLEL, MAX_RUNS
 from .panels import heading, note, number, plain_table, tip, title_row, whole
 
 COLOURS = {"A": "#ff4dff", "B": "#ff9f1c"}
@@ -579,6 +579,36 @@ class PairPanel(QtWidgets.QWidget):
         row.addWidget(self.parallel)
         row.addWidget(self.parallel_note, 1)
         form.addRow("Parallel fits", tip(row, "pair_parallel"))
+        self.runs = whole(1, MAX_RUNS, 1)
+        self.runs.setToolTip(
+            "RUNS: fit the fit kept again this many times in all, each time with R0 and R1 "
+            "changed at random, and average the runs: the mean model, residual and sky, and "
+            "how much the runs differ"
+        )
+        self.jitter = whole(1, 50, 15)
+        self.jitter.setSuffix(" %")
+        self.jitter.setToolTip(
+            "JITTER: each repeat changes R0 and R1 by two thirds of this to this, up or down "
+            "(15 %: 10 to 15 %)"
+        )
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.runs)
+        row.addWidget(QtWidgets.QLabel("vary R0 and R1 by up to"))
+        row.addWidget(self.jitter)
+        row.addStretch(1)
+        form.addRow("Runs to average", tip(row, "pair_runs"))
+        self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic (COS3X, COS4X)")
+        self.all_harmonics.setToolTip(
+            "HARMONICS=AUTO: on the fit kept, try every COS3X and COS4X for A, then for B, and "
+            "keep the stable fit with the smallest residual"
+        )
+        self.wings = QtWidgets.QCheckBox("Mask star wings and spikes the first pass shows")
+        self.wings.setToolTip(
+            "WINGS=1: light beyond the masks of bright sources (a star's wings, its diffraction "
+            "spikes) found in the residual of a first pass is added to the mask"
+        )
+        form.addRow(tip(self.all_harmonics, "pair_mode"))
+        form.addRow(tip(self.wings, "pair_wings"))
 
         # ---- the sky
         form.addRow(heading("1. Sky"))
@@ -1209,6 +1239,21 @@ class PairPanel(QtWidgets.QWidget):
                 card.r1_auto.setChecked(True)
         self._summary_line()
 
+    def run_keywords(self) -> List[str]:
+        """PARALLEL, RUNS, JITTER, HARMONICS and WINGS: shown in every mode."""
+        out = []
+        if self.parallel.value() > 1:
+            out.append(f"PARALLEL={self.parallel.value()}")
+        if self.runs.value() > 1:
+            out.append(f"RUNS={self.runs.value()}")
+            if self.jitter.value() != 15:
+                out.append(f"JITTER={self.jitter.value() / 100:g}")
+        if self.all_harmonics.isChecked():
+            out.append("HARMONICS=AUTO")
+        if self.wings.isChecked():
+            out.append("WINGS=1")
+        return out
+
     def auto_command(self, n: int) -> str:
         """The pair command of the automatic settings."""
         parts = [f"pair {n}", f"SKY={self.sky.value():.10g}"]
@@ -1219,8 +1264,7 @@ class PairPanel(QtWidgets.QWidget):
             parts.append("MASK=" + ",".join(layers))
         # the sky iterations need a measured sky (its support); a typed sky goes as typed
         parts += [p for p in AUTO_RUN if self.sky_id or not p.startswith("SKYITER")]
-        if self.parallel.value() > 1:
-            parts.append(f"PARALLEL={self.parallel.value()}")
+        parts += self.run_keywords()
         if self.views.isChecked():
             parts.append("VIEWS")
         parts.append("A: " + self.cards["A"].auto_keywords())
@@ -1281,8 +1325,7 @@ class PairPanel(QtWidgets.QWidget):
             parts.append("BOOTSTRAP=0")
         if self.views.isChecked():
             parts.append("VIEWS")
-        if self.parallel.value() > 1:
-            parts.append(f"PARALLEL={self.parallel.value()}")
+        parts += self.run_keywords()
         parts.append("A: " + self.cards["A"].keywords())
         parts.append("B: " + self.cards["B"].keywords())
         return " ".join(parts)

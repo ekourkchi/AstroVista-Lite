@@ -167,6 +167,11 @@ class Settings:
     try_factor: List[float] = field(default_factory=list)  # TRYFACTOR=: growth factors
     polish: int = 2  # POLISH=: undamped final cycles after damped ones
     parallel: int = 1  # PARALLEL=: variants fitted at the same time (threads)
+    wings: bool = False  # WINGS=1: mask what a first pass's residual shows around bright sources
+    runs: int = 1  # RUNS=: the fit kept, and RUNS - 1 repeats with R0 and R1 changed at random
+    jitter: float = 0.15  # JITTER=: each repeat's R0 and R1 change by 2/3 of this to this
+    seed: Optional[int] = None  # SEED=: the repeats' random numbers (default: the run's number)
+    harmonic_search: bool = False  # HARMONICS=AUTO: every COS3X and COS4X tried for each
 
 
 @dataclass
@@ -322,6 +327,8 @@ class PairResult:
     ensemble: dict = field(default_factory=dict)
     seconds: float = 0.0
     wall: float = 0.0  # run_search: the whole search, from start to end (parallel or not)
+    r0_raised: Dict[str, float] = field(default_factory=dict)  # INNER_R0: the R0 used instead
+    repeats: List[dict] = field(default_factory=list)  # RUNS: the fit kept and every repeat
     run_id: int = 0
 
     @property
@@ -414,6 +421,11 @@ SHARED = {
     "TAIL",
     "SKYPLANE",
     "PARALLEL",
+    "WINGS",
+    "RUNS",
+    "JITTER",
+    "SEED",
+    "HARMONICS",
 }
 OWN = {
     "NAME",
@@ -656,6 +668,7 @@ def components_from(own: Dict[str, Dict[str, str]]) -> Dict[str, Component]:
 
 
 MAX_PARALLEL = 16
+MAX_RUNS = 50
 
 
 def settings_from(shared: Dict[str, str]) -> Settings:
@@ -689,9 +702,20 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         tail=shared.get("TAIL", "elliprof").strip().lower(),
         sky_plane=_num(shared, "SKYPLANE", "", 0, int) != 0,
         parallel=_num(shared, "PARALLEL", "", 1, int),
+        wings=_num(shared, "WINGS", "", 0, int) != 0,
+        runs=_num(shared, "RUNS", "", 1, int),
+        jitter=_num(shared, "JITTER", "", 0.15),
+        seed=_num(shared, "SEED", "", None, int) if "SEED" in shared else None,
+        harmonic_search=shared.get("HARMONICS", "").strip().upper() == "AUTO",
     )
     if s.tail not in TAILS:
         raise PairError("TAIL must be one of " + ", ".join(TAILS))
+    if "HARMONICS" in shared and not s.harmonic_search:
+        raise PairError("HARMONICS must be AUTO (every COS3X and COS4X tried for each galaxy)")
+    if not 1 <= s.runs <= MAX_RUNS:
+        raise PairError(f"RUNS must be 1 to {MAX_RUNS}")
+    if not 0 < s.jitter <= 0.5:
+        raise PairError("JITTER must be above 0 and at most 0.5 (a share of R0 and R1)")
     if not 1 <= s.parallel <= MAX_PARALLEL:
         raise PairError(f"PARALLEL must be 1 to {MAX_PARALLEL}")
     if s.cycles < 1 or s.cycles > 50:
@@ -1055,6 +1079,20 @@ def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarr
 
 TAILS = ("measured", "sersic", "elliprof", "exp", "cut")
 
+# A failure of the innermost isophotes (within INNER_R0 px: a few PSF widths, where an
+# isophote's shape is set by the pixels and the PSF more than by the galaxy) is retried with
+# R0 at INNER_FACTOR times the radius that failed, at most INNER_TRIES times and below
+# INNER_SHARE of R1; the report says so.  NGC 5090's two innermost isophotes (3 and 4.5 px,
+# a PSF of about 1 px) crossed, and the whole fit failed.
+INNER_R0 = 10.0
+# A first fit below BOOTSTRAP_UP_BELOW px whose bootstrap fits failed is also tried at these
+# multiples of its radius (a close pair's START=AUTO, 0.35 of the separation, can be ~10 px)
+BOOTSTRAP_UP = (1.5, 2.25, 3.4)
+BOOTSTRAP_UP_BELOW = 30.0
+INNER_FACTOR = 1.5
+INNER_TRIES = 2
+INNER_SHARE = 0.25
+
 
 def _outer_law(a: np.ndarray, lnI: np.ndarray, law: str):
     """ln I(a) / I(a_n) beyond the last isophote a_n, from the outer profile: a function of a,
@@ -1245,7 +1283,7 @@ def run(
     galaxy's R1 follows its schedule (Component.schedule) for the first cycles, then the
     cycles continue at the radii reached."""
     s = snap.settings
-    comps = snap.components
+    comps = dict(snap.components)  # R0 may be raised during the run (INNER_R0)
     image = snap.image
     finite = np.isfinite(image)
     result = PairResult(status="incomplete_initialization", run_id=snap.run_id)
@@ -1286,7 +1324,10 @@ def run(
         r1 = r1_start
         adaptive = comp.adaptive if adaptive is None else adaptive
         tries = 4 if adaptive else 1
-        for attempt in range(tries):
+        inner_tries = INNER_TRIES
+        attempt = -1
+        while attempt + 1 < tries:
+            attempt += 1
             if stop_requested():
                 raise Cancelled()
             counter["n"] += 1 if attempt == 0 and not bootstrap else 0
@@ -1371,6 +1412,15 @@ def run(
                 )
             result.failures[cid] = f"{cycle}: {reason} (R1 {r1:.1f})"
             result.diagnostics[cid] = fit
+            if kind == "outer" and radius is not None and radius <= INNER_R0 and inner_tries:
+                # the innermost isophotes, within a few PSF widths, failed: start further out
+                new_r0 = round(INNER_FACTOR * radius, 1)
+                if new_r0 < INNER_SHARE * r1:
+                    inner_tries -= 1
+                    comp = comps[cid] = replace(comp, r0=new_r0)
+                    result.r0_raised[cid] = new_r0
+                    attempt -= 1  # not an adaptive try
+                    continue
             if not adaptive or kind != "outer" or radius is None or radius < 0.65 * r1:
                 break
             new = min(0.9 * r1, 0.95 * radius)
@@ -1408,7 +1458,20 @@ def run(
             if c is not None:
                 result.bootstraps[cid] = r1
                 return c
-        result.failures[cid] = failure + " (no bootstrap fit at 0.7, 0.5 or 0.35 R1 passed either)"
+        # a small first radius (a close pair) may be too small for elliprof: further out
+        for factor in BOOTSTRAP_UP:
+            r1 = factor * r_first
+            if r_first >= BOOTSTRAP_UP_BELOW or r1 > comps[cid].r1:
+                break
+            c = fit_component(
+                cid, companion, r1, "init (bootstrap)", adaptive=False, bootstrap=True, first=True
+            )
+            if c is not None:
+                result.bootstraps[cid] = r1
+                return c
+        result.failures[cid] = (
+            failure + " (no bootstrap fit at 0.7, 0.5 or 0.35 R1, or further out, passed either)"
+        )
         return None
 
     committed: Dict[str, Commit] = {}
@@ -1879,6 +1942,86 @@ def remove_tilt(snap: Snapshot, first: PairResult) -> Snapshot:
     )
 
 
+# WINGS=1: the light of bright sources beyond their masks (the wings of a star, its
+# diffraction spikes, a halo), found in the residual of a first pass.  The residual is smoothed
+# (WING_SMOOTH px) and compared with its own local spread; what is above WING_SIGMA times it
+# and joined to a masked patch of at least WING_SEED px is added to the mask, at most
+# WING_REACH px from that patch and never within WING_PROTECT px of a galaxy's centre.  Specks
+# of SBF or noise are not joined to a mask, so they stay.
+WING_SMOOTH = 1.5
+WING_SIGMA = 2.5
+WING_SEED = 40
+WING_REACH = 150
+WING_PROTECT = 12
+
+
+def _local_spread(img: np.ndarray, good: np.ndarray, block: int = 8, size: int = 5):
+    """A robust local spread (1.4826 x the median |x|) over size x size blocks of block px."""
+    from scipy import ndimage
+
+    ny, nx = img.shape
+    by, bx = -(-ny // block), -(-nx // block)
+    pad = np.full((by * block, bx * block), np.nan)
+    pad[:ny, :nx] = np.where(good, np.abs(img), np.nan)
+    med = np.nanmedian(
+        pad.reshape(by, block, bx, block).transpose(0, 2, 1, 3).reshape(by, bx, -1), axis=2
+    )
+    fill = np.nanmedian(med) if np.isfinite(med).any() else 1.0
+    med = np.where(np.isfinite(med), med, fill)
+    med = ndimage.median_filter(med, size=size, mode="nearest")
+    up = np.kron(med, np.ones((block, block)))[:ny, :nx]
+    return 1.4826 * up
+
+
+def mask_wings(snap: Snapshot, first: PairResult) -> Snapshot:
+    """WINGS=1: the snapshot with the wings of bright sources masked (see WING_*)."""
+    from scipy import ndimage
+
+    if not first.complete or first.residual is None:
+        return replace(snap, notes=snap.notes + ["WINGS: no complete first pass; nothing masked"])
+    res = first.residual
+    good = ~snap.fit_mask & np.isfinite(res)
+    w = ndimage.gaussian_filter(good.astype(float), WING_SMOOTH)
+    sm = ndimage.gaussian_filter(np.where(good, res, 0.0), WING_SMOOTH)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sm = np.where(w > 0.3, sm / w, 0.0)
+    spread = _local_spread(sm, good)
+    bright = good & (sm > WING_SIGMA * spread)
+    labels, n = ndimage.label(snap.fit_mask & ~snap.invalid)
+    if not n:
+        return replace(snap, notes=snap.notes + ["WINGS: no masked source to look around"])
+    areas = np.bincount(labels.ravel())
+    big = np.zeros(areas.size, bool)
+    big[1:] = areas[1:] >= WING_SEED
+    seeds = big[labels]
+    near = ndimage.binary_dilation(seeds, iterations=2)
+    joined, _m = ndimage.label(bright | near)
+    touching = np.unique(joined[near & (joined > 0)])
+    found = np.isin(joined, touching) & bright
+    found &= ndimage.distance_transform_edt(~seeds) <= WING_REACH
+    ny, nx = res.shape
+    yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
+    for c in snap.components.values():
+        found &= np.hypot(xx - c.x0, yy - c.y0) > WING_PROTECT
+    count = int(found.sum())
+    if not count:
+        return replace(snap, notes=snap.notes + ["WINGS: no light found beyond the masks"])
+    grown = ndimage.binary_dilation(found, iterations=1) & ~snap.fit_mask
+    for c in snap.components.values():
+        grown &= np.hypot(xx - c.x0, yy - c.y0) > WING_PROTECT
+    note = (
+        f"WINGS: {int(grown.sum())} px around {int(big[1:].sum())} masked sources (their wings "
+        "and spikes in the residual of a first pass) added to the mask"
+    )
+    return replace(
+        snap,
+        fit_mask=snap.fit_mask | grown,
+        eval=snap.eval & ~grown,
+        fit_mask_label=(snap.fit_mask_label + " + wings").strip(" +"),
+        notes=snap.notes + [note],
+    )
+
+
 def refine_auto(snap: Snapshot, first: PairResult) -> Tuple[Snapshot, List[str]]:
     """R1=AUTO measured again for each galaxy on the image minus the sky and minus the
     other's model of a first pass (and START=AUTO from it).  Measured on the image itself,
@@ -1934,12 +2077,32 @@ def run_search(
     kept as well (ensemble())."""
     t0 = time.perf_counter()
     result = _search(snap, support, progress, cancelled, fitter)
+    if snap.settings.runs > 1 and result.complete and not (cancelled is not None and cancelled()):
+        result = _repeat(result, support, progress, cancelled, fitter)
     result.wall = time.perf_counter() - t0
     return result
 
 
+def _repeat(result, support, progress, cancelled, fitter) -> PairResult:
+    """RUNS: the fit kept, fitted again RUNS - 1 times with R0 and R1 changed at random
+    (jittered()); the mean of the complete ones (ensemble()) replaces the search's mean."""
+    kept_snap = result.snapshot
+    s = kept_snap.settings
+    more = _fit_each(jittered(kept_snap, s), support, progress, cancelled, fitter, s.parallel)
+    rows = [_search_row("the fit kept", result, kept_snap)]
+    rows += [dict(_search_row(label, r, sn), repeat=True) for label, r, sn in more]
+    result.ensemble = ensemble(
+        [(result, kept_snap)] + [(r, sn) for _l, r, sn in more], rows, REPEAT_SHARE, True
+    )
+    result.repeats = rows
+    return result
+
+
 def _search(snap, support, progress, cancelled, fitter) -> PairResult:
-    if any(r for r, _s in snap.auto.values()):
+    if snap.settings.harmonic_search:
+        snap = all_harmonics(snap)
+    auto = any(r for r, _s in snap.auto.values())
+    if auto or snap.settings.wings:
 
         def first_say(info):
             if progress is not None:
@@ -1947,6 +2110,10 @@ def _search(snap, support, progress, cancelled, fitter) -> PairResult:
                 progress(info)
 
         first = run(snap, first_say, cancelled, fitter)
+        if snap.settings.wings:
+            snap = mask_wings(snap, first)
+            snap = replace(snap, settings=replace(snap.settings, wings=False))
+    if auto:
         snap, _notes = refine_auto(snap, first)
         # a halo that fills the frame takes up any change of the sky: no sky iterations
         filling = [
@@ -2026,7 +2193,7 @@ def _search(snap, support, progress, cancelled, fitter) -> PairResult:
     if len(rows) > 1:
         result.search = rows
         result.search_choice = why
-    result.snapshot = chosen_snap if chosen_snap is not snap else result.snapshot
+    result.snapshot = chosen_snap
     return _with_plane(result, base, support, progress, cancelled, fitter)
 
 
@@ -2048,7 +2215,7 @@ def _fit_each(options, support, progress, cancelled, fitter, workers: int):
                 progress(info)
 
         result = run_sky(variant, support, say, cancelled, fitter)
-        chosen_snap = result.snapshot or variant
+        chosen_snap = with_r0(result.snapshot or variant, result)
         result.quality = quality(result, chosen_snap)
         return label, result, chosen_snap
 
@@ -2063,6 +2230,16 @@ def _fit_each(options, support, progress, cancelled, fitter, workers: int):
         ) as pool:
             out = list(pool.map(one, items))
     return [x for x in out if x is not None]
+
+
+def with_r0(snap: Snapshot, result: PairResult) -> Snapshot:
+    """The snapshot with the R0 a run raised (INNER_R0), so that its replay repeats it."""
+    if not result.r0_raised:
+        return snap
+    comps = {
+        cid: replace(c, r0=result.r0_raised.get(cid, c.r0)) for cid, c in snap.components.items()
+    }
+    return replace(snap, components=comps)
 
 
 def _search_row(label: str, result: PairResult, chosen_snap: Snapshot) -> dict:
@@ -2141,9 +2318,60 @@ def choose_harmonics(kept: PairResult, tried: List[Tuple[PairResult, Snapshot]])
 
 # The mean of a search: the fits whose residual score is within this share of the best
 ENSEMBLE_SHARE = 0.05
+# The mean of RUNS: every complete repeat but those whose score is this share above the best
+# (a repeat that went wrong, not the variance the repeats are for)
+REPEAT_SHARE = 0.5
 
 
-def ensemble(fits: List[Tuple[PairResult, Snapshot]], rows: List[dict]) -> dict:
+def all_harmonics(snap: Snapshot) -> Snapshot:
+    """HARMONICS=AUTO: every COS3X and COS4X to try for each galaxy (unless it lists its
+    own TRYCOS3X / TRYCOS4X)."""
+    comps = {
+        cid: replace(
+            c,
+            try_cos3x=c.try_cos3x or list(COS3X_VALUES),
+            try_cos4x=c.try_cos4x or list(COS4X_VALUES),
+        )
+        for cid, c in snap.components.items()
+    }
+    return replace(snap, components=comps)
+
+
+def jittered(snap: Snapshot, s: Settings) -> List[Tuple[str, Snapshot]]:
+    """RUNS: RUNS - 1 copies of the fit kept, each galaxy's R0 and R1 (and its first R1
+    and listed radii with R1) changed by 2/3 JITTER to JITTER at random, up or down, so that
+    the fit may settle on another model; their mean averages that variance out."""
+    rng = np.random.default_rng(s.seed if s.seed is not None else snap.run_id)
+    out = []
+    for k in range(2, s.runs + 1):
+        comps, words = {}, []
+        for cid, c in snap.components.items():
+            f0, f1 = (
+                1 + rng.choice((-1.0, 1.0)) * rng.uniform(2 * s.jitter / 3, s.jitter)
+                for _ in range(2)
+            )
+            r0, r1 = c.r0 * f0, c.r1 * f1
+            if r0 >= 0.5 * r1:
+                r0 = c.r0
+            changes = dict(r0=round(r0, 2), r1=round(r1, 2), try_cos3x=[], try_cos4x=[])
+            if c.radii:
+                radii = [round(x * f1, 2) for x in c.radii if r0 < x * f1 <= r1]
+                changes["radii"] = radii or None
+            elif c.start:
+                start = round(c.start * f1, 2)
+                changes["start"] = start if r0 < start <= r1 else None
+            comps[cid] = replace(c, **changes)
+            words.append(f"{cid} R0 {comps[cid].r0:g} R1 {comps[cid].r1:g}")
+        out.append((f"repeat {k}: " + ", ".join(words), replace(snap, components=comps)))
+    return out
+
+
+def ensemble(
+    fits: List[Tuple[PairResult, Snapshot]],
+    rows: List[dict],
+    share: float = ENSEMBLE_SHARE,
+    repeats: bool = False,
+) -> dict:
     """The mean sky, A + B model and residual of the complete fits of a search whose score
     is within ENSEMBLE_SHARE of the best, and the spread of their models (the standard
     deviation, pixel by pixel): how much the answer depends on the choices searched.
@@ -2156,7 +2384,7 @@ def ensemble(fits: List[Tuple[PairResult, Snapshot]], rows: List[dict]) -> dict:
     if len(scores) < 2:
         return {}
     best = min(sc for sc, _i in scores)
-    members = [i for sc, i in scores if sc <= best * (1 + ENSEMBLE_SHARE)]
+    members = [i for sc, i in scores if sc <= best * (1 + share)]
     if len(members) < 2:
         return {}
     totals = np.stack([fits[i][0].total for i in members])
@@ -2167,7 +2395,10 @@ def ensemble(fits: List[Tuple[PairResult, Snapshot]], rows: List[dict]) -> dict:
     return {
         "members": len(members),
         "of": len(fits),
-        "share": ENSEMBLE_SHARE,
+        "share": share,
+        "repeats": repeats,
+        "A": np.mean([fits[i][0].commits["A"].model for i in members], axis=0),
+        "B": np.mean([fits[i][0].commits["B"].model for i in members], axis=0),
         "sky": float(skies_.mean()),
         "sky_spread": float(skies_.std(ddof=1)),
         "model": totals.mean(axis=0),
@@ -2468,6 +2699,11 @@ def summary(result: PairResult, snap: Snapshot) -> str:
             if e.get("note"):
                 text += f"; {e['note']}"
             lines.append(text)
+    for cid, r0 in result.r0_raised.items():
+        lines.append(
+            f"note: {cid}'s innermost isophotes failed; it was fitted from R0 {r0:g} instead "
+            f"(isophotes within {INNER_R0:g} px are set by the pixels and the PSF)"
+        )
     for cid, r1 in result.bootstraps.items():
         lines.append(
             f"note: {cid} was started from a partial bootstrap fit (R1 {r1:.1f}); it only "
@@ -2482,11 +2718,24 @@ def summary(result: PairResult, snap: Snapshot) -> str:
             + next((r["variant"] for r in result.search if r.get("chosen")), "?")
             + (f" ({result.search_choice})" if result.search_choice else "")
         )
-    e = result.ensemble
+    e, s_ = result.ensemble, snap.settings
+    for row in result.repeats[1:]:
+        score = "-" if row["score"] is None else format(row["score"], ".3f")
+        lines.append(
+            f"  {row['variant']}: {row['status']}, score {score}"
+            + ("  (in the mean)" if row.get("mean") else "")
+        )
     if e:
         lines.append(
-            f"mean of the {e['members']} fits within {100 * e['share']:g} % of the best score "
-            f"(of {e['of']}): sky {e['sky']:.6g} ± {e['sky_spread']:.2g}; the A + B models "
+            (
+                f"mean of {e['members']} runs of {e['of']} (the fit kept and its repeats with "
+                f"R0 and R1 changed by {100 * 2 * s_.jitter / 3:.0f}-{100 * s_.jitter:.0f} %; "
+                f"those more than {100 * e['share']:g} % above the best score left out)"
+                if e.get("repeats")
+                else f"mean of the {e['members']} fits within {100 * e['share']:g} % of the "
+                f"best score (of {e['of']})"
+            )
+            + f": sky {e['sky']:.6g} ± {e['sky_spread']:.2g}; the A + B models "
             f"differ by {float(np.median(e['spread'])):.3g} (median per pixel)"
         )
     for note in snap.notes + [n for n in result.notes_extra if n not in snap.notes]:
@@ -2953,6 +3202,8 @@ def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) ->
         )
     for cid, why in result.failures.items():
         add(f"last failure of {cid}: {why}")
+    for cid, r0 in result.r0_raised.items():
+        add(f"{cid}: the innermost isophotes failed; fitted from R0 {r0:g}")
     for cid, r1 in result.bootstraps.items():
         add(f"{cid} started from a bootstrap fit at R1 {r1:.1f}")
     add("")

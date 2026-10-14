@@ -862,6 +862,19 @@ TIPS = {
     "fit where elliprof warns of it fails. <i>Try</i> lists values to fit as well, on the fit "
     "kept (TRYCOS3X=, TRYCOS4X=): A's values with B as it is, then B's with A's best; one replaces "
     "the fit kept only when it lowers the residual by more than 0.01 of the noise.",
+    "pair_runs": "<b>Runs to average</b> (RUNS=, JITTER=): the fit kept is fitted again, each time "
+    "with every galaxy's R0 and R1 changed at random by two thirds of the percentage to the "
+    "percentage, up or down, so that the fit may settle on a slightly different model. The "
+    "runs are averaged: buffers get the mean A, B and A + B models, the mean residual and the "
+    "spread of the models, and the report gives the mean sky and every run. A run whose "
+    "residual is more than 50 % above the best is left out of the mean. The runs go "
+    "<i>Parallel fits</i> at a time. SEED= repeats the same random changes.",
+    "pair_wings": "<b>Mask star wings and spikes</b> (WINGS=1): a first pass is fitted, its "
+    "residual smoothed over 1.5 px and compared with its own local spread; light above 2.5 "
+    "times that, joined to the mask of a bright source (at least 40 px), up to 150 px from "
+    "it and never within 12 px of a galaxy's centre, is added to the mask. A star's wings and "
+    "diffraction spikes reach beyond the source finder's segment and raise the SBF measured "
+    "in the residual; specks of SBF or noise are not joined to a mask, so they stay.",
     "pair_parallel": "<b>Parallel fits</b> (PARALLEL=): the search fits each variant on its own "
     "(damping, centres, growth, harmonics); this many run at the same time, each ELLIPROF "
     "call a process of its own. The fit kept is the same whatever the number; only the time "
