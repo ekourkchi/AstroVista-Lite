@@ -576,7 +576,10 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "stop after CONSECUTIVE cycles at the final radii with every change "
                         "below CONVERGE (0.02; 0: run every cycle)",
                     ),
-                    ("ONFAIL=", "hold (default), retry or stop when a fit fails"),
+                    (
+                        "ONFAIL=",
+                        "reduce (default: smaller steps), hold, retry or stop when a fit fails",
+                    ),
                     ("STEPS=", "geometric growth steps for a galaxy with START alone"),
                     (
                         "A: … B: …",

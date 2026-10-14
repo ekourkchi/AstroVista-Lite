@@ -1768,8 +1768,9 @@ Shared (before A:)
   STEPS=0       growth steps (when a galaxy has START but no STEP, FACTOR or RADII)
   CONVERGE=0.02 CONSECUTIVE=0   stop after CONSECUTIVE cycles at the final radii in which
                 A, B and A + B each changed by less than CONVERGE (0: run every cycle)
-  ONFAIL=hold   on a failed fit keep the last valid model and: hold (stay at its radius),
-                retry (try the radius again next cycle) or stop (end the run)
+  ONFAIL=reduce on a failed fit keep the last valid model and: reduce (try halfway, then
+                a quarter of the way, and go on growing), hold (stay at its radius), retry
+                (try the radius again next cycle) or stop (end the run)
   CYCLES=4      A then B, this many times after the initialisation (2 + 2 x CYCLES calls)
   NITER=10      iterations inside each elliprof call
   CORECAP=50    the largest core (pixels) left out around the other galaxy

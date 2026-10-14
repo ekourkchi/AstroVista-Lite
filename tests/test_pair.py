@@ -706,14 +706,15 @@ def test_a_pair_folder_is_read(tmp_path):
 
 
 # ---------------------------------------------------------------- block and grow
-def grow_snapshot(steps=2, block=None, start=8.0):
+def grow_snapshot(steps=2, block=None, start=8.0, on_fail="hold"):
     rng = np.random.default_rng(0)
     image = 100.0 + rng.normal(0, 1, (60, 120))
     comps = {
         "A": pair.Component("A", 30.5, 30.5, 2, 20, 6, start=start),
         "B": pair.Component("B", 90.5, 30.5, 2, 20, 6, start=start, block=block),
     }
-    return pair.prepare(image, "tiny", None, comps, pair.Settings(sky=100.0, cycles=1, steps=steps))
+    settings = pair.Settings(sky=100.0, cycles=1, steps=steps, on_fail=on_fail)
+    return pair.prepare(image, "tiny", None, comps, settings)
 
 
 def test_the_galaxies_grow_from_start_to_r1():
@@ -736,6 +737,43 @@ def test_a_galaxy_whose_growth_fails_stays_at_its_last_radius():
     assert b_r1 == [8.0, round(8.0 * 2.5**0.5, 3), 8.0, 8.0]
     assert result.notes_growth and "B could not grow" in result.notes_growth[0]
     assert result.commits["B"].r1_call == 8.0
+
+
+def test_a_failed_growth_step_tries_smaller_steps_and_grows_on():
+    snap = grow_snapshot(steps=2, on_fail="reduce")
+    f = FakeFitter(fail={("B", 2)})  # B's first growth step fails
+    result = pair.run(snap, fitter=f)
+    b_r1 = [round(c["r1"], 3) for c in f.calls if c["component"] == "B"]
+    full = round(8.0 * 2.5**0.5, 3)
+    half = round(8.0 + 0.5 * (8.0 * 2.5**0.5 - 8.0), 3)
+    assert b_r1[:3] == [8.0, full, half]  # the failed step, then halfway, which passes
+    assert b_r1[3] == 20.0  # and it grows on to its final R1
+    assert result.commits["B"].r1_call == 20.0
+    assert "smaller step" in result.notes_growth[0] and result.notes_growth[0].startswith("B")
+
+
+def test_a_round_core_is_not_failed_for_its_angle():
+    def profile(ellip, alpha):
+        p = fake_profile(30.5, 30.5, 2, 20, 6)
+        p["ellip"], p["alpha"] = ellip, alpha
+        return p
+
+    comp = pair.Component("A", 30.5, 30.5, 2, 20, 6)
+    finite = np.ones((60, 120), bool)
+
+    def verdict(p):
+        fit = ArrayFit(p, np.zeros((60, 120)), 0, "", "", ["fake"], 0.0, "single")
+        return pair.check(fit, comp, 20, finite)
+
+    # a 25 degree swing of one isophote of a nearly round core: an ill-defined angle
+    ok, reason, *_ = verdict(profile([0.10] * 6, [60, 60, 35, 60, 60, 60]))
+    assert ok, reason
+    # the same swing in a flattened galaxy is a real twist
+    ok, reason, *_ = verdict(profile([0.35] * 6, [60, 60, 35, 60, 60, 60]))
+    assert not ok and "angle" in reason
+    # and an isolated change of the axis ratio
+    ok, reason, *_ = verdict(profile([0.1, 0.1, 0.35, 0.1, 0.1, 0.1], [60] * 6))
+    assert not ok and "axis ratio" in reason
 
 
 def test_a_block_is_left_out_of_the_first_fit_only():

@@ -144,7 +144,7 @@ class Settings:
     cores: bool = True  # CORES=0: nothing is left out around the companion
     converge: float = STABILITY  # CONVERGE=: the relative change below which it is stable
     consecutive: int = 0  # CONSECUTIVE=: stop after this many stable cycles at the targets
-    on_fail: str = "hold"  # ONFAIL=hold|retry|stop
+    on_fail: str = "reduce"  # ONFAIL=reduce|hold|retry|stop
 
 
 @dataclass
@@ -486,7 +486,7 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         cores=_num(shared, "CORES", "", 1, int) != 0,
         converge=_num(shared, "CONVERGE", "", STABILITY),
         consecutive=_num(shared, "CONSECUTIVE", "", 1 if "STOP" in shared else 0, int),
-        on_fail=shared.get("ONFAIL", "hold").strip().lower(),
+        on_fail=shared.get("ONFAIL", "reduce").strip().lower(),
         cycles=_num(shared, "CYCLES", "", 4, int),
         niter=_num(shared, "NITER", "", 10, int),
         rlaw=_num(shared, "RLAW", "", 2, int),
@@ -514,8 +514,8 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         raise PairError("CONVERGE must be between 0 and 1 (a relative change)")
     if not 0 <= s.consecutive <= 20:
         raise PairError("CONSECUTIVE must be 0 to 20")
-    if s.on_fail not in ("hold", "retry", "stop"):
-        raise PairError("ONFAIL must be hold, retry or stop")
+    if s.on_fail not in ("reduce", "hold", "retry", "stop"):
+        raise PairError("ONFAIL must be reduce, hold, retry or stop")
     return s
 
 
@@ -818,15 +818,21 @@ def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarr
         jump = math.hypot(x[k] - x[k - 1], y[k] - y[k - 1])
         if jump > max(JUMP_PIXELS, JUMP_FRACTION * r[k]):
             return False, f"the centre jumps {jump:.1f} px at Rmaj {r[k]:.1f}", "outer", float(r[k])
+    # an isolated shape: one isophote whose shape (ellipticity and angle together, as the
+    # point e exp(2i PA)) differs from both neighbours by more than Q_EXCURSION while the
+    # neighbours agree; an angle change counts in proportion to the ellipticity, so a
+    # nearly round isophote is not failed for its ill-defined angle
+    z = e * np.exp(2j * np.radians(np.asarray(cols["alpha"], float)))
     for k in range(1, len(r) - 1):
-        dq1, dq2 = q[k] - q[k - 1], q[k] - q[k + 1]
-        if abs(dq1) > Q_EXCURSION and abs(dq2) > Q_EXCURSION and dq1 * dq2 > 0:
-            return False, f"an isolated axis ratio at Rmaj {r[k]:.1f}", "outer", float(r[k])
-        if min(e[k - 1], e[k], e[k + 1]) > PA_MIN_ELLIP:
-            a1 = _pa_difference(cols["alpha"][k], cols["alpha"][k - 1])
-            a2 = _pa_difference(cols["alpha"][k], cols["alpha"][k + 1])
-            if a1 > PA_EXCURSION and a2 > PA_EXCURSION:
-                return False, f"an isolated PA at Rmaj {r[k]:.1f}", "outer", float(r[k])
+        d1, d2 = abs(z[k] - z[k - 1]), abs(z[k] - z[k + 1])
+        if d1 > Q_EXCURSION and d2 > Q_EXCURSION and abs(z[k + 1] - z[k - 1]) < Q_EXCURSION:
+            what = "axis ratio" if abs(e[k] - e[k - 1]) > 0.7 * d1 else "angle (PA)"
+            return (
+                False,
+                f"an isolated isophote shape ({what}) at Rmaj {r[k]:.1f}",
+                "outer",
+                float(r[k]),
+            )
     if abs(r[-1] - r1_call) > 0.01 * r1_call + 0.5:
         return False, f"the last isophote is at {r[-1]:.1f}, not R1={r1_call:.1f}", "other", None
     return True, "", "", None
@@ -1075,23 +1081,50 @@ def run(
                 other = "B" if cid == "A" else "A"
                 want = sched[cid][min(k, len(sched[cid]) - 1)]
                 current = committed[cid]
-                if cid in held and s.on_fail == "hold":
-                    r1, adaptive = held[cid], False
-                elif want > current.r1_call + 1e-9 and (growing or s.on_fail == "retry"):
+                grows = want > current.r1_call + 1e-9 and cid not in held
+                if grows and (growing or s.on_fail in ("retry", "reduce")):
                     r1, adaptive = want, False  # a growth step
+                elif cid in held and s.on_fail in ("hold", "reduce"):
+                    r1, adaptive = current.r1_call, False
                 else:
                     r1, adaptive = current.next_r1, None
-                radii[cid] = r1
                 cand = fit_component(cid, committed[other], r1, tag, adaptive=adaptive)
+                tried = [r1]
+                if cand is None and s.on_fail == "reduce" and r1 > current.r1_call + 1e-9:
+                    # a smaller step: halfway, then a quarter of the way, from the last
+                    # valid radius to the one that failed
+                    for fraction in (0.5, 0.25):
+                        step = r1 - current.r1_call
+                        r_try = current.r1_call + fraction * step
+                        if fraction * step < 0.02 * current.r1_call:
+                            break
+                        tried.append(r_try)
+                        cand = fit_component(cid, committed[other], r_try, tag, adaptive=False)
+                        if cand is not None:
+                            r1 = r_try
+                            result.notes_growth.append(
+                                f"{cid}: R1 {tried[0]:.1f} failed in cycle {k} "
+                                f"({result.failures.get(cid, '')}); it grew to {r_try:.1f} "
+                                "instead (a smaller step)"
+                            )
+                            break
+                radii[cid] = r1 if cand is not None else tried[0]
                 last_ok[cid] = cand is not None
                 if cand is not None:
                     committed[cid] = cand
                 else:
-                    if r1 > current.r1_call + 1e-9 and cid not in held:
-                        held[cid] = current.r1_call
+                    if tried[0] > current.r1_call + 1e-9 and cid not in held:
+                        if s.on_fail in ("hold", "reduce"):
+                            held[cid] = current.r1_call
+                        smaller = (
+                            f" (and {', '.join(f'{x:.1f}' for x in tried[1:])})"
+                            if len(tried) > 1
+                            else ""
+                        )
                         result.notes_growth.append(
-                            f"{cid} could not grow to R1 {r1:.1f} in cycle {k} (kept its model "
-                            f"at R1 {current.r1_call:.1f}): {result.failures.get(cid, '')}"
+                            f"{cid} could not grow to R1 {tried[0]:.1f}{smaller} in cycle {k}; "
+                            f"it keeps its model at R1 {current.r1_call:.1f}: "
+                            f"{result.failures.get(cid, '')}"
                         )
                     if s.on_fail == "stop":
                         stopped_on_failure = cid
@@ -1132,7 +1165,10 @@ def run(
                 checkpoint = (tag, dict(committed))
             if stopped_on_failure:
                 break
-            at_target = k > n_grow  # this cycle and the one before at the final radii
+            # converged cycles count once the radii have stopped changing
+            at_target = k > n_grow and all(
+                prev[c].r1_call == committed[c].r1_call for c in ("A", "B")
+            )
             streak = streak + 1 if (at_target and joint and m["stable"]) else 0
             m["converged_streak"] = streak
             if s.consecutive and streak >= s.consecutive:

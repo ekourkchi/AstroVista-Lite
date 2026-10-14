@@ -817,8 +817,11 @@ TIPS = {
     "default); 0 runs every cycle. The threshold is a starting value, not a validated "
     "scientific criterion.",
     "pair_onfail": "<b>When a fit fails.</b> A failed fit is never used: the galaxy keeps "
-    "its last valid model. Then it can stay at the radius of that model, try the failed "
-    "radius again in the next cycle, or the whole run can stop there. The iteration table "
+    "its last valid model. By default it then tries smaller steps: halfway, then a quarter "
+    "of the way from its last valid radius to the one that failed, and goes on growing "
+    "toward its final R1 in the next cycles; it stays put only when even a small step fails. "
+    "It can instead stay at the radius of its last valid model, try the failed radius again "
+    "in the next cycle, or the whole run can stop there. The iteration table "
     "and the report say which galaxy failed, at which radius and why.",
     "pair_block": "<b>Blocking a galaxy.</b> The region of this radius around this galaxy "
     "(shaped as its source, else a circle) is left out of the other galaxy's first fit, so "

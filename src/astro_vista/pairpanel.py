@@ -535,6 +535,7 @@ class PairPanel(QtWidgets.QWidget):
         self.on_fail = QtWidgets.QComboBox()
         self.on_fail.addItems(
             [
+                "keep the last valid model, try smaller steps up",
                 "keep the last valid model, stay at its radius",
                 "keep the last valid model, try the radius again",
                 "stop and keep the last valid models",
@@ -871,8 +872,8 @@ class PairPanel(QtWidgets.QWidget):
         if self.consecutive.value():
             parts.append(f"CONVERGE={self.converge.value() / 100:g}")
             parts.append(f"CONSECUTIVE={self.consecutive.value()}")
-        on_fail = ("hold", "retry", "stop")[self.on_fail.currentIndex()]
-        if on_fail != "hold":
+        on_fail = ("reduce", "hold", "retry", "stop")[self.on_fail.currentIndex()]
+        if on_fail != "reduce":
             parts.append(f"ONFAIL={on_fail}")
         if self.niter.value() != 10:
             parts.append(f"NITER={self.niter.value()}")
@@ -963,6 +964,14 @@ class PairPanel(QtWidgets.QWidget):
             text += f"<br>{result.stability_reason}"
         if result.checkpoint_cycle is not None:
             text += f"<br>result: the checkpoint of cycle {result.checkpoint_cycle}"
+        for cid, c in result.commits.items():
+            if c.r1_call < c.requested_r1 - 1e-6:
+                text += (
+                    f"<br><span style='color:#d29922'>{cid} reached R1 {c.r1_call:.1f} of "
+                    f"{c.requested_r1:g}</span>"
+                )
+        for note_text in result.notes_growth:
+            text += f"<br>• {note_text}"
         self.status.setText(text)
 
 
