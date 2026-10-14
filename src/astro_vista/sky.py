@@ -586,3 +586,271 @@ def check(result: SkyResult, residual: np.ndarray) -> Dict[str, float]:
         out["sampling_error"] = float(1.2533 * mad(m) / np.sqrt(len(usable)))
         out["cell_range"] = float(np.ptp(m))
     return out
+
+
+# ---- the sky as a plane
+PLANE_DEFAULTS = {"BOX": 32, "PASSES": 10}
+PLANE_TOLERANCE = 0.02  # passes stop when the tilt changes by less than this many sigma
+PLANE_BOX_FRACTION = 0.30  # a box is used with this fraction of its pixels in the support
+PLANE_SIGNIFICANT = 3.0  # a gradient this many times its error is kept
+
+
+@dataclass
+class PlaneFit:
+    """The sky as a plane s0 + gx (x - xc) + gy (y - yc), fitted to the sky support, the
+    detection repeated on the image minus the plane's tilt until the plane settles."""
+
+    sky: SkyResult  # the measurement on the image minus the final tilt (the flat image)
+    image_id: str  # checksum of the image fitted
+    flat: np.ndarray  # float32: the image minus the tilt (the level kept)
+    plane: Optional[Dict[str, float]] = None  # s0, gx, gy (per pixel), xc, yc
+    errors: Dict[str, float] = field(default_factory=dict)  # 1 sigma of s0, gx, gy
+    boxes: int = 0  # boxes used
+    rejected: int = 0  # boxes left out (beyond 3 MAD of the plane)
+    scatter: float = float("nan")  # box residuals, normalised to one pixel's noise
+    passes: List[Dict[str, float]] = field(default_factory=list)
+    converged: bool = False
+    change: float = float("nan")  # the plane, peak to peak over the frame (corners)
+    significance: float = 0.0  # |gradient| / its error
+    reasons: List[str] = field(default_factory=list)
+
+    @property
+    def significant(self) -> bool:
+        return self.plane is not None and self.significance >= PLANE_SIGNIFICANT
+
+    def tilt(self, shape) -> np.ndarray:
+        """The plane minus its level at the centre (zero there)."""
+        if self.plane is None:
+            return np.zeros(shape)
+        p = dict(self.plane, s0=0.0)
+        return plane_image(p, shape)
+
+    def gradient(self) -> Optional[Dict[str, float]]:
+        if self.plane is None:
+            return None
+        gx, gy = self.plane["gx"] * 1000, self.plane["gy"] * 1000
+        size = float(np.hypot(gx, gy))
+        ex, ey = self.errors.get("gx", np.nan) * 1000, self.errors.get("gy", np.nan) * 1000
+        return {
+            "gx": gx,
+            "gy": gy,
+            "gx_error": ex,
+            "gy_error": ey,
+            "size": size,
+            "angle": float(np.degrees(np.arctan2(gy, gx)) % 360),
+        }
+
+    def summary(self) -> str:
+        s = self.sky
+        name = s.image_name
+        if self.plane is None:
+            lines = [f"{name}: no sky plane ({'; '.join(self.reasons) or s.state})"]
+            return "\n".join(lines)
+        p, e, g = self.plane, self.errors, self.gradient()
+        sigma = s.sigma
+        lines = [
+            f"{name}: sky plane {p['s0']:.6g} ± {e['s0']:.2g} at the centre "
+            f"({p['xc']:.1f}, {p['yc']:.1f}); gradient {g['size']:.3g} per 1000 px toward "
+            f"{g['angle']:.0f} deg (image-axis angle from +x)",
+            f"  gx {g['gx']:+.4g} ± {g['gx_error']:.2g}, gy {g['gy']:+.4g} ± {g['gy_error']:.2g} "
+            f"per 1000 px; {self.change:.3g} across the frame"
+            + (f" = {self.change / sigma:.2f} sigma" if sigma > 0 else "")
+            + f"; {self.significance:.1f} times its error",
+        ]
+        if self.significant and self.scatter > 3:
+            lines.append(
+                "  the gradient is significant by its errors, but the boxes scatter: it may "
+                "be light from the galaxies rather than the sky's"
+            )
+        elif self.significant:
+            lines.append(
+                "  the gradient is significant: the flat image (the tilt removed) is "
+                "the one to fit"
+            )
+        else:
+            lines.append("  the gradient is not significant: a constant sky is enough")
+        lines.append(
+            f"  {self.boxes} boxes of {self.sky.settings.get('BOX', PLANE_DEFAULTS['BOX'])} px "
+            f"used, {self.rejected} left out; box scatter {self.scatter:.2f} x the expected; "
+            f"{len(self.passes)} passes"
+            + ("" if self.converged else " (not settled)")
+            + f"; sky {s.level:.6g} on the flat image, sigma {sigma:.4g} [{s.state}]"
+        )
+        for reason in self.reasons:
+            lines.append(f"  - {reason}")
+        return "\n".join(lines)
+
+    def report(self) -> dict:
+        out = {
+            "plane": self.plane,
+            "errors": self.errors,
+            "gradient": self.gradient(),
+            "change_peak_to_peak": self.change,
+            "significance": self.significance,
+            "significant": self.significant,
+            "boxes": self.boxes,
+            "rejected": self.rejected,
+            "scatter": self.scatter,
+            "passes": self.passes,
+            "converged": self.converged,
+            "reasons": self.reasons,
+            "flat_sky": self.sky.report(),
+        }
+        return json.loads(json.dumps(out, default=float))
+
+
+def box_medians(data, support, box: int, fraction: float = PLANE_BOX_FRACTION):
+    """The median of the support pixels of every ``box`` x ``box`` box with at least
+    ``fraction`` of its pixels in the support: x, y (centres), medians, pixel counts."""
+    ny, nx = data.shape
+    xs, ys, ms, ns = [], [], [], []
+    least = max(20, int(fraction * box * box))
+    for y0 in range(0, ny, box):
+        for x0 in range(0, nx, box):
+            s = support[y0 : y0 + box, x0 : x0 + box]
+            n = int(s.sum())
+            if n < least:
+                continue
+            yy, xx = np.nonzero(s)
+            xs.append(x0 + xx.mean() + 0.5)
+            ys.append(y0 + yy.mean() + 0.5)
+            ms.append(float(np.median(data[y0 : y0 + box, x0 : x0 + box][s])))
+            ns.append(n)
+    return np.array(xs), np.array(ys), np.array(ms), np.array(ns, float)
+
+
+def plane_by_boxes(data, support, sigma: float, box: int):
+    """A plane through the box medians, weighted by their pixels and clipped at 3 MAD (of
+    the residuals in units of each box's expected noise) until no box is left out: the
+    plane, its 1-sigma errors (scaled by the scatter found), the boxes used and left out,
+    and the scatter (1: as the noise alone would give)."""
+    ny, nx = data.shape
+    xc, yc = nx / 2.0, ny / 2.0
+    x, y, m, n = box_medians(data, support, box)
+    if m.size < 6:
+        return None
+    a = np.column_stack([np.ones_like(x), x - xc, y - yc])
+    if np.linalg.matrix_rank(a) < 3:
+        return None
+    # the noise of a median of n pixels: 1.2533 sigma / sqrt(n)
+    expected = 1.2533 * sigma / np.sqrt(n)
+    w = 1.0 / expected
+    keep = np.ones(m.size, bool)
+    for _ in range(10):
+        if keep.sum() < 6 or np.linalg.matrix_rank(a[keep]) < 3:
+            return None
+        coef, *_ = np.linalg.lstsq(a[keep] * w[keep, None], m[keep] * w[keep], rcond=None)
+        z = (m - a @ coef) * w
+        spread = mad(z[keep])
+        if not np.isfinite(spread) or spread <= 0:
+            break
+        new = np.abs(z - np.median(z[keep])) <= 3 * spread
+        if np.array_equal(new, keep):
+            break
+        keep = new
+    aw = a[keep] * w[keep, None]
+    scale = max(spread, 1.0) if np.isfinite(spread) else 1.0
+    cov = np.linalg.inv(aw.T @ aw) * scale * scale
+    errors = np.sqrt(np.diag(cov))
+    plane = {"s0": float(coef[0]), "gx": float(coef[1]), "gy": float(coef[2]), "xc": xc, "yc": yc}
+    errs = {"s0": float(errors[0]), "gx": float(errors[1]), "gy": float(errors[2])}
+    return plane, errs, int(keep.sum()), int((~keep).sum()), float(spread)
+
+
+def fit_plane_sky(
+    data: np.ndarray,
+    name: str = "",
+    exclude: Optional[np.ndarray] = None,
+    thresh: float = DEFAULTS["THRESH"],
+    minarea: int = DEFAULTS["MINAREA"],
+    grow: float = DEFAULTS["GROW"],
+    box: int = PLANE_DEFAULTS["BOX"],
+    passes: int = PLANE_DEFAULTS["PASSES"],
+    pad: Optional[float] = None,
+    layers: str = "",
+    fwhm: float = 0.0,
+    progress=None,
+) -> PlaneFit:
+    """Fit the sky as a plane.  A gradient makes one side of the frame brighter than the
+    level, and a detection against one level takes that side for a source; so the sources
+    are found on the image minus the plane's tilt, the plane is fitted to what is left, and
+    the two are repeated until the tilt changes by less than 0.02 sigma.  The plane is
+    fitted to the medians of ``box`` x ``box`` boxes of sky (weighted by their pixels,
+    clipped at 3 MAD), so faint light the detection left (a halo's edge) weighs little."""
+    if box < 4 or passes < 1:
+        raise ValueError("BOX >= 4 and PASSES >= 1 are needed")
+    data = np.asarray(data)
+    shape = data.shape
+    tilt = np.zeros(shape)
+    plane = None
+    history: List[Dict[str, float]] = []
+    converged = False
+    fitted = None
+    for k in range(passes):
+        if progress is not None:
+            progress(k + 1, passes)
+        flat = np.where(np.isfinite(data), data - tilt, data).astype(np.float32)
+        sky = measure(flat, name, exclude, thresh, minarea, grow, pad=pad, layers=layers, fwhm=fwhm)
+        sigma = sky.sigma
+        if not (np.isfinite(sigma) and sigma > 0) or sky.support.sum() < 100:
+            break
+        fitted = plane_by_boxes(data.astype(np.float64), sky.support, sigma, box)
+        if fitted is None:
+            break
+        new = dict(fitted[0], s0=0.0)
+        new_tilt = plane_image(new, shape)
+        step = float(np.ptp(new_tilt - tilt))  # how much the tilt changed
+        plane = fitted[0]
+        history.append(
+            {
+                "s0": plane["s0"],
+                "gx": plane["gx"],
+                "gy": plane["gy"],
+                "support": sky.support_fraction,
+                "sources": sky.sources,
+                "step_sigma": step / sigma,
+            }
+        )
+        tilt = new_tilt
+        if step < PLANE_TOLERANCE * sigma:
+            converged = True
+            break
+    # the flat image of the final tilt, and its measurement (the sky to use with it)
+    flat = np.where(np.isfinite(data), data - tilt, data).astype(np.float32)
+    sky = measure(flat, name, exclude, thresh, minarea, grow, pad=pad, layers=layers, fwhm=fwhm)
+    sky.settings["BOX"] = int(box)
+    sky.settings["PLANE"] = True
+    sky.id = _identity(sky)
+    result = PlaneFit(
+        sky=sky, image_id=checksum(data), flat=flat, passes=history, converged=converged
+    )
+    if fitted is None or plane is None:
+        result.reasons.append(
+            "too little sky support for a plane (at least 6 boxes with "
+            f"{100 * PLANE_BOX_FRACTION:.0f} % of their pixels free of sources are needed)"
+        )
+        return result
+    result.plane, result.errors = fitted[0], fitted[1]
+    result.boxes, result.rejected, result.scatter = fitted[2], fitted[3], fitted[4]
+    ny, nx = shape
+    corners = plane_at(result.plane, [0, nx, 0, nx], [0, 0, ny, ny])
+    result.change = float(np.ptp(corners))
+    g = np.hypot(result.plane["gx"], result.plane["gy"])
+    # the error of |g| along its direction
+    if g > 0:
+        ux, uy = result.plane["gx"] / g, result.plane["gy"] / g
+        err = np.hypot(ux * result.errors["gx"], uy * result.errors["gy"])
+        result.significance = float(g / err) if err > 0 else float("inf")
+    if not converged:
+        result.reasons.append(
+            f"the plane was still changing after {len(history)} passes "
+            f"({history[-1]['step_sigma']:.2f} sigma in the last)"
+        )
+    if result.scatter > 3:
+        result.reasons.append(
+            f"the boxes scatter {result.scatter:.1f} times more than the noise allows: the "
+            "sky is not a plane here (a halo, or a structure the detection left)"
+        )
+    if result.boxes < 20:
+        result.reasons.append(f"only {result.boxes} boxes of sky")
+    return result

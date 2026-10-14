@@ -1243,7 +1243,13 @@ def test_menus_tools_masks_help_and_tips():
         return [a.text().replace("&", "") for a in m.actions() if not a.isSeparator()]
 
     assert "Import a mask (any file name)…" not in texts(menu("File"))
-    assert texts(menu("Tools")) == ["ELLIPROF", "Source finder", "Display", "Contours"]
+    assert texts(menu("Tools")) == [
+        "ELLIPROF",
+        "Source finder",
+        "Display",
+        "Sky plane",
+        "Contours",
+    ]
     masks = texts(menu("Masks"))
     assert (
         masks[:7]

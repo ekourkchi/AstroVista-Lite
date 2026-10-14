@@ -59,6 +59,17 @@ def icon(name: str, size: int = 22) -> QtGui.QIcon:
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(QPointF(14, 16), 4.5, 4.5)
             p.drawEllipse(QPointF(7, 8), 3.6, 3.6)
+        elif name == "skyplane":  # a tilted plane with an arrow up its slope
+            path = QtGui.QPainterPath()
+            path.moveTo(3, 17)
+            path.lineTo(15, 20)
+            path.lineTo(21, 9)
+            path.lineTo(9, 6)
+            path.closeSubpath()
+            p.drawPath(path)
+            p.drawLine(QPointF(9, 15.5), QPointF(15, 10))
+            p.drawLine(QPointF(15, 10), QPointF(11.6, 10.6))
+            p.drawLine(QPointF(15, 10), QPointF(14.2, 13.3))
         elif name == "unmask":  # a circle with a minus inside: take pixels out of the mask
             p.drawEllipse(QPointF(12, 12), 8.5, 8.5)
             p.setPen(_pen(colour, 2.4))

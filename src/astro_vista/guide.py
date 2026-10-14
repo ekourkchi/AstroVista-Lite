@@ -1235,9 +1235,35 @@ its FITS header. File ▸ Open a pair folder opens a folder holding a FITS image
 """,
 )
 
+TOPICS["skyplane"] = (
+    "The sky as a plane",
+    """
+<p>The sky is not always flat: scattered light, a bright star beyond the frame or a poor
+flat field make one side of the image brighter than the other. A single sky level is then
+too high on one side and too low on the other, and the outer isophotes of a galaxy lean
+towards the bright side. The residual of a fit shows it as a broad tilt.</p>
+<p><b>Tools ▸ Sky plane</b> fits the sky as a plane: a level at the centre of the frame and
+a gradient along x and y, each with its error. The sources are found as for <i>Measure
+sky</i>, but on the image minus the plane's tilt, so that a bright side is not taken for a
+source; the plane is fitted to the medians of boxes of what is left (32 pixels by default,
+weighted by their sky pixels, clipped at 3 MAD), and the two steps are repeated until the
+tilt changes by less than 0.02 sigma.</p>
+<p><b>Reading the result.</b> A gradient of 3 times its error or more is significant. The
+boxes' scatter says whether the sky is a plane: about 1 is what the noise gives; much more
+means light that is not sky, such as a halo filling the frame, and the gradient may then be
+the halo's. The small map shows what is left on the flat image, by cells.</p>
+<p><b>Using it.</b> <i>Add the flat image</i> (ticked by default) makes the image minus the
+tilt, its level kept, and measures its sky. Open the flat image and fit it: in the Pair fit,
+<i>Use this sky</i> takes the flat image's measurement, and the sky factor works as
+before. The plane itself and the image minus the whole plane can be added too.</p>
+<p>In the terminal: <code>skyplane 1 TOFLAT=2</code>; <code>help skyplane</code> lists the
+rest.</p>
+""",
+)
+
 # the topics in reading order (the guide window and the Help menu follow it)
 ORDER = (
-    "overview lesson recipes files images display blinking layers masks elliprof profile pair "
+    "overview lesson recipes files images display blinking layers masks elliprof profile pair skyplane "
     "sources arithmetic tags imagecommands contours inspect commands terminal listing saving keys "
     "glossary settings faq problems allcommands credits"
 ).split()

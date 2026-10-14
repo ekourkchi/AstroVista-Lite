@@ -23,6 +23,7 @@ from PySide6.QtCore import Qt
 
 from . import __version__, detection, guide, icons
 from . import pair as pairs
+from . import sky as skies
 from .docks import FoldableDock
 from .commands import SLOW, CommandError, Reply, Session, completions, verb_of
 from .images import image_hdus, is_bitmap_mask, is_fits, read_fits
@@ -41,6 +42,7 @@ from .panels import (
     scrolled,
 )
 from .pairpanel import PairPanel, PairResultsPanel
+from .skyplanepanel import SkyPlanePanel
 from .viewer import Viewer, app_icon
 
 TITLE = "AstroVista Lite"
@@ -404,6 +406,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tools.addTab(scrolled(self.finder), "Source finder")
         self.pair_panel = PairPanel()
         self.tools.addTab(scrolled(self.pair_panel), "Pair fit")
+        self.skyplane = SkyPlanePanel()
+        self.tools.addTab(scrolled(self.skyplane), "Sky plane")
         self.tools.addTab(scrolled(self.display), "Display")
         self.tools.addTab(scrolled(self.contour_panel), "Contours")
         self.tools.setDocumentMode(True)  # flat tabs that the panel's title never covers
@@ -664,6 +668,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.tb_contours.setIcon(icons.icon("contours"))
         self.a_sky = a("Estimate the sky", self.estimate_sky)
+        self.a_skyplane = a("Fit the sky plane", self.run_skyplane)
+        self.a_skyplane.setIcon(icons.icon("skyplane"))
+        self.a_show_skyplane = a("Sky plane settings", lambda: self._show_tool(self.skyplane))
         self.a_stats = a("Statistics of the image", self.statistics)
 
         self.a_new_mask = a("New mask layer…", self.layers._new)
@@ -783,6 +790,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.a_show_display,
         ):
             show.addSeparator() if x is None else show.addAction(x)
+        plane = tools.addMenu(icons.icon("skyplane"), "Sky plane")
+        for x in (self.a_skyplane, None, self.a_show_skyplane):
+            plane.addSeparator() if x is None else plane.addAction(x)
         contours = tools.addMenu(icons.icon("contours"), "Contours")
         for x in (self.a_contours_apply, self.a_contours_clear, None, self.a_show_contours):
             contours.addSeparator() if x is None else contours.addAction(x)
@@ -913,6 +923,8 @@ class MainWindow(QtWidgets.QMainWindow):
         pp.report_requested.connect(self.copy_pair_report)
         pp.iteration_requested.connect(self.show_pair_iteration)
         pp.objects_requested.connect(self.pair_mask_objects)
+        self.skyplane.run_requested.connect(self.run_skyplane)
+        self.skyplane.mask_toggled.connect(self.pair_sky_mask)
         pp.changed.connect(self._overlays)
         self.finder.show_sources.toggled.connect(lambda on: self.layers.set_checked("sources", on))
 
@@ -1130,6 +1142,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sources.set_runs(s.runs)
         if "sky" in reply.changed or "pairs" in reply.changed or "buffers" in reply.changed:
             self._refresh_pair()
+            self._refresh_skyplane()
         if "masks" in reply.changed:
             if self.active_mask not in s.masks:
                 self.active_mask = next(reversed(s.masks), None) if s.masks else None
@@ -1179,6 +1192,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.elliprof.model_buffer,
             self.elliprof.residual_buffer,
             self.finder.segmentation_buffer,
+            *self.skyplane.choices(),
         ):
             choice.set_buffers(occupied)
         self.viewer.set_blink_buffers(
@@ -1921,6 +1935,45 @@ class MainWindow(QtWidgets.QMainWindow):
         number = int(run.columns["NUMBER"][index])
         self.run_command(f"centre {n} RUN={run.number} SOURCE={number}")
 
+    def run_skyplane(self) -> None:
+        """Tools ▸ Sky plane: fit the plane of the image shown, with the results asked for
+        in buffers of their own (Auto: the buffer the same result went into before, or a
+        free one)."""
+        n = self._current_number()
+        if n is None:
+            return
+        image = self.session.buffers[n]
+        names = {
+            "TOFLAT": f"{image.name} flat",
+            "TOPLANE": f"{image.name} sky plane",
+            "TOSUB": f"{image.name} minus sky plane",
+        }
+        used, outputs = {n}, {}
+        for key, chosen in self.skyplane.wanted().items():
+            if chosen is None:
+                chosen = next(
+                    (m for m, b in self.session.buffers.items() if b.name == names[key]), None
+                )
+            if chosen is None or chosen in used:
+                chosen = self.session.free_buffer(n)
+                while chosen in used:
+                    chosen = self.session.free_buffer(chosen)
+            used.add(chosen)
+            outputs[key] = chosen
+        self._show_tool(self.skyplane)
+        self.run_command(self.skyplane.command(n, outputs))
+
+    def _refresh_skyplane(self) -> None:
+        """The Sky plane panel: the latest plane of the image shown."""
+        image = self.viewer.image
+        fit = self.session.planes.get(image.key) if image is not None else None
+        stale = None
+        if fit is not None and (
+            image.shape != fit.flat.shape or skies.checksum(image.data) != fit.image_id
+        ):
+            stale = "the image has changed since the plane was fitted"
+        self.skyplane.show_fit(fit, stale)
+
     def estimate_sky(self) -> None:
         n = self._current_number()
         if n is None:
@@ -2294,6 +2347,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.elliprof.set_mask_layers([m.name for m in fitting], buffers)
         self.pair_panel.set_mask_layers(fitting)
         self._refresh_pair()
+        self._refresh_skyplane()
         self.viewer.show_masks([m for m in fitting if m.visible])
 
     # ---- the command line

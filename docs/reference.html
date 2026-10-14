@@ -128,6 +128,12 @@ stats 1 MASK=mymask</code></pre>
 <pre><code>sky 1 MASK=mymask
 sky 1 SEGMENT
 sky 1 SEGMENT THRESH=1 GROW=3 TOMAP=19</code></pre>
+<h3><code>skyplane</code></h3>
+<p><code>skyplane N [THRESH=0.5] [MINAREA=12] [GROW=2] [BOX=32] [PASSES=10] [FWHM=0] [PAD=v] [MASK=a,b] [TOMASK=skymask] [TOPLANE=M] [TOFLAT=M] [TOSUB=M]</code></p>
+<p>The sky of buffer N as a plane: a level at the centre of the frame and a gradient along x and y, each with its error. A gradient makes one side of the frame brighter than the sky's level, and a detection against one level takes that side for a source; so the sources are found on the image minus the plane's tilt, the plane is fitted to the medians of BOX × BOX boxes of what is left (weighted by their pixels, clipped at 3 MAD), and the two are repeated until the tilt changes by less than 0.02 sigma. The report says whether the gradient is significant (3 times its error) and how much the boxes scatter about the plane: much more than the noise allows means light that is not sky (a halo). TOFLAT= makes the image to fit: the tilt removed, the level kept, and its sky measured as sky N SEGMENT would, so that elliprof and pair use it with a constant sky.</p>
+<table cellspacing='4'><tr><td><code>THRESH=, MINAREA=, GROW=, FWHM=, PAD=, MASK=</code></td><td>the detection, as for sky</td></tr><tr><td><code>BOX=</code></td><td>the size of the boxes, pixels (32)</td></tr><tr><td><code>PASSES=</code></td><td>at most this many detections and fits (10)</td></tr><tr><td><code>TOMASK=</code></td><td>the name of the sky layer (skymask)</td></tr><tr><td><code>TOPLANE=</code></td><td>a buffer for the plane</td></tr><tr><td><code>TOFLAT=</code></td><td>a buffer for the image minus the tilt (the level kept)</td></tr><tr><td><code>TOSUB=</code></td><td>a buffer for the image minus the whole plane</td></tr></table>
+<pre><code>skyplane 1
+skyplane 1 TOFLAT=20 TOPLANE=21</code></pre>
 <h3><code>mn</code> <span class='monsta'>MONSTA name</span></h3>
 <p><code>mn N</code></p>
 <p>The mean, median, standard deviation (sigma) and number of the finite pixels of buffer N. Sets the variables mean, median and sigma.</p>

@@ -218,6 +218,33 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "sky 1 MASK=mymask\nsky 1 SEGMENT\nsky 1 SEGMENT THRESH=1 GROW=3 TOMAP=19",
             ),
             _c(
+                "skyplane",
+                "skyplane N [THRESH=0.5] [MINAREA=12] [GROW=2] [BOX=32] [PASSES=10] [FWHM=0] "
+                "[PAD=v] [MASK=a,b] [TOMASK=skymask] [TOPLANE=M] [TOFLAT=M] [TOSUB=M]",
+                "The sky of buffer N as a plane: a level at the centre of the frame and a "
+                "gradient along x and y, each with its error. A gradient makes one side of the "
+                "frame brighter than the sky's level, and a detection against one level takes "
+                "that side for a source; so the sources are found on the image minus the "
+                "plane's tilt, the plane is fitted to the medians of BOX × BOX boxes of what is "
+                "left (weighted by their pixels, clipped at 3 MAD), and the two are repeated "
+                "until the tilt changes by less than 0.02 sigma. The report says whether the "
+                "gradient is significant (3 times its error) and how much the boxes scatter "
+                "about the plane: much more than the noise allows means light that is not sky "
+                "(a halo). TOFLAT= makes the image to fit: the tilt removed, the level kept, "
+                "and its sky measured as sky N SEGMENT would, so that elliprof and pair use it "
+                "with a constant sky.",
+                (
+                    ("THRESH=, MINAREA=, GROW=, FWHM=, PAD=, MASK=", "the detection, as for sky"),
+                    ("BOX=", "the size of the boxes, pixels (32)"),
+                    ("PASSES=", "at most this many detections and fits (10)"),
+                    ("TOMASK=", "the name of the sky layer (skymask)"),
+                    ("TOPLANE=", "a buffer for the plane"),
+                    ("TOFLAT=", "a buffer for the image minus the tilt (the level kept)"),
+                    ("TOSUB=", "a buffer for the image minus the whole plane"),
+                ),
+                "skyplane 1\nskyplane 1 TOFLAT=20 TOPLANE=21",
+            ),
+            _c(
                 "mn",
                 "mn N",
                 "The mean, median, standard deviation (sigma) and number of the finite pixels "

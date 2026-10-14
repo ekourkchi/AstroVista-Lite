@@ -24,6 +24,16 @@ newest is at the top.
   Against the earlier defaults the pairs fitted rose from about 65 % to 91 %; capping the
   start by the separation fixed most heavy overlaps; measuring R1 again lowered the profile
   error of small companions from 5.6 % to 4.0 % (median).
+- **The sky as a plane.** `skyplane N` and Tools ▸ Sky plane fit the sky as a level and a
+  gradient, each with its error: the sources are found on the image minus the plane's tilt
+  (so a bright side of the frame is not taken for a source), the plane is fitted to the
+  medians of 32-pixel boxes of what is left, and the two are repeated until it settles. The
+  report says whether the gradient is significant and whether the boxes scatter more than
+  the noise allows (light that is not sky). `TOFLAT=` makes the image with the tilt taken
+  out and the level kept, with its sky measured, for ELLIPROF and the pair fit; `TOPLANE=`
+  and `TOSUB=` the plane and the image minus it. On a frame with a gradient of 2 sigma per
+  1000 px, one level left 27 % of the frame as sky and came out 0.6 sigma low; the plane
+  keeps 91 % and recovers the level and both slopes within their errors.
 - **Sky with correlated noise.** `sky N SEGMENT` scales its detection noise by how much
   more noise the filtered image has than white noise would give (1.7 on a drizzled HST
   frame). Before, noise correlated over a few pixels was taken for sources, most of the

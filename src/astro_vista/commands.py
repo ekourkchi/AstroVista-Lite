@@ -56,6 +56,12 @@ HELP = {
     "is measured on the rest: level, cells, gradient, uncertainties and a verdict on the "
     "support (advice: the level is kept for you to judge).  FWHM= filters the detection with "
     "a Gaussian of that FWHM (0: a 3 x 3 kernel); BACK_SIZE= detects on a background mesh",
+    "skyplane": "skyplane N [THRESH=0.5] [MINAREA=12] [GROW=2] [BOX=32] [PASSES=10] [FWHM=0] "
+    "[PAD=v] [MASK=a,b] [TOMASK=skymask] [TOPLANE=M] [TOFLAT=M] [TOSUB=M]  -  the sky of buffer "
+    "N as a plane: the sources are found on the image minus the plane's tilt and the plane is "
+    "fitted to the medians of BOX x BOX boxes of what is left, until it settles.  TOFLAT: the "
+    "image with the tilt removed and the level kept, with its sky measured (for elliprof and "
+    "pair); TOSUB: the image minus the whole plane; TOPLANE: the plane",
     "elliprof": "elliprof N X0= Y0= R0= R1= NR= [NITER=10] [SKY=] [RMSTAR] [MASKFILE=file] "
     "[MASK=a,b] [MASKBUF=M,...] [TOMODEL=M] [TORESID=M] [RAW] [MINUS=M,...] [MODE=3,4] "
     "[COS3X=] [COS4X=] [FIXCTR=0|1|2] [RLAW=] [GAIN=] [TIE=]  -  fit elliptical isophotes to "
@@ -161,6 +167,7 @@ class Session(ImageCommands):
         self.sky_of: Dict[str, str] = {}  # the latest sky measurement of each image
         self.sky_buffer: Dict[str, tuple] = {}  # the buffer (number, image) each measured
         self.pairs: Dict[str, "PairRecord"] = {}  # the latest pair fit of each image
+        self.planes: Dict[str, skies.PlaneFit] = {}  # the latest sky plane of each image
         self._pair_runs = 0
         self._continued = ""  # the start of a line continued with \\
 
@@ -786,6 +793,96 @@ class Session(ImageCommands):
             if m is None or _mask_sum(m) != value:
                 return f"the mask layer {name} has changed since the sky was measured"
         return None
+
+    def c_skyplane(self, words, keys) -> Reply:
+        if not words:
+            raise CommandError(HELP["skyplane"])
+        n = integer(words[0], "the buffer")
+        image = self.buffer(n)
+        layers = self.mask_list(keys.get("MASK"), image.shape)
+        settings = {
+            "thresh": number(keys.get("THRESH", skies.DEFAULTS["THRESH"]), "THRESH"),
+            "minarea": integer(keys.get("MINAREA", skies.DEFAULTS["MINAREA"]), "MINAREA"),
+            "grow": number(keys.get("GROW", skies.DEFAULTS["GROW"]), "GROW"),
+            "box": integer(keys.get("BOX", skies.PLANE_DEFAULTS["BOX"]), "BOX"),
+            "passes": integer(keys.get("PASSES", skies.PLANE_DEFAULTS["PASSES"]), "PASSES"),
+            "fwhm": number(keys.get("FWHM", 0), "FWHM"),
+            "pad": number(keys["PAD"], "PAD") if "PAD" in keys else None,
+        }
+        outputs = {k: integer(keys[k], k) for k in ("TOPLANE", "TOFLAT", "TOSUB") if k in keys}
+        if n in outputs.values():
+            raise CommandError("TOPLANE, TOFLAT and TOSUB must not be the measured buffer")
+        if len(set(outputs.values())) < len(outputs):
+            raise CommandError("TOPLANE, TOFLAT and TOSUB must be different buffers")
+        target = keys.get("TOMASK", "skymask")
+        if target in self.masks and self.masks[target].role not in ("sky", ""):
+            raise CommandError(
+                f"{target!r} is a {maskops.ROLES[self.masks[target].role]} layer: give the "
+                "sky mask another name (TOMASK=)"
+            )
+        try:
+            fit = skies.fit_plane_sky(
+                image.data,
+                image.label,
+                exclude=maskops.union(layers),
+                layers=",".join(m.name for m in layers),
+                **settings,
+            )
+        except (RuntimeError, ValueError) as e:
+            raise CommandError(str(e))
+        self.planes[image.key] = fit
+        reply = Reply(fit.summary(), {"masks", "sky"})
+        self._remember(target)
+        self.masks[target] = Mask(
+            target,
+            fit.sky.exclusion.copy(),
+            self._colour(target),
+            visible=False,
+            source=f"sky plane of {image.label} ({settings['thresh']:g} sigma)",
+            role="sky",
+        )
+        reply.text += f"\nsky-exclusion layer {target} (shown on request; never used in a fit)"
+        if fit.plane is None:
+            return reply
+        p = fit.plane
+        reply.values = {
+            "sky": p["s0"],
+            "sigma": fit.sky.sigma,
+            "skygx": p["gx"],
+            "skygy": p["gy"],
+        }
+        tilt = fit.tilt(image.shape)
+        if "TOPLANE" in outputs:
+            self.buffers[outputs["TOPLANE"]] = image.derived(
+                f"{image.name} sky plane", tilt + p["s0"]
+            )
+            reply.text += f"\nthe plane in buffer {outputs['TOPLANE']}"
+        if "TOSUB" in outputs:
+            self.buffers[outputs["TOSUB"]] = Image(
+                f"{image.name} minus sky plane",
+                (image.data - tilt - p["s0"]).astype(np.float32),
+                image.header.copy(),
+            )
+            reply.text += f"\nthe image minus the plane in buffer {outputs['TOSUB']} (its sky is 0)"
+        if "TOFLAT" in outputs:
+            out = outputs["TOFLAT"]
+            flat = Image(f"{image.name} flat", fit.flat, image.header.copy())
+            flat.note = f"skyplane {n}: the tilt removed, the level {p['s0']:.6g} kept"
+            self.buffers[out] = flat
+            # the measurement on the flat image is that image's sky (for elliprof and pair)
+            result = fit.sky
+            result.image_name = flat.label
+            result.settings["layer_checksums"] = {m.name: _mask_sum(m) for m in layers}
+            self.skies[result.id] = result
+            self.sky_of[flat.key] = result.id
+            self.sky_buffer[result.id] = (out, flat)
+            reply.text += (
+                f"\nthe flat image (the tilt removed, the level kept) in buffer {out}; its sky: "
+                f"{result.level:.6g} [{result.state}], measurement {result.id}"
+            )
+            reply.show = out
+        reply.changed |= {"buffers", "data"} if outputs else set()
+        return reply
 
     def c_window(self, words, keys) -> Reply:
         if not words or "BOX" not in keys:
@@ -1627,6 +1724,7 @@ KEYWORDS = {
     "centre": "RUN= SOURCE=",
     "stats": "MASK=",
     "sky": "MASK= SEGMENT THRESH= MINAREA= GROW= CELLS= BACK_SIZE= FWHM= PAD= TOMASK= TOMAP= TOPLANE=",
+    "skyplane": "MASK= THRESH= MINAREA= GROW= BOX= PASSES= FWHM= PAD= TOMASK= TOPLANE= TOFLAT= TOSUB=",
 }
 KEYWORDS.update(IMAGE_KEYWORDS)
 MASK_ACTIONS = (
@@ -1789,6 +1887,7 @@ SLOW = {
     "rd",
     "pair",
     "sky",
+    "skyplane",
     "pairexport",
     "pairreport",
     "window",
