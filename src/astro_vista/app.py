@@ -1575,8 +1575,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.run_command(f"mask new {name} {n}")
         xs = ",".join(f"{x:.2f}" for x, _y in centres)
         ys = ",".join(f"{y:.2f}" for _x, y in centres)
-        widen = float(os.environ.get("XWIDEN", OBJECTS_WIDEN))  # TEMP
-        self.run_command(f"mask segments {name} X0={xs} Y0={ys} GROW={grow:g} WIDEN={widen:g}")
+        self.run_command(
+            f"mask segments {name} X0={xs} Y0={ys} GROW={grow:g} WIDEN={OBJECTS_WIDEN:g}"
+        )
         self.run_command(f"mask role {name} fit")
         self.after_commands(lambda: (self.pair_panel.tick(name), self._overlays()))
 
