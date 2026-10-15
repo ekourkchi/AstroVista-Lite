@@ -5,6 +5,15 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **The pair fit's options for one galaxy.** ELLIPROF's Fit: One elliprof call (as before),
+  Automatic (the pair fit's recipe for one galaxy) or Iterative (each setting shown). R1
+  grows from a first radius by 1.2 and the largest R1 that passes the pair fit's checks is
+  kept; R1, NR and the first R1 automatic; the sky factor refined from the residual sky
+  and a sky tilt taken out; fixed and free centres and growth factors searched; the
+  harmonics searched; the outermost isophotes checked; N fits averaged with the mean
+  residual and each fit's own; residual sources masked. Measure (sky by segmentation) and
+  Cancel in the panel. The plain `elliprof` command is unchanged unless one of these
+  keywords is given.
 - **Sources in the residual.** ELLIPROF and the Pair fit can find the faint sources a fit's
   residual shows (globular clusters, stars and small galaxies on the galaxies, which the
   first source finding cannot separate from their light), mask them and fit again:

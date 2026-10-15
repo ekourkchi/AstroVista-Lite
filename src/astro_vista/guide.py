@@ -883,6 +883,18 @@ TIPS = {
     "the cycles, the smoothing and the model beyond R1; <i>Joe's defaults</i> puts them "
     "back. Each galaxy's card sets its R0, its R1 (or automatic), its first R1 (or "
     "automatic), its NR (or automatic) and its harmonics (COS3X, COS4X).",
+    "elliprof_iterative": "<b>Fit</b>: <i>One elliprof call</i> makes the fit as elliprof does. "
+    "<i>Automatic</i> and <i>Iterative</i> use the pair fit's options for one galaxy. R1 grows "
+    "from a first radius by a factor (1.2), and the fit keeps the largest R1 at which the "
+    "isophotes pass the pair fit's checks (a step that fails is tried halfway). The outermost "
+    "isophotes are checked against the trend inside them. The sky factor is refined from the "
+    "residual sky (with the sky measured by segmentation) and a tilt of the sky taken out "
+    "when it helps. Fixed and free centres and two growth factors are searched, and the fit "
+    "with the smallest residual kept (fixed centres unless free ones are clearly better). "
+    "Then N fits, the fit kept and N - 1 with R0 and R1 varied, are averaged: buffers get "
+    "the mean model, the mean residual (image - mean sky - mean model) and each fit's own. "
+    "Automatic uses the pair fit's automatic values; Iterative shows each to set. Cancel "
+    "stops an iterative fit and keeps nothing.",
     "resid_sources": "<b>Residual sources</b> (RESIDMASK=n, RESIDTHRESH=8): the source finder "
     "cannot separate globular clusters, faint stars and small galaxies that sit on a bright "
     "galaxy from its light, so they stay in the fit. Once a fit is made, they stand out in "

@@ -254,6 +254,24 @@ class ElliprofPanel(QtWidgets.QWidget):
     sky_requested = QtCore.Signal()
     mask_sources_requested = QtCore.Signal()
     radius_pick_requested = QtCore.Signal(str)  # "r0" or "r1"
+    sky_segment_requested = QtCore.Signal()  # measure the sky by segmentation
+    cancel_requested = QtCore.Signal()
+
+    FIT_MODES = ["One elliprof call", "Automatic (as the pair fit)", "Iterative, my settings"]
+    # the automatic settings: the pair fit's (see pairpanel.AUTO_RUN), for one galaxy
+    AUTO = [
+        "R1=AUTO",
+        "START=AUTO",
+        "NR=AUTO",
+        "FIXCTR=1",
+        "TIE=-3",
+        "RMSTAR",
+        "TAIL=measured",
+        "SKYPLANE=1",
+        "TRYFIX=1,0",
+        "TRYFACTOR=1.2,1.35",
+        "SHAPETOL=0.12",
+    ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -295,6 +313,17 @@ class ElliprofPanel(QtWidgets.QWidget):
         form.addRow(grid)
 
         form.addRow(heading("Isophotes"))
+        self.fit_mode = QtWidgets.QComboBox()
+        self.fit_mode.addItems(self.FIT_MODES)
+        self.fit_mode.setToolTip(
+            "One elliprof call: the fit as elliprof makes it.\n"
+            "Automatic: the pair fit's recipe for one galaxy: R1 where the light fades into "
+            "the noise, grown from a third of it by 1.2, the search over centres and growth, "
+            "smoothing over 3 isophotes, RMSTAR, the light beyond R1 measured, the sky tilt, "
+            "the outer-isophote check, the fits averaged and, with a measured sky, the sky "
+            "refined 3 times.\nIterative, my settings: every one of those, to set"
+        )
+        form.addRow("Fit", tip(self.fit_mode, "elliprof_iterative"))
         self.r0 = number(0.1, 1e5, 5, tip="R0: semi-major axis of the first isophote, pixels")
         self.r1 = number(0.2, 1e5, 100, tip="R1: semi-major axis of the last isophote, pixels")
         self.nr = whole(2, 500, 20, tip="NR: number of isophotes from R0 to R1")
@@ -310,12 +339,27 @@ class ElliprofPanel(QtWidgets.QWidget):
             )
             pick.clicked.connect(lambda _c=False, k=key: self.radius_pick_requested.emit(k))
             row.addWidget(pick)
+            if key == "r1":
+                self.r1_auto = QtWidgets.QCheckBox("auto")
+                self.r1_auto.setToolTip(
+                    "R1=AUTO (iterative fits): where the light fades into the noise"
+                )
+                self.r1_auto.toggled.connect(lambda on: self.r1.setEnabled(not on))
+                row.addWidget(self.r1_auto)
             form.addRow(key.upper(), tip(row, key))
-        form.addRow("NR", tip(self.nr, "nr"))
+        self.nr_auto = QtWidgets.QCheckBox("auto")
+        self.nr_auto.setToolTip("NR=AUTO (iterative fits): isophotes about 30 % apart")
+        self.nr_auto.toggled.connect(lambda on: self.nr.setEnabled(not on))
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.nr, 1)
+        row.addWidget(self.nr_auto)
+        form.addRow("NR", tip(row, "nr"))
         form.addRow("NITER", tip(self.niter, "niter"))
         form.addRow(tip(self.rmstar, "rmstar"))
         self.resid_rounds, self.resid_thresh, row = residual_sources_row()
         form.addRow("Residual sources", tip(row, "resid_sources"))
+        self.iterative = self._iterative_box()
+        form.addRow(self.iterative)
 
         form.addRow(heading("Sky"))
         self.use_sky = QtWidgets.QCheckBox("Subtract a constant sky")
@@ -327,9 +371,16 @@ class ElliprofPanel(QtWidgets.QWidget):
             "A 3-sigma clipped median of the pixels the ticked mask layers leave (sky command)"
         )
         estimate.clicked.connect(self.sky_requested)
+        segment = QtWidgets.QToolButton(text="Measure")
+        segment.setToolTip(
+            "The sky by segmentation (sky N SEGMENT): every source down to half the noise left "
+            "out, the median of the rest; it gives the sky support the sky refinement needs"
+        )
+        segment.clicked.connect(self.sky_segment_requested)
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.sky, 1)
         row.addWidget(estimate)
+        row.addWidget(segment)
         form.addRow(tip(self.use_sky, "sky"))
         form.addRow("Sky", row)
 
@@ -376,9 +427,175 @@ class ElliprofPanel(QtWidgets.QWidget):
         self.run = QtWidgets.QPushButton("Fit isophotes")
         self.run.setDefault(True)
         self.run.clicked.connect(self.run_requested)
-        form.addRow(self.run)
+        self.cancel = QtWidgets.QPushButton("Cancel")
+        self.cancel.setEnabled(False)
+        self.cancel.setToolTip(
+            "Stop an iterative fit after the elliprof calls running now, and keep nothing of it"
+        )
+        self.cancel.clicked.connect(self.cancel_requested)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.run, 3)
+        row.addWidget(self.cancel, 1)
+        form.addRow(row)
         self.status = note()
         form.addRow(self.status)
+
+    def _iterative_box(self) -> QtWidgets.QGroupBox:
+        """The iterative fit's settings (Iterative, my settings), at the automatic values."""
+        box = QtWidgets.QGroupBox("Iterative fit")
+        f = QtWidgets.QFormLayout(box)
+        f.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
+        self.start = number(0, 1e5, 0, decimals=1)
+        self.start.setSpecialValueText("= R1 (no growth)")
+        self.start.setToolTip("START: the first R1; it grows by the factor to R1")
+        self.start_auto = QtWidgets.QCheckBox("auto")
+        self.start_auto.setChecked(True)
+        self.start_auto.setToolTip("START=AUTO: a third of R1, at least 9 px")
+        self.start_auto.toggled.connect(lambda on: self.start.setEnabled(not on))
+        self.start.setEnabled(False)
+        self.factor = number(1.01, 3.0, 1.2, decimals=2, step=0.05)
+        self.factor.setPrefix("× ")
+        self.factor.setToolTip("FACTOR: R1 grows by this each step")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.start, 1)
+        row.addWidget(self.start_auto)
+        row.addWidget(self.factor)
+        f.addRow("First R1, growth", row)
+        self.fixctr = QtWidgets.QComboBox()
+        for label, v in (("fixed at X0, Y0", 1), ("free", 0), ("median of the fitted", 2)):
+            self.fixctr.addItem(label, v)
+        self.fixctr.setToolTip("FIXCTR: the centres of the isophotes")
+        f.addRow("Centres", self.fixctr)
+        self.tie = whole(-50, 10, -3, tip="TIE: -3 smooths over 3 isophotes; -1 none")
+        f.addRow("Smoothing (TIE)", self.tie)
+        self.cos3x = QtWidgets.QComboBox()
+        self.cos4x = QtWidgets.QComboBox()
+        for box_, values in (
+            (
+                self.cos3x,
+                (
+                    (2, "each isophote"),
+                    (1, "median"),
+                    (0, "none"),
+                    (-2, "6th, each"),
+                    (-1, "6th, median"),
+                    (-3, "6th, none"),
+                ),
+            ),
+            (self.cos4x, ((2, "each isophote"), (1, "median"), (0, "none"))),
+        ):
+            for v, label in values:
+                box_.addItem(f"{v}: {label}", v)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("COS3X"))
+        row.addWidget(self.cos3x)
+        row.addWidget(QtWidgets.QLabel("COS4X"))
+        row.addWidget(self.cos4x)
+        f.addRow("Harmonics", row)
+        self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic")
+        self.all_harmonics.setToolTip("HARMONICS=AUTO: every COS3X and COS4X tried on the fit kept")
+        f.addRow(self.all_harmonics)
+        self.search_fix = QtWidgets.QCheckBox("Search fixed and free centres")
+        self.search_fix.setChecked(True)
+        self.search_fix.setToolTip(
+            "TRYFIX=1,0: both fitted, the fixed kept unless free ones lower the residual by "
+            "more than 0.01 of the noise"
+        )
+        self.try_factor = QtWidgets.QLineEdit("1.2, 1.35")
+        self.try_factor.setToolTip("TRYFACTOR: growth factors searched (empty: none)")
+        f.addRow(self.search_fix)
+        f.addRow("Growth factors searched", self.try_factor)
+        self.sky_iter = whole(0, 10, 3)
+        self.sky_iter.setSpecialValueText("off")
+        self.sky_iter.setToolTip(
+            "SKYITER: the sky factor refined from the residual sky this many times (needs the "
+            "sky measured by segmentation: Measure)"
+        )
+        self.sky_plane = QtWidgets.QCheckBox("Take out a sky tilt")
+        self.sky_plane.setChecked(True)
+        self.sky_plane.setToolTip("SKYPLANE=1: a plane fitted to the residual, kept if it helps")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.sky_iter)
+        row.addWidget(QtWidgets.QLabel("refinements"))
+        row.addWidget(self.sky_plane)
+        row.addStretch(1)
+        f.addRow("Sky", row)
+        self.tail = QtWidgets.QComboBox()
+        for label, key in (
+            ("measured in rings", "measured"),
+            ("Sérsic law", "sersic"),
+            ("elliprof's extrapolation", "elliprof"),
+            ("exponential", "exp"),
+            ("cut at R1", "cut"),
+        ):
+            self.tail.addItem(label, key)
+        self.tail.setToolTip("TAIL: the model beyond the last isophote")
+        f.addRow("Beyond R1", self.tail)
+        self.shape_tol = number(0.0, 1.0, 0.12, decimals=2, step=0.02)
+        self.shape_tol.setSpecialValueText("off")
+        self.shape_tol.setToolTip(
+            "SHAPETOL: an outermost isophote off the trend inside it by more than this is "
+            "refitted with coarser isophotes or a smaller R1"
+        )
+        f.addRow("Outer isophotes off by", self.shape_tol)
+        self.parallel = whole(1, 16, max(1, min(5, (os.cpu_count() or 1) - 1)))
+        self.parallel.setToolTip(
+            "PARALLEL: N fits, all averaged (the fit kept and N - 1 with R0 and R1 varied), "
+            "N at a time; buffers get the mean model and residual and each fit's own"
+        )
+        self.jitter = whole(1, 50, 15)
+        self.jitter.setSuffix(" %")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.parallel)
+        row.addWidget(QtWidgets.QLabel("varied by"))
+        row.addWidget(self.jitter)
+        row.addStretch(1)
+        f.addRow("Fits to average", row)
+        box.setVisible(False)
+        self.fit_mode.currentIndexChanged.connect(lambda i: box.setVisible(i == 2))
+        return box
+
+    def is_iterative(self) -> bool:
+        return self.fit_mode.currentIndex() > 0
+
+    def iterative_keywords(self, measured_sky: bool) -> list:
+        """The keywords of the iterative fit (Automatic, or the box's settings)."""
+        if self.fit_mode.currentIndex() == 1:
+            out = list(self.AUTO)
+            if measured_sky:
+                out.append("SKYITER=3")
+            if self.parallel.value() > 1:
+                out.append(f"PARALLEL={self.parallel.value()}")
+            return out
+        out = [f"FIXCTR={self.fixctr.currentData()}", f"TIE={self.tie.value()}"]
+        out.append(
+            "START=AUTO"
+            if self.start_auto.isChecked() or not self.start.value()
+            else f"START={self.start.value():g}"
+        )
+        out.append(f"FACTOR={self.factor.value():g}")
+        for key, b in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
+            if b.currentData() != 2:
+                out.append(f"{key}={b.currentData()}")
+        if self.all_harmonics.isChecked():
+            out.append("HARMONICS=AUTO")
+        if self.search_fix.isChecked():
+            out.append("TRYFIX=1,0")
+        factors = [t for t in re.split(r"[,\s]+", self.try_factor.text().strip()) if t]
+        if factors:
+            out.append("TRYFACTOR=" + ",".join(factors))
+        if self.sky_iter.value() and measured_sky:
+            out.append(f"SKYITER={self.sky_iter.value()}")
+        if self.sky_plane.isChecked():
+            out.append("SKYPLANE=1")
+        out.append(f"TAIL={self.tail.currentData()}")
+        if self.shape_tol.value():
+            out.append(f"SHAPETOL={self.shape_tol.value():g}")
+        if self.parallel.value() > 1:
+            out.append(f"PARALLEL={self.parallel.value()}")
+            if self.jitter.value() != 15:
+                out.append(f"JITTER={self.jitter.value() / 100:g}")
+        return out
 
     def _browse_mask(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -479,14 +696,25 @@ class ElliprofPanel(QtWidgets.QWidget):
         if "mask_file" in values:
             self.mask_file.setText(str(values["mask_file"] or ""))
 
-    def command(self, n: int, tomodel: Optional[int], toresid: Optional[int]) -> str:
-        """The elliprof command line for buffer ``n``."""
+    def command(
+        self, n: int, tomodel: Optional[int], toresid: Optional[int], measured_sky: bool = False
+    ) -> str:
+        """The elliprof command line for buffer ``n`` (``measured_sky``: the image has a
+        current sky measurement, which the sky refinement needs)."""
         parts = [f"elliprof {n}", f"X0={self.x0.value():g}", f"Y0={self.y0.value():g}"]
-        parts += [f"R0={self.r0.value():g}", f"R1={self.r1.value():g}"]
-        parts += [f"NR={self.nr.value()}", f"NITER={self.niter.value()}"]
+        iterative = self.is_iterative()
+        auto = self.fit_mode.currentIndex() == 1
+        r1 = "AUTO" if iterative and (auto or self.r1_auto.isChecked()) else f"{self.r1.value():g}"
+        nr = "AUTO" if iterative and (auto or self.nr_auto.isChecked()) else str(self.nr.value())
+        parts += [f"R0={self.r0.value():g}", f"R1={r1}"]
+        parts += [f"NR={nr}", f"NITER={self.niter.value()}"]
         if self.use_sky.isChecked():
             parts.append(f"SKY={self.sky.value():g}")
-        if self.rmstar.isChecked():
+        if iterative:
+            parts += [
+                w for w in self.iterative_keywords(measured_sky) if w not in ("R1=AUTO", "NR=AUTO")
+            ]
+        if self.rmstar.isChecked() and "RMSTAR" not in parts:
             parts.append("RMSTAR")
         parts += residual_keywords(self.resid_rounds, self.resid_thresh)
         mask = self.mask_file.text().strip()

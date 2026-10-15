@@ -1971,3 +1971,91 @@ def test_faint_sources_on_a_galaxy_are_found_in_the_residual_and_masked(tmp_path
     ).text
     assert "mask layer residsources" in text
     assert all(ses.masks["residsources"].masked[int(y), int(x)] for x, y in spots)
+
+
+# ---------------------------------------------------------------- the iterative single fit
+def test_a_single_galaxy_grows_and_keeps_its_largest_clean_r1():
+    from astro_vista import single
+
+    snap = iterative_snapshot()
+    image, mask = snap.image, np.zeros(snap.image.shape, bool)
+
+    class FailsBeyond(SteadyFitter):
+        def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+            fit = super().__call__(data, x0, y0, r0, r1, nr, **kw)
+            if r1 > 25:  # the outer isophotes turn out of range beyond 25 px
+                fit.profile.loc[nr - 1, "ellip"] = 0.99
+            return fit
+
+    s = single.SingleSettings(x0=30.5, y0=30.5, r0=2, r1=40, start=10, factor=1.2, sky=100.0)
+    f = FailsBeyond()
+    r = single.fit_single(image, mask, s, fitter=f)
+    assert r.complete and 20 < r.r1 <= 25.5
+    radii = [c["r1"] for c in f.calls]
+    assert radii[0] == pytest.approx(10) and radii[1] == pytest.approx(12)  # grown by 1.2
+    assert any("failed" in x for x in r.steps)
+    assert np.allclose(r.residual, image - 100.0 - r.model)
+    # searched and averaged: rows for each variant, and N fits in the mean
+    s2 = single.SingleSettings(x0=30.5, y0=30.5, r0=2, r1=20, sky=100.0, try_fix=[1, 0], parallel=3)
+    r2 = single.fit_single(image, mask, s2, fitter=SteadyFitter())
+    assert len(r2.search) == 2 and sum(bool(x.get("chosen")) for x in r2.search) == 1
+    e = r2.ensemble
+    assert e["members"] == 3 and len(e["fits"]) == 3
+    assert np.allclose(e["residual"], image - e["sky"] - e["model"])
+    # cancelled: nothing
+    stop = single.fit_single(image, mask, s, fitter=SteadyFitter(), cancelled=lambda: True)
+    assert stop.status == "cancelled" and not stop.complete
+
+
+def test_elliprof_with_the_pair_fits_options():
+    folder = Path(__file__).resolve().parent.parent / "examples" / "pair_synthetic"
+    ses = Session()
+    ses.execute(f"rd 1 {folder / 'pair.fits'}")
+    ses.execute(f"mask load stars {folder / 'pair.dmask'} 1")
+    ses.execute("mask role stars fit")
+    ses.execute("sky 1 SEGMENT")
+    text = ses.execute(
+        "elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=AUTO START=AUTO NR=AUTO FIXCTR=1 TIE=-3 RMSTAR "
+        "TAIL=measured SKYITER=2 TRYFIX=1,0 SHAPETOL=0.12 PARALLEL=2 MASK=stars TOMODEL=3 TORESID=4"
+    ).text
+    assert "R1=AUTO ->" in text and "fitted: R1" in text and "<- kept" in text
+    assert "mean of 2 fits" in text
+    names = [b.name for b in ses.buffers.values()]
+    assert any("elliprof mean residual" in x for x in names)
+    assert any("elliprof mean fit 2 of 2 residual" in x for x in names)
+    fit = ses.fits[ses.buffers[1].key]
+    assert fit.profile is not None and len(fit.ellipses) == len(fit.profile)
+    # the plain command is the same as before: one elliprof call
+    plain = ses.execute("elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=100 NR=15 SKY=1000 MASK=stars").text
+    assert plain.startswith("15 isophotes in")
+    # without a measured sky's support, SKYITER is refused
+    ses2 = Session()
+    ses2.execute(f"rd 1 {folder / 'pair.fits'}")
+    with pytest.raises(CommandError):
+        ses2.execute("elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=100 SKY=1000 START=AUTO SKYITER=2")
+
+
+def test_the_elliprof_panel_writes_the_iterative_fit():
+    from PySide6 import QtWidgets
+
+    from astro_vista.panels import ElliprofPanel
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    p = ElliprofPanel()
+    p.set_values({"x0": 294.3, "y0": 263.8, "r0": 3, "r1": 120, "nr": 15, "sky": 1000})
+    assert "START" not in p.command(1, 3, 4)  # One elliprof call: as before
+    p.fit_mode.setCurrentIndex(1)  # Automatic
+    words = p.command(1, 3, 4, measured_sky=True).split()
+    for w in ("R1=AUTO", "NR=AUTO", "START=AUTO", "TRYFIX=1,0", "SKYITER=3", "TAIL=measured"):
+        assert w in words, w
+    assert "SKYITER=3" not in p.command(1, 3, 4, measured_sky=False).split()
+    p.fit_mode.setCurrentIndex(2)  # Iterative, my settings
+    assert p.iterative.isVisibleTo(p)
+    p.factor.setValue(1.3)
+    p.cos4x.setCurrentIndex(p.cos4x.findData(1))
+    p.search_fix.setChecked(False)
+    p.parallel.setValue(1)
+    words = p.command(1, 3, 4).split()
+    assert "FACTOR=1.3" in words and "COS4X=1" in words and "R1=120" in words
+    assert not any(w.startswith("TRYFIX") or w.startswith("PARALLEL") for w in words)
+    app.processEvents()

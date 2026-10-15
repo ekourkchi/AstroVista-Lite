@@ -927,6 +927,8 @@ class MainWindow(QtWidgets.QMainWindow):
         e.pick_requested.connect(lambda: self.mode_actions["pick"].trigger())
         e.source_centre_requested.connect(self.centre_from_selected)
         e.sky_requested.connect(self.estimate_sky)
+        e.sky_segment_requested.connect(self.elliprof_sky_segment)
+        e.cancel_requested.connect(self.cancel_elliprof)
         e.mask_sources_requested.connect(self.mask_sources)
         e.x0.valueChanged.connect(lambda _v: self._overlays())
         e.y0.valueChanged.connect(lambda _v: self._overlays())
@@ -1137,6 +1139,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QApplication.restoreOverrideCursor()
         self._enable_runs(True)
         if error is not None:
+            self.elliprof.cancel.setEnabled(False)
             self.console.say(error, error=True)
             self.statusBar().showMessage(error.splitlines()[0])
             self._queue.clear()  # what followed may depend on the failed command
@@ -1146,6 +1149,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(reply.text.splitlines()[0] if reply.text else "Done")
             verb = verb_of(line)
             if verb == "elliprof":
+                self.elliprof.cancel.setEnabled(False)
                 self.elliprof.status.setText(reply.text.splitlines()[0])
                 self.show_result(self.profile)
             elif verb == "sources":
@@ -2013,7 +2017,36 @@ class MainWindow(QtWidgets.QMainWindow):
                 "The model and the residual need two buffers, other than the image's own"
             )
             return
-        self.run_command(self.elliprof.command(n, model, resid))
+        image = s.buffers[n]
+        sid = s.sky_of.get(image.key)
+        measured = bool(sid) and s.sky_stale(sid) is None
+        if panel.is_iterative():
+            panel.cancel.setEnabled(True)
+        self.run_command(panel.command(n, model, resid, measured_sky=measured))
+
+    def cancel_elliprof(self) -> None:
+        """Stop an iterative ELLIPROF fit and keep nothing (the command checks the flag)."""
+        self.session.stop_flag = True
+        self.elliprof.cancel.setEnabled(False)
+        self.statusBar().showMessage("cancelling the fit after the elliprof calls running now…")
+
+    def elliprof_sky_segment(self) -> None:
+        """The sky by segmentation for the ELLIPROF fit: its level goes into the panel."""
+        n = self._tool_number(self.elliprof.input)
+        if n is None:
+            return
+        layers = self.elliprof.ticked_layers()
+        self.run_command(f"sky {n} SEGMENT" + (f" MASK={','.join(layers)}" if layers else ""))
+
+        def fill():
+            image = self.session.buffers.get(n)
+            sid = self.session.sky_of.get(image.key) if image else None
+            result = self.session.skies.get(sid) if sid else None
+            if result is not None and np.isfinite(result.level):
+                self.elliprof.use_sky.setChecked(True)
+                self.elliprof.sky.setValue(round(float(result.level), 3))
+
+        self.after_commands(fill)
 
     def _centre_picked(self, x: float, y: float) -> None:
         if str(self._pick_target).startswith("pair:"):

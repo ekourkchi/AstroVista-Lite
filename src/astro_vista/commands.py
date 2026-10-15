@@ -69,7 +69,10 @@ HELP = {
     "buffer N; MASK= names mask layers, MASKBUF= buffers used as masks (0 or NaN masked); "
     "MINUS= subtracts buffers first; RAW keeps every pixel of the residual; RESIDMASK=n "
     "[RESIDTHRESH=8] [RESIDGROW=2] [RESIDCORE=10]: n times, the faint sources the residual shows "
-    "are found, masked (layer residsources) and the galaxy fitted again",
+    "are found, masked (layer residsources) and the galaxy fitted again. Any of R1=AUTO NR=AUTO "
+    "START= FACTOR= SKYITER= SKYPLANE= TRYFIX= TRYFACTOR= HARMONICS=AUTO TRYCOS3X= TRYCOS4X= "
+    "PARALLEL= RUNS= JITTER= TAIL= SHAPETOL= makes it an iterative fit with the pair fit's "
+    "options for one galaxy (SKY= or a sky measurement needed)",
     "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [STEPS=0] [MASK=a,b] [CYCLES=4] "
     "[NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= "
     "Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
@@ -174,6 +177,7 @@ class Session(ImageCommands):
         self.pairs: Dict[str, "PairRecord"] = {}  # the latest pair fit of each image
         self.planes: Dict[str, skies.PlaneFit] = {}  # the latest sky plane of each image
         self._pair_runs = 0
+        self.stop_flag = False  # set by the window's Cancel for an iterative elliprof
         self._continued = ""  # the start of a line continued with \\
 
     # ---- helpers
@@ -620,7 +624,10 @@ class Session(ImageCommands):
             raise CommandError(HELP["elliprof"])
         n = integer(words[0], "the buffer")
         image = self.buffer(n)
-        for key in ("X0", "Y0", "R0", "R1", "NR"):
+        iterative = any(k in keys for k in ITERATIVE) or any(
+            str(keys.get(k, "")).upper() == "AUTO" for k in ("R1", "NR", "START")
+        )
+        for key in ("X0", "Y0", "R0", "R1") + (() if iterative else ("NR",)):
             if key not in keys:
                 raise CommandError(f"{key}= is required ({HELP['elliprof']})")
         flags = {w.upper() for w in words[1:]}
@@ -649,8 +656,12 @@ class Session(ImageCommands):
             x0=number(keys["X0"], "X0"),
             y0=number(keys["Y0"], "Y0"),
             r0=number(keys["R0"], "R0"),
-            r1=number(keys["R1"], "R1"),
-            nr=integer(keys["NR"], "NR"),
+            r1=number(keys["R1"], "R1") if str(keys["R1"]).upper() != "AUTO" else 1e9,
+            nr=(
+                integer(keys["NR"], "NR")
+                if str(keys.get("NR", "")).upper() not in ("", "AUTO")
+                else 2
+            ),
             niter=integer(keys.get("NITER", 10), "NITER"),
             sky=number(keys["SKY"], "SKY") if "SKY" in keys else None,
             rmstar="RMSTAR" in flags,
@@ -662,6 +673,8 @@ class Session(ImageCommands):
         if s.mask_file is not None and not s.mask_file.exists():
             raise CommandError(f"no mask file {s.mask_file}")
         resid = self._resid_keys(keys)
+        if iterative:
+            return self._elliprof_iterative(n, image, keys, flags, s, resid, minus)
         try:
             result = fit(image, s)
             # RESIDMASK: the sources in the residual, masked, and the galaxy fitted again
@@ -718,6 +731,199 @@ class Session(ImageCommands):
                 self.buffers[m] = self.buffer(n).derived(f"{image.name} {kind}", data)
                 reply.text += f"\n{kind} in buffer {m}"
                 reply.changed |= {"buffers", "data"}
+        return reply
+
+    def _elliprof_iterative(self, n, image, keys, flags, fs, resid, minus) -> Reply:
+        """elliprof with any of the pair fit's options (ITERATIVE): single.fit_single."""
+        from . import pair as pairs
+        from . import single
+
+        masked = np.zeros(image.shape, bool)
+        if fs.mask_file is not None:
+            masked |= maskops.load(fs.mask_file, image.shape)
+        if fs.extra_mask is not None:
+            masked |= fs.extra_mask
+        masked |= ~np.isfinite(image.data)
+        measured = self.skies.get(self.sky_of.get(image.key, ""))
+        if measured is not None and self.sky_stale(measured.id, image) is not None:
+            measured = None
+        if "SKY" in keys:
+            sky = number(keys["SKY"], "SKY")
+        elif measured is not None and np.isfinite(measured.level):
+            sky = float(measured.level)
+        else:
+            raise CommandError(f"SKY= is needed (or a sky measurement: sky {n} SEGMENT)")
+        factor = number(keys.get("SKYFACTOR", 1), "SKYFACTOR")
+        sigma = measured.sigma if measured is not None else None
+        if sigma is None or not np.isfinite(sigma) or sigma <= 0:
+            sigma = skies.local_noise(image.data, ~masked)
+        x0, y0 = number(keys["X0"], "X0"), number(keys["Y0"], "Y0")
+        light = np.asarray(image.data, float) - sky * factor
+        notes = []
+        if str(keys["R1"]).upper() == "AUTO":
+            r1 = pairs.auto_r1(light, masked, (x0, y0), None, float(sigma))
+            notes.append(f"R1=AUTO -> {r1:g} (where the light falls below the noise)")
+        else:
+            r1 = number(keys["R1"], "R1")
+        r0 = number(keys["R0"], "R0")
+        start = None
+        if str(keys.get("START", "")).upper() == "AUTO":
+            start = pairs.auto_start(r1, None)
+            notes.append(f"START=AUTO -> {start:g}" if start else "START=AUTO: no growth")
+        elif "START" in keys:
+            start = number(keys["START"], "START")
+        nr = 0 if str(keys.get("NR", "AUTO")).upper() == "AUTO" else integer(keys["NR"], "NR")
+
+        def numbers(key, kind=float):
+            return [kind(float(t)) for t in re.split(r"[,\s]+", keys.get(key, "")) if t]
+
+        sky_iter = integer(keys.get("SKYITER", 0), "SKYITER")
+        support = None
+        if sky_iter:
+            if measured is None or measured.support.sum() < 100:
+                raise CommandError(
+                    f"SKYITER needs the sky support of a current sky measurement (sky {n} SEGMENT)"
+                )
+            support = measured.support
+        harmonics = str(keys.get("HARMONICS", "")).strip().upper()
+        if harmonics and harmonics != "AUTO":
+            raise CommandError("HARMONICS must be AUTO")
+        tail = str(keys.get("TAIL", "elliprof")).strip().lower()
+        if tail not in pairs.TAILS:
+            raise CommandError("TAIL must be one of " + ", ".join(pairs.TAILS))
+        st = single.SingleSettings(
+            x0=x0,
+            y0=y0,
+            r0=r0,
+            r1=r1,
+            nr=nr,
+            start=start,
+            factor=number(keys.get("FACTOR", pairs.AUTO_FACTOR), "FACTOR"),
+            niter=fs.niter,
+            sky=sky * factor,
+            sky_base=sky,
+            sky_factor=factor,
+            sky_iter=sky_iter,
+            sky_plane=integer(keys.get("SKYPLANE", 0), "SKYPLANE") != 0,
+            rmstar=fs.rmstar,
+            tie=fs.tie,
+            rlaw=fs.rlaw,
+            gain=fs.gain,
+            fixctr=fs.fixctr,
+            cos3x=fs.cos3x,
+            cos4x=fs.cos4x,
+            tail=tail,
+            try_fix=numbers("TRYFIX", int),
+            try_factor=numbers("TRYFACTOR"),
+            try_cos3x=numbers("TRYCOS3X", int),
+            try_cos4x=numbers("TRYCOS4X", int),
+            harmonic_search=harmonics == "AUTO",
+            shape_tol=number(keys.get("SHAPETOL", 0), "SHAPETOL"),
+            parallel=integer(keys.get("PARALLEL", 1), "PARALLEL"),
+            runs=integer(keys.get("RUNS", 1), "RUNS"),
+            jitter=number(keys.get("JITTER", 0.15), "JITTER"),
+            seed=integer(keys["SEED"], "SEED") if "SEED" in keys else None,
+            resid_rounds=resid["rounds"],
+            resid_thresh=resid["thresh"],
+            resid_grow=resid["grow"],
+            resid_core=resid["core"],
+        )
+        if not 0 < r0 < r1:
+            raise CommandError("0 < R0 < R1 is needed")
+        if not 1 <= st.parallel <= pairs.MAX_PARALLEL or not 1 <= st.runs <= pairs.MAX_RUNS:
+            raise CommandError(
+                f"PARALLEL must be 1 to {pairs.MAX_PARALLEL}, RUNS 1 to {pairs.MAX_RUNS}"
+            )
+        if st.factor <= 1:
+            raise CommandError("FACTOR must be above 1")
+        self.stop_flag = False
+        result = single.fit_single(
+            np.asarray(image.data, float),
+            masked,
+            st,
+            header=image.header,
+            support=support,
+            image_obj=image,
+            cancelled=lambda: self.stop_flag,
+            progress=getattr(self, "progress_hook", None),
+        )
+        if result.status == "cancelled" or self.stop_flag:
+            return Reply("elliprof cancelled: nothing kept, no buffer changed")
+        if not result.complete:
+            raise CommandError(f"ELLIPROF found no fit that passes: {result.reason}")
+        used = result.mask if result.mask is not None else masked
+        residual = np.where(used, np.nan, result.residual).astype(np.float32)
+        import elliprof
+
+        fitres = FitResult(
+            profile=result.profile,
+            model=result.model.astype(np.float32),
+            residual=residual,
+            masked=used,
+            ellipses=pairs.profile_ellipses(result.profile),
+            command="elliprof " + " ".join(f"{k}={v}" for k, v in keys.items()),
+            version=elliprof.__version__,
+            seconds=result.seconds,
+        )
+        self.fits[image.key] = fitres
+        self.centre = (x0, y0)
+        reply = Reply("\n".join(notes + [single.summary(result)]), {"fits", "centre"})
+        if "RAW" in flags:
+            residual = result.residual.astype(np.float32)
+        if minus:
+            reply.text += f"\n(fitted buffer {n} minus {', '.join(minus)})"
+        made = []
+        for kind, key, data in (
+            ("model", "TOMODEL", fitres.model),
+            ("residual", "TORESID", residual),
+        ):
+            if key in keys:
+                m = integer(keys[key], key)
+                if m == n:
+                    raise CommandError(f"{key} must not be the image's own buffer")
+                self.buffers[m] = self.buffer(n).derived(f"{image.name} {kind}", data)
+                made.append(f"{m} {kind}")
+        source = self.buffer(n)
+        stale = [
+            m
+            for m, b in self.buffers.items()
+            if b.family == source.key and b.name.startswith(f"{source.name} elliprof mean")
+        ]
+        for m in stale:
+            del self.buffers[m]
+        e = result.ensemble
+        extra = []
+        if result.sky_map is not None:
+            extra.append(("elliprof sky", result.sky_map))
+        if e:
+            extra += [
+                ("elliprof mean model", e["model"]),
+                ("elliprof mean residual", e["residual"]),
+                ("elliprof mean model spread", e["spread"]),
+            ]
+            total = len(e["fits"])
+            for k, f in enumerate(e["fits"], 1):
+                extra.append((f"elliprof mean fit {k} of {total} model", f["model"]))
+                extra.append((f"elliprof mean fit {k} of {total} residual", f["residual"]))
+        taken = {n} | {integer(keys[k], k) for k in ("TOMODEL", "TORESID") if k in keys}
+        for kind, data in extra:
+            m = self.output_buffer(n, kind)
+            while m in taken:
+                m = self.free_buffer(m)
+            taken.add(m)
+            self.buffers[m] = source.derived(f"{source.name} {kind}", data)
+            made.append(f"{m} {kind}")
+        if made:
+            reply.text += "\nbuffers: " + "; ".join(made)
+            reply.changed |= {"buffers", "data"}
+        if resid["rounds"]:
+            reply.text += self._residual_outputs(
+                source,
+                result.resid_runs,
+                result.resid_mask,
+                "elliprof " + " ".join(f"{k}={v}" for k, v in keys.items()),
+            )
+            reply.changed |= {"sources", "masks"}
         return reply
 
     def _residual_outputs(self, image: Image, runs, added, line: str) -> str:
@@ -1850,7 +2056,8 @@ class Session(ImageCommands):
 KEYWORDS = {
     "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
     "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE= RESIDMASK= RESIDTHRESH= "
-    "RESIDGROW= RESIDCORE=",
+    "RESIDGROW= RESIDCORE= START= FACTOR= SKYITER= SKYPLANE= SKYFACTOR= TRYFIX= TRYFACTOR= "
+    "TRYCOS3X= TRYCOS4X= HARMONICS= PARALLEL= RUNS= JITTER= SEED= TAIL= SHAPETOL=",
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
@@ -2174,6 +2381,27 @@ def _grow_by_size(segmentation, numbers, grow: float, widen: float, largest: flo
 
 def _mask_sum(mask: Mask) -> str:
     return hashlib.sha1(np.packbits(mask.masked).tobytes()).hexdigest()[:12]
+
+
+# elliprof's keywords that make it an iterative fit (single.py), as the pair fit's
+ITERATIVE = {
+    "START",
+    "FACTOR",
+    "SKYITER",
+    "SKYPLANE",
+    "SKYFACTOR",
+    "TRYFIX",
+    "TRYFACTOR",
+    "TRYCOS3X",
+    "TRYCOS4X",
+    "HARMONICS",
+    "PARALLEL",
+    "RUNS",
+    "JITTER",
+    "SEED",
+    "TAIL",
+    "SHAPETOL",
+}
 
 
 class PairJob:

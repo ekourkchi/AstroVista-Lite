@@ -560,7 +560,7 @@ def auto_r1(
     light: np.ndarray,
     masked: np.ndarray,
     centre: Tuple[float, float],
-    other: Tuple[float, float],
+    other: Optional[Tuple[float, float]],
     sigma: float,
     k: float = AUTO_R1_SIGMA,
     width: float = 3.0,
@@ -579,7 +579,8 @@ def auto_r1(
     yy, xx = np.mgrid[j0:j1, i0:i1]
     dx, dy = xx + 0.5 - x, yy + 0.5 - y
     r = np.hypot(dx, dy)
-    away = (dx * (x - other[0]) + dy * (y - other[1])) >= 0
+    # the half facing away from the companion (a single galaxy: every side)
+    away = (dx * (x - other[0]) + dy * (y - other[1])) >= 0 if other is not None else r >= 0
     sub = light[j0:j1, i0:i1]
     ok = away & ~masked[j0:j1, i0:i1] & np.isfinite(sub)
     cap = AUTO_R1_EDGE * edge
@@ -599,11 +600,14 @@ def reaches_edge(r1: float, centre: Tuple[float, float], shape) -> bool:
     return abs(r1 - max(10.0, AUTO_R1_EDGE * edge)) < 0.06
 
 
-def auto_start(r1: float, separation: float) -> Optional[float]:
+def auto_start(r1: float, separation: Optional[float]) -> Optional[float]:
     """START=AUTO: START_SHARE of R1, at most START_SEPARATION of the separation (so that
     the first fits stay off the companion's centre), at least START_MIN; None (no growth)
     when that is not below R1."""
-    start = max(min(START_SHARE * r1, START_SEPARATION * separation), START_MIN)
+    share = START_SHARE * r1
+    if separation is not None:
+        share = min(share, START_SEPARATION * separation)
+    start = max(share, START_MIN)
     return round(start, 1) if start < r1 - 1 else None
 
 
