@@ -265,7 +265,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
     # the automatic settings: the pair fit's (see pairpanel.AUTO_RUN), for one galaxy
     AUTO = [
         "R1=AUTO",
-        "START=AUTO",
         "NR=AUTO",
         "FIXCTR=1",
         "TIE=-3",
@@ -273,7 +272,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         "TAIL=measured",
         "SKYPLANE=1",
         "TRYFIX=1,0",
-        "TRYFACTOR=1.2,1.35",
         "SHAPETOL=0.12",
         "HARMONICS=AUTO",
     ]
@@ -323,7 +321,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.fit_mode.setToolTip(
             "One elliprof call: the fit as elliprof makes it.\n"
             "Automatic: the pair fit's recipe for one galaxy: R1 where the light fades into "
-            "the noise, grown from a third of it by 1.2, the search over centres and growth, "
+            "the noise (fitted out to it at once: one galaxy has no growth), the search over centres, "
             "smoothing over 3 isophotes, RMSTAR, the light beyond R1 measured, the sky tilt, "
             "the outer-isophote check, every harmonic tried (the best kept, alternated with the "
             "search), the fits averaged and, with a measured sky, the sky refined 3 times.\nIterative, my settings: every one of those, to set"
@@ -443,31 +441,32 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         row.addWidget(self.run, 3)
         row.addWidget(self.cancel, 1)
         form.addRow(row)
-        self.build_residual_sky(form, "Residual sky", "Fit isophotes")
         self.status = note()
         form.addRow(self.status)
+        self.progress = note()
+        form.addRow(self.progress)
+        self.calls = plain_table()
+        self.calls.setColumnCount(5)
+        self.calls.setHorizontalHeaderLabels(["call", "step", "R0–R1", "NR", "result"])
+        self.calls.setMinimumHeight(170)
+        self.calls.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.calls.verticalHeader().setDefaultSectionSize(22)
+        self.calls.setToolTip(
+            "The iterative fit as it runs: every elliprof call (passed, or why it failed) and, "
+            "in bold, each finished fit with its score (the residual's RMS over the noise); "
+            "green: the best so far"
+        )
+        form.addRow(self.calls)
+        self._best_score = None
+        self.fit_mode.currentIndexChanged.connect(lambda i: self.calls.setVisible(i > 0))
+        self.calls.setVisible(False)
+        self.build_residual_sky(form, "Residual sky", "Fit isophotes")
 
     def _iterative_box(self) -> QtWidgets.QGroupBox:
         """The iterative fit's settings (Iterative, my settings), at the automatic values."""
         box = QtWidgets.QGroupBox("Iterative fit")
         f = QtWidgets.QFormLayout(box)
         f.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
-        self.start = number(0, 1e5, 0, decimals=1)
-        self.start.setSpecialValueText("= R1 (no growth)")
-        self.start.setToolTip("START: the first R1; it grows by the factor to R1")
-        self.start_auto = QtWidgets.QCheckBox("auto")
-        self.start_auto.setChecked(True)
-        self.start_auto.setToolTip("START=AUTO: a third of R1, at least 9 px")
-        self.start_auto.toggled.connect(lambda on: self.start.setEnabled(not on))
-        self.start.setEnabled(False)
-        self.factor = number(1.01, 3.0, 1.2, decimals=2, step=0.05)
-        self.factor.setPrefix("× ")
-        self.factor.setToolTip("FACTOR: R1 grows by this each step")
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.start, 1)
-        row.addWidget(self.start_auto)
-        row.addWidget(self.factor)
-        f.addRow("First R1, growth", row)
         self.fixctr = QtWidgets.QComboBox()
         for label, v in (("fixed at X0, Y0", 1), ("free", 0), ("median of the fitted", 2)):
             self.fixctr.addItem(label, v)
@@ -508,10 +507,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             "TRYFIX=1,0: both fitted, the fixed kept unless free ones lower the residual by "
             "more than 0.01 of the noise"
         )
-        self.try_factor = QtWidgets.QLineEdit("1.2, 1.35")
-        self.try_factor.setToolTip("TRYFACTOR: growth factors searched (empty: none)")
         f.addRow(self.search_fix)
-        f.addRow("Growth factors searched", self.try_factor)
         self.sky_plane = QtWidgets.QCheckBox("Take out a sky tilt")
         self.sky_plane.setChecked(True)
         self.sky_plane.setToolTip("SKYPLANE=1: a plane fitted to the residual, kept if it helps")
@@ -551,6 +547,54 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.fit_mode.currentIndexChanged.connect(lambda i: box.setVisible(i == 2))
         return box
 
+    def clear_calls(self) -> None:
+        self.calls.setRowCount(0)
+        self.progress.setText("")
+        self._best_score = None
+
+    def add_call(self, info: dict) -> None:
+        """A row of the progress table, from the fit's progress message ("call": an
+        elliprof call; "fitted": a fit finished, with its score)."""
+        row = self.calls.rowCount()
+        self.calls.insertRow(row)
+        done = info.get("phase") == "fitted"
+        best = False
+        if done:
+            sc = info.get("score")
+            if info.get("status") != "fitted" or sc is None:
+                result, colour = f"fit {info.get('status', '')}: no score", "#f85149"
+            else:
+                best = self._best_score is None or sc < self._best_score
+                self._best_score = sc if best else self._best_score
+                result = f"score {sc:.3f}" + ("  best so far" if best else "")
+                colour = "#3fb950" if best else None
+            radii = f"to {info.get('r1', 0):.1f}"
+        else:
+            ok = info.get("passed")
+            result = "passed" if ok else f"FAILED: {info.get('reason', '')}"
+            colour = None if ok else "#f85149"
+            radii = f"{info.get('r0', 0):g}–{info.get('r1', 0):.1f}"
+        stage = info.get("stage", "")
+        if info.get("sky_iteration"):
+            stage += f" (sky {info['sky_iteration']}: ×{info['sky_factor']:.5f})"
+        cells = [
+            "" if done else str(info.get("call", "")),
+            stage,
+            radii,
+            str(info.get("nr", "")),
+            result,
+        ]
+        for col, text in enumerate(cells):
+            item = QtWidgets.QTableWidgetItem(text)
+            if done:
+                f = item.font()
+                f.setBold(True)
+                item.setFont(f)
+            if colour and col == 4:
+                item.setForeground(QtGui.QColor(colour))
+            self.calls.setItem(row, col, item)
+        self.calls.scrollToBottom()
+
     def is_iterative(self) -> bool:
         return self.fit_mode.currentIndex() > 0
 
@@ -564,12 +608,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
                 out.append(f"PARALLEL={self.parallel.value()}")
             return out
         out = [f"FIXCTR={self.fixctr.currentData()}", f"TIE={self.tie.value()}"]
-        out.append(
-            "START=AUTO"
-            if self.start_auto.isChecked() or not self.start.value()
-            else f"START={self.start.value():g}"
-        )
-        out.append(f"FACTOR={self.factor.value():g}")
         for key, b in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
             if b.currentData() != 2:
                 out.append(f"{key}={b.currentData()}")
@@ -577,9 +615,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             out.append("HARMONICS=AUTO")
         if self.search_fix.isChecked():
             out.append("TRYFIX=1,0")
-        factors = [t for t in re.split(r"[,\s]+", self.try_factor.text().strip()) if t]
-        if factors:
-            out.append("TRYFACTOR=" + ",".join(factors))
         if self.sky_iter.value() and measured_sky:
             out.append(f"SKYITER={self.sky_iter.value()}")
         if self.sky_plane.isChecked():

@@ -70,7 +70,7 @@ HELP = {
     "MINUS= subtracts buffers first; RAW keeps every pixel of the residual; RESIDMASK=n "
     "[RESIDTHRESH=8] [RESIDGROW=2] [RESIDCORE=10]: n times, the faint sources the residual shows "
     "are found, masked (layer residsources) and the galaxy fitted again. Any of R1=AUTO NR=AUTO "
-    "START= FACTOR= SKYITER= SKYPLANE= TRYFIX= TRYFACTOR= HARMONICS=AUTO TRYCOS3X= TRYCOS4X= "
+    "SKYITER= SKYPLANE= TRYFIX= HARMONICS=AUTO TRYCOS3X= TRYCOS4X= "
     "PARALLEL= RUNS= JITTER= TAIL= SHAPETOL= makes it an iterative fit with the pair fit's "
     "options for one galaxy (SKY= or a sky measurement needed)",
     "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [STEPS=0] [MASK=a,b] [CYCLES=4] "
@@ -625,8 +625,14 @@ class Session(ImageCommands):
         n = integer(words[0], "the buffer")
         image = self.buffer(n)
         iterative = any(k in keys for k in ITERATIVE) or any(
-            str(keys.get(k, "")).upper() == "AUTO" for k in ("R1", "NR", "START")
+            str(keys.get(k, "")).upper() == "AUTO" for k in ("R1", "NR")
         )
+        growth = [k for k in ("START", "FACTOR", "TRYFACTOR", "STEP", "RADII") if k in keys]
+        if growth:
+            raise CommandError(
+                f"{growth[0]}= is the pair fit's R1 growth; a single galaxy is fitted out to "
+                "R1 at once"
+            )
         for key in ("X0", "Y0", "R0", "R1") + (() if iterative else ("NR",)):
             if key not in keys:
                 raise CommandError(f"{key}= is required ({HELP['elliprof']})")
@@ -766,12 +772,6 @@ class Session(ImageCommands):
         else:
             r1 = number(keys["R1"], "R1")
         r0 = number(keys["R0"], "R0")
-        start = None
-        if str(keys.get("START", "")).upper() == "AUTO":
-            start = pairs.auto_start(r1, None)
-            notes.append(f"START=AUTO -> {start:g}" if start else "START=AUTO: no growth")
-        elif "START" in keys:
-            start = number(keys["START"], "START")
         nr = 0 if str(keys.get("NR", "AUTO")).upper() == "AUTO" else integer(keys["NR"], "NR")
 
         def numbers(key, kind=float):
@@ -797,8 +797,6 @@ class Session(ImageCommands):
             r0=r0,
             r1=r1,
             nr=nr,
-            start=start,
-            factor=number(keys.get("FACTOR", pairs.AUTO_FACTOR), "FACTOR"),
             niter=fs.niter,
             sky=sky * factor,
             sky_base=sky,
@@ -814,7 +812,6 @@ class Session(ImageCommands):
             cos4x=fs.cos4x,
             tail=tail,
             try_fix=numbers("TRYFIX", int),
-            try_factor=numbers("TRYFACTOR"),
             try_cos3x=numbers("TRYCOS3X", int),
             try_cos4x=numbers("TRYCOS4X", int),
             harmonic_search=harmonics == "AUTO",
@@ -834,8 +831,6 @@ class Session(ImageCommands):
             raise CommandError(
                 f"PARALLEL must be 1 to {pairs.MAX_PARALLEL}, RUNS 1 to {pairs.MAX_RUNS}"
             )
-        if st.factor <= 1:
-            raise CommandError("FACTOR must be above 1")
         self.stop_flag = False
         result = single.fit_single(
             np.asarray(image.data, float),
@@ -2386,13 +2381,10 @@ def _mask_sum(mask: Mask) -> str:
 
 # elliprof's keywords that make it an iterative fit (single.py), as the pair fit's
 ITERATIVE = {
-    "START",
-    "FACTOR",
     "SKYITER",
     "SKYPLANE",
     "SKYFACTOR",
     "TRYFIX",
-    "TRYFACTOR",
     "TRYCOS3X",
     "TRYCOS4X",
     "HARMONICS",

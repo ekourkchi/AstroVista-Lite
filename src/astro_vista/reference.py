@@ -489,11 +489,11 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ("TOMODEL=, TORESID=", "the buffers for the model and the residual"),
                     ("RAW", "the residual on every pixel (masked ones too), not blanked"),
                     (
-                        "R1=AUTO, NR=AUTO, START=, FACTOR=",
+                        "R1=AUTO, NR=AUTO",
                         "an iterative fit, as the pair fit's for one galaxy: R1 where the light "
-                        "fades into the noise, isophotes about 30 % apart, R1 grown from START "
-                        "(AUTO: a third of R1) by FACTOR (1.2), the largest R1 that passes "
-                        "the checks kept",
+                        "fades into the noise, isophotes about 30 % apart; the galaxy is fitted "
+                        "out to R1 at once (one galaxy has no growth), and to a smaller R1 when "
+                        "the isophotes fail the checks",
                     ),
                     (
                         "SKYITER=, SKYPLANE=1, SKYFACTOR=",
@@ -501,8 +501,8 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "a sky tilt taken out when it lowers the residual",
                     ),
                     (
-                        "TRYFIX=, TRYFACTOR=, HARMONICS=AUTO, TRYCOS3X=, TRYCOS4X=",
-                        "the search: every combination fitted, the smallest residual kept "
+                        "TRYFIX=, HARMONICS=AUTO, TRYCOS3X=, TRYCOS4X=",
+                        "the search: fixed and free centres fitted, the smallest residual kept "
                         "(fixed centres unless free ones are clearly better); then the "
                         "harmonics",
                     ),

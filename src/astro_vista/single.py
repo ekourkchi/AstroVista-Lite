@@ -1,12 +1,11 @@
 """Iterative fits of one galaxy: the pair fit's options for a single ELLIPROF fit.
 
-A single galaxy has no companion to take turns with, so its iterations are these: R1 grows
-from a first radius (START, by FACTOR) and the fit keeps the largest R1 at which the
-isophotes pass the pair fit's checks (a step that fails is tried again halfway); the
-outermost isophotes are checked against the trend inside them (SHAPETOL); the sky factor is
-refined from the residual sky (SKYITER) and a tilt of the sky taken out (SKYPLANE); a search
-over centre fitting and growth factor keeps the fit with the smallest residual (TRYFIX,
-TRYFACTOR) and then the harmonics (HARMONICS=AUTO, TRYCOS3X, TRYCOS4X); the faint sources
+A single galaxy has no companion to take turns with, so R1 is not grown: the galaxy is
+fitted out to R1 at once, and to a smaller R1 when the isophotes fail the pair fit's checks;
+the outermost isophotes are checked against the trend inside them (SHAPETOL); the sky factor
+is refined from the residual sky (SKYITER) and a tilt of the sky taken out (SKYPLANE); a
+search over centre fitting keeps the fit with the smallest residual (TRYFIX) and then the
+harmonics (HARMONICS=AUTO, TRYCOS3X, TRYCOS4X); the faint sources
 of the residual are masked and the galaxy fitted again (RESIDMASK); and N fits, the fit kept
 and N - 1 with R0 and R1 varied, are averaged (PARALLEL).  Every elliprof call goes through
 fitting.fit_array, as the pair fit's.
@@ -32,8 +31,6 @@ class SingleSettings:
     r0: float = 3.0
     r1: float = 100.0
     nr: int = 0  # 0: automatic (isophotes about 30 % apart)
-    start: Optional[float] = None  # the first R1 (None: no growth)
-    factor: float = pair.AUTO_FACTOR  # R1 grows by this each step
     niter: int = 10
     sky: float = 0.0
     sky_base: Optional[float] = None
@@ -49,7 +46,6 @@ class SingleSettings:
     cos4x: Optional[int] = None
     tail: str = "elliprof"  # the model beyond R1 (pair.tail_model)
     try_fix: List[int] = field(default_factory=list)
-    try_factor: List[float] = field(default_factory=list)
     try_cos3x: List[int] = field(default_factory=list)
     try_cos4x: List[int] = field(default_factory=list)
     harmonic_search: bool = False
@@ -135,7 +131,7 @@ def _options(s: SingleSettings, comp: pair.Component) -> dict:
     )
 
 
-def grow(
+def fit_once(
     image: np.ndarray,
     mask: np.ndarray,
     s: SingleSettings,
@@ -145,8 +141,8 @@ def grow(
     fitter=fit_array,
     counter: Optional[Dict[str, int]] = None,
 ) -> SingleResult:
-    """One fit of the galaxy: R1 grown from START by FACTOR (else R1 at once), each step
-    checked; the largest R1 that passes is kept, then the outer-shape guard."""
+    """One fit of the galaxy out to R1 (a smaller R1 when it fails the checks), then the
+    outer-shape guard."""
     counter = counter if counter is not None else {"n": 0}
     start = time.perf_counter()
     finite = np.isfinite(image)
@@ -167,8 +163,9 @@ def grow(
             trial = replace(comp, r0=r0, r1=r1, nr=comp.nr if nr is None else nr)
             n = pair.nr_for(trial, r1)
             counter["n"] += 1
+            number = counter["n"]
             if progress is not None:
-                progress({"phase": "fit", "r1": r1, "call": counter["n"]})
+                progress({"phase": "fit", "r1": r1, "call": number})
             fit = fitter(
                 image,
                 comp.x0,
@@ -185,7 +182,10 @@ def grow(
                 progress(
                     {
                         "phase": "call",
+                        "call": number,
+                        "r0": r0,
                         "r1": r1,
+                        "nr": n,
                         "passed": ok,
                         "reason": reason,
                         "ellipses": pair.profile_ellipses(fit.profile) if ok else None,
@@ -207,35 +207,15 @@ def grow(
         return None, reason, None
 
     try:
-        schedule = [s.r1]
-        if s.start and s.start < s.r1 - 1:
-            schedule = [s.start]
-            while schedule[-1] * s.factor < s.r1 - 1e-9:
-                schedule.append(schedule[-1] * s.factor)
-            schedule.append(s.r1)
-        best = None  # (fit, r1, nr)
-        for k, r in enumerate(schedule):
-            have = best[1] if best else 0.0
-            got = call(r, floor=have)
-            if got[0] is None and best is not None and r > have + 0.5:
-                half = have + 0.5 * (r - have)
-                got = call(half, floor=have)
-                if got[0] is not None:
-                    out.steps.append(f"R1 {r:.1f} failed ({got[1]}); it grew to {half:.1f} instead")
-            if got[0] is None:
-                if best is None:
-                    out.reason = f"no fit passed: {got[1]}"
-                    out.seconds = time.perf_counter() - start
-                    out.calls = counter["n"]
-                    return out
-                out.steps.append(f"R1 {r:.1f} failed ({got[1]}); it stays at {have:.1f}")
-                break
-            if got[1] < r - 0.5:
-                out.steps.append(f"R1 {r:.1f}: fitted to {got[1]:.1f}")
-            best = got
-            if got[1] < r - 0.5:
-                break  # it could not reach this step: no further growth
-        fit, r1, nr = best
+        got = call(s.r1)
+        if got[0] is None:
+            out.reason = f"no fit passed: {got[1]}"
+            out.seconds = time.perf_counter() - start
+            out.calls = counter["n"]
+            return out
+        if got[1] < s.r1 - 0.5:
+            out.steps.append(f"R1 {s.r1:.1f}: fitted to {got[1]:.1f}")
+        fit, r1, nr = got
         if s.shape_tol > 0:
             fit, r1, nr = _guard(fit, r1, nr, comp, s, image, mask, call, out)
         usable = finite & ~mask
@@ -329,14 +309,19 @@ def with_sky(image, mask, s, support, header, progress, cancelled, fitter, count
     from . import sky as skies
 
     if s.sky_iter <= 0 or support is None:
-        return grow(image, mask, s, header, progress, cancelled, fitter, counter)
+        return fit_once(image, mask, s, header, progress, cancelled, fitter, counter)
     base = s.sky_base if s.sky_base is not None else s.sky
     use = support & ~mask
     factor = s.sky_factor
     history, best, previous, first = [], None, None, None
     for k in range(s.sky_iter):
         trial = replace(s, sky=factor * base, sky_factor=factor)
-        result = grow(image, mask, trial, header, progress, cancelled, fitter, counter)
+        tagged = progress
+        if progress is not None:
+            tagged = lambda info, k=k, f=factor: progress(  # noqa: E731
+                {**info, "sky_iteration": k + 1, "sky_iterations": s.sky_iter, "sky_factor": f}
+            )
+        result = fit_once(image, mask, trial, header, tagged, cancelled, fitter, counter)
         entry = {"iteration": k + 1, "factor": factor, "sky": trial.sky, "status": result.status}
         history.append(entry)
         if not result.complete:
@@ -394,34 +379,54 @@ def fit_single(
     centre = (s.x0, s.y0)
     reach = 1.1 * s.r1
 
-    def one(settings, m=mask, img=image):
-        r = with_sky(img, m, settings, support, header, progress, cancelled, fitter, counter)
+    def say(info):
+        if progress is not None:
+            progress(info)
+
+    def one(settings, m=mask, img=image, stage="fit"):
+        """One fit (with its sky iterations); every call and the fit's score reported,
+        labelled by ``stage``."""
+        tagged = None
+        if progress is not None:
+            tagged = lambda info: progress({**info, "stage": stage})  # noqa: E731
+        r = with_sky(img, m, settings, support, header, tagged, cancelled, fitter, counter)
         r.mask = m
         r.score = score(r, m, centre, reach)
+        say(
+            {
+                "phase": "fitted",
+                "stage": stage,
+                "status": r.status,
+                "score": r.score,
+                "r1": r.r1,
+                "nr": r.nr,
+                "call": counter["n"],
+                "ellipses": pair.profile_ellipses(r.profile) if r.complete else None,
+            }
+        )
         return r
 
-    def each(items, workers):
-        if workers <= 1 or len(items) <= 1:
-            return [one(x) for x in items]
-        with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
-            return list(pool.map(one, items))
+    def each(items, workers, stages):
+        jobs = list(zip(items, stages))
+        if workers <= 1 or len(jobs) <= 1:
+            return [one(x, stage=lbl) for x, lbl in jobs]
+        with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
+            return list(pool.map(lambda j: one(j[0], stage=j[1]), jobs))
 
     def search(base: SingleSettings, tag: str = ""):
-        """Every combination of TRYFIX and TRYFACTOR on ``base``: the fit kept (fixed centres
+        """Every TRYFIX on ``base``: the fit kept (fixed centres
         unless free ones lower the residual by more than FREE_GAIN), its settings, the rows."""
         variants = []
         for fix in base.try_fix or [None]:
-            for factor in base.try_factor or [None]:
-                label = []
-                v = base
-                if fix is not None:
-                    v = replace(v, fixctr=fix)
-                    label.append("centres " + {0: "free", 1: "fixed", 2: "median"}[fix])
-                if factor is not None and base.start:
-                    v = replace(v, factor=factor)
-                    label.append(f"growth x{factor:g}")
-                variants.append(((", ".join(label) or "as asked") + tag, v))
-        results = each([v for _l, v in variants], s.parallel)
+            v, label = base, "as asked"
+            if fix is not None:
+                v = replace(v, fixctr=fix)
+                label = "centres " + {0: "free", 1: "fixed", 2: "median"}[fix]
+            variants.append((label + tag, v))
+        say({"phase": "stage", "text": f"search{tag}: {len(variants)} fit(s)"})
+        results = each(
+            [v for _l, v in variants], s.parallel, ["search: " + lbl for lbl, _v in variants]
+        )
         rows_ = [
             {"variant": lbl, "status": r.status, "score": r.score, "r1": r.r1}
             for (lbl, _v), r in zip(variants, results)
@@ -463,7 +468,12 @@ def fit_single(
         fixed_sky = replace(
             kept_s, sky=kept.settings.sky, sky_factor=kept.settings.sky_factor, sky_iter=0
         )
-        tried = each([replace(fixed_sky, cos3x=a, cos4x=b) for a, b in combos], s.parallel)
+        say({"phase": "stage", "text": f"harmonics round {rnd}: {len(combos)} combinations"})
+        tried = each(
+            [replace(fixed_sky, cos3x=a, cos4x=b) for a, b in combos],
+            s.parallel,
+            [f"harmonics {rnd}: COS3X={a} COS4X={b}" for a, b in combos],
+        )
         harmonic_rows.append(
             {
                 "round": rnd,
@@ -484,7 +494,7 @@ def fit_single(
                     "score": r.score,
                     "r1": r.r1,
                     "status": r.status,
-                    "short": r.r1 < s.r1 - 0.5,
+                    "short": r.r1 < kept.r1 - 0.5,
                     "kept": False,
                 }
             )
@@ -521,7 +531,8 @@ def fit_single(
         tilt = _tilt(kept.residual, mask)
         if tilt is not None:
             plane, words = tilt
-            again = one(kept_s, mask, image - plane)
+            say({"phase": "stage", "text": "the sky tilt taken out: fitted again"})
+            again = one(kept_s, mask, image - plane, stage="sky tilt out")
             if again.complete and again.score is not None and again.score < kept.score:
                 kept, image = again, image - plane
                 sky_map = kept_s.sky + plane
@@ -551,7 +562,13 @@ def fit_single(
             if not add.any():
                 break
             added |= add
-            again = one(replace(kept_s, sky=kept.settings.sky, sky_iter=0), kept.mask | add, image)
+            say({"phase": "stage", "text": f"residual sources round {k}: fitted again"})
+            again = one(
+                replace(kept_s, sky=kept.settings.sky, sky_iter=0),
+                kept.mask | add,
+                image,
+                stage=f"residual sources {k}",
+            )
             if not again.complete:
                 steps.append(f"residual sources round {k}: the refit was incomplete; not used")
                 break
@@ -573,9 +590,16 @@ def fit_single(
             )
             r1 = kept_s.r1 * f1
             r0 = min(kept_s.r0 * f0, 0.5 * r1)
-            start = kept_s.start * f1 if kept_s.start else None
-            jittered.append(replace(kept_s, r0=round(r0, 2), r1=round(r1, 2), start=start))
-        more = each(jittered, s.parallel)
+            jittered.append(replace(kept_s, r0=round(r0, 2), r1=round(r1, 2)))
+        say({"phase": "stage", "text": f"averaging: {n_avg - 1} more fits, R0 and R1 varied"})
+        more = each(
+            jittered,
+            s.parallel,
+            [
+                f"average {k}/{n_avg}: R0 {v.r0:g}, R1 {v.r1:g}"
+                for k, v in enumerate(jittered, start=2)
+            ],
+        )
         members = [kept] + [r for r in more if r.complete]
         if len(members) > 1:
             kept.ensemble = _mean(members, image, mask, kept_s, jittered, more)
@@ -682,8 +706,8 @@ def summary(result: SingleResult) -> str:
     lines += [f"  {x}" for x in result.steps]
     if result.harmonics:
         lines.append(
-            "harmonic analysis (residual score; R1 reached; * its ellipses crossed or "
-            "failed further out):"
+            "harmonic analysis (residual score; R1 reached; * short of the fit kept's R1: "
+            "its ellipses crossed or failed further out):"
         )
         for h in result.harmonics:
             sc = "-" if h["score"] is None else f"{h['score']:.3f}"

@@ -6,14 +6,19 @@ newest is at the top.
 ## 1.1.0rc1 (not released yet)
 
 - **The pair fit's options for one galaxy.** ELLIPROF's Fit: One elliprof call (as before),
-  Automatic (the pair fit's recipe for one galaxy) or Iterative (each setting shown). R1
-  grows from a first radius by 1.2 and the largest R1 that passes the pair fit's checks is
-  kept; R1, NR and the first R1 automatic; the sky factor refined from the residual sky
-  and a sky tilt taken out; fixed and free centres and growth factors searched; the
+  Automatic (the pair fit's recipe for one galaxy) or Iterative (each setting shown). With
+  no companion there is no R1 growth: the galaxy is fitted out to R1 at once, and to a
+  smaller R1 when the isophotes fail the pair fit's checks (START, FACTOR and TRYFACTOR are
+  refused); R1 and NR automatic; the sky factor refined from the residual sky and a sky
+  tilt taken out; fixed and free centres searched; the
   harmonics searched; the outermost isophotes checked; N fits averaged with the mean
   residual and each fit's own; residual sources masked. Measure (sky by segmentation) and
   Cancel in the panel. The plain `elliprof` command is unchanged unless one of these
   keywords is given.
+- **ELLIPROF's fitting progress.** While an iterative fit runs, a table under Fit isophotes
+  lists every elliprof call (its step: search, harmonics, sky tilt, residual sources or
+  averaging; R0 to R1, NR, passed or why it failed) and every finished fit in bold with its
+  score, the best so far in green; the image shows the isophotes of the latest fit.
 - **ELLIPROF: the sky analyser and the harmonic analysis.** The pair fit's sky section
   (segmentation settings, Measure, the verdict, histogram and cell map, Use this sky, the
   factor and its refinement, and after a fit the residual on the sky pixels with the next

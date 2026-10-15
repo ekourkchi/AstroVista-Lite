@@ -365,6 +365,12 @@ class PairWorker(QtCore.QObject):
             self.done.emit(result)
 
 
+class Relay(QtCore.QObject):
+    """Carries progress messages from a command's thread into the window's thread."""
+
+    message = QtCore.Signal(object)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -382,6 +388,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._residual_shown = None
         self._pair_worker = None
         self._pair_live, self._pair_live_key = {}, None
+        self._single_live, self._single_live_key = None, None
+        self._single_relay = Relay(self)
+        self._single_relay.message.connect(self._single_progress)
+        self.session.progress_hook = self._single_relay.message.emit
         self._live_timer = QtCore.QTimer(self, singleShot=True, interval=300)
         self._live_timer.timeout.connect(self._overlays)
         self._task = None
@@ -1141,6 +1151,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._enable_runs(True)
         if error is not None:
             self.elliprof.cancel.setEnabled(False)
+            self._single_live = None
             self.console.say(error, error=True)
             self.statusBar().showMessage(error.splitlines()[0])
             self._queue.clear()  # what followed may depend on the failed command
@@ -1151,6 +1162,8 @@ class MainWindow(QtWidgets.QMainWindow):
             verb = verb_of(line)
             if verb == "elliprof":
                 self.elliprof.cancel.setEnabled(False)
+                self._single_live = None
+                self.elliprof.progress.setText("")
                 self._refresh_elliprof_sky()
                 self.elliprof.status.setText(reply.text.splitlines()[0])
                 self.show_result(self.profile)
@@ -2030,7 +2043,31 @@ class MainWindow(QtWidgets.QMainWindow):
         measured = bool(sid) and s.sky_stale(sid) is None
         if panel.is_iterative():
             panel.cancel.setEnabled(True)
+            panel.clear_calls()
+            self._single_live, self._single_live_key = None, image.key
         self.run_command(panel.command(n, model, resid, measured_sky=measured))
+
+    def _single_progress(self, info: dict) -> None:
+        """An iterative ELLIPROF fit's progress: the table, the line above it and the
+        isophotes of the latest fit drawn as they come."""
+        p = self.elliprof
+        phase = info.get("phase")
+        if phase == "stage":
+            p.progress.setText(info["text"])
+            self.statusBar().showMessage(f"ELLIPROF • {info['text']}")
+            return
+        if phase in ("call", "fitted"):
+            p.add_call(info)
+            if info.get("ellipses"):
+                self._single_live = info["ellipses"]
+                if not self._live_timer.isActive():
+                    self._live_timer.start()
+            return
+        if phase == "fit":
+            text = f"ELLIPROF • call {info['call']} • {info.get('stage', '')} (R1 {info['r1']:.1f})"
+            if self.session.stop_flag:
+                text = "stopping after the elliprof calls running now… " + text
+            self.statusBar().showMessage(text)
 
     def cancel_elliprof(self) -> None:
         """Stop an iterative ELLIPROF fit and keep nothing (the command checks the flag)."""
@@ -2932,7 +2969,13 @@ class MainWindow(QtWidgets.QMainWindow):
         image = self.viewer.image
         result = self.session.fits.get(image.key) if image else None
         show = self.layers.checked
-        self.viewer.show_isophotes(result.ellipses if result and show("isophotes") else [])
+        live = (
+            self._single_live if image is not None and image.key == self._single_live_key else None
+        )
+        if live and show("isophotes"):  # an iterative fit running: its latest isophotes
+            self.viewer.show_isophotes(live)
+        else:
+            self.viewer.show_isophotes(result.ellipses if result and show("isophotes") else [])
         run = self._run_on_shown()
         if run is not None and show("sources"):
             self.viewer.show_sources(run.ellipses())

@@ -1987,17 +1987,30 @@ def test_a_single_galaxy_grows_and_keeps_its_largest_clean_r1():
                 fit.profile.loc[nr - 1, "ellip"] = 0.99
             return fit
 
-    s = single.SingleSettings(x0=30.5, y0=30.5, r0=2, r1=40, start=10, factor=1.2, sky=100.0)
+    s = single.SingleSettings(x0=30.5, y0=30.5, r0=2, r1=40, sky=100.0)
     f = FailsBeyond()
-    r = single.fit_single(image, mask, s, fitter=f)
+    seen = []
+    r = single.fit_single(image, mask, s, fitter=f, progress=seen.append)
     assert r.complete and 20 < r.r1 <= 25.5
     radii = [c["r1"] for c in f.calls]
-    assert radii[0] == pytest.approx(10) and radii[1] == pytest.approx(12)  # grown by 1.2
-    assert any("failed" in x for x in r.steps)
+    assert radii[0] == pytest.approx(40)  # no growth: R1 at once, smaller when it fails
+    assert all(b < a for a, b in zip(radii, radii[1:]))
+    assert any("fitted to" in x for x in r.steps)
+    # the progress: every call (numbered, passed or why not) and each fit with its score
+    calls = [m for m in seen if m["phase"] == "call"]
+    assert [m["call"] for m in calls] == list(range(1, len(f.calls) + 1))
+    assert not calls[0]["passed"] and calls[-1]["passed"] and calls[-1]["ellipses"]
+    done = [m for m in seen if m["phase"] == "fitted"]
+    assert len(done) == 1 and done[0]["score"] is not None and done[0]["stage"]
     assert np.allclose(r.residual, image - 100.0 - r.model)
     # searched and averaged: rows for each variant, and N fits in the mean
     s2 = single.SingleSettings(x0=30.5, y0=30.5, r0=2, r1=20, sky=100.0, try_fix=[1, 0], parallel=3)
-    r2 = single.fit_single(image, mask, s2, fitter=SteadyFitter())
+    seen2 = []
+    r2 = single.fit_single(image, mask, s2, fitter=SteadyFitter(), progress=seen2.append)
+    stages = [m["stage"] for m in seen2 if m["phase"] == "fitted"]
+    assert stages[:2] == ["search: centres fixed", "search: centres free"]
+    assert sum(x.startswith("average") for x in stages) == 2
+    assert any(m["phase"] == "stage" and m["text"].startswith("averaging") for m in seen2)
     assert len(r2.search) == 2 and sum(bool(x.get("chosen")) for x in r2.search) == 1
     e = r2.ensemble
     assert e["members"] == 3 and len(e["fits"]) == 3
@@ -2015,7 +2028,7 @@ def test_elliprof_with_the_pair_fits_options():
     ses.execute("mask role stars fit")
     ses.execute("sky 1 SEGMENT")
     text = ses.execute(
-        "elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=AUTO START=AUTO NR=AUTO FIXCTR=1 TIE=-3 RMSTAR "
+        "elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=AUTO NR=AUTO FIXCTR=1 TIE=-3 RMSTAR "
         "TAIL=measured SKYITER=2 TRYFIX=1,0 SHAPETOL=0.12 PARALLEL=2 MASK=stars TOMODEL=3 TORESID=4"
     ).text
     assert "R1=AUTO ->" in text and "fitted: R1" in text and "<- kept" in text
@@ -2032,7 +2045,11 @@ def test_elliprof_with_the_pair_fits_options():
     ses2 = Session()
     ses2.execute(f"rd 1 {folder / 'pair.fits'}")
     with pytest.raises(CommandError):
-        ses2.execute("elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=100 SKY=1000 START=AUTO SKYITER=2")
+        ses2.execute("elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=100 SKY=1000 SKYITER=2")
+    # R1 growth is the pair fit's: a single fit refuses it
+    for word in ("START=AUTO", "FACTOR=1.2", "TRYFACTOR=1.2,1.35"):
+        with pytest.raises(CommandError, match="growth"):
+            ses.execute(f"elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=100 SKY=1000 {word}")
 
 
 def test_the_elliprof_panel_writes_the_iterative_fit():
@@ -2046,18 +2063,49 @@ def test_the_elliprof_panel_writes_the_iterative_fit():
     assert "START" not in p.command(1, 3, 4)  # One elliprof call: as before
     p.fit_mode.setCurrentIndex(1)  # Automatic
     words = p.command(1, 3, 4, measured_sky=True).split()
-    for w in ("R1=AUTO", "NR=AUTO", "START=AUTO", "TRYFIX=1,0", "SKYITER=3", "TAIL=measured"):
+    for w in ("R1=AUTO", "NR=AUTO", "TRYFIX=1,0", "SKYITER=3", "TAIL=measured"):
         assert w in words, w
+    assert not any(w.startswith(("START", "FACTOR", "TRYFACTOR")) for w in words)
     assert "SKYITER=3" not in p.command(1, 3, 4, measured_sky=False).split()
     p.fit_mode.setCurrentIndex(2)  # Iterative, my settings
     assert p.iterative.isVisibleTo(p)
-    p.factor.setValue(1.3)
     p.cos4x.setCurrentIndex(p.cos4x.findData(1))
     p.search_fix.setChecked(False)
     p.parallel.setValue(1)
     words = p.command(1, 3, 4).split()
-    assert "FACTOR=1.3" in words and "COS4X=1" in words and "R1=120" in words
+    assert not any(w.startswith(("START", "FACTOR", "TRYFACTOR")) for w in words)
+    assert "COS4X=1" in words and "R1=120" in words
     assert not any(w.startswith("TRYFIX") or w.startswith("PARALLEL") for w in words)
+    # the progress table: calls, then a finished fit in bold with its score
+    assert p.calls.isVisibleTo(p)
+    p.add_call(
+        {
+            "phase": "call",
+            "call": 1,
+            "stage": "search: centres fixed",
+            "r0": 3,
+            "r1": 120,
+            "nr": 15,
+            "passed": False,
+            "reason": "ellipses cross",
+        }
+    )
+    p.add_call(
+        {
+            "phase": "fitted",
+            "stage": "search: centres fixed",
+            "status": "fitted",
+            "score": 1.234,
+            "r1": 96,
+            "nr": 13,
+        }
+    )
+    assert p.calls.rowCount() == 2 and "FAILED" in p.calls.item(0, 4).text()
+    assert p.calls.item(1, 4).text().startswith("score 1.234") and p.calls.item(1, 4).font().bold()
+    p.clear_calls()
+    assert p.calls.rowCount() == 0
+    p.fit_mode.setCurrentIndex(0)
+    assert not p.calls.isVisibleTo(p)
     app.processEvents()
 
 
