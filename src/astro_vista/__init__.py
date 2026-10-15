@@ -5,4 +5,4 @@ being developed: it fits the isophotes of galaxies (with the ``elliprof`` packag
 finds the sources around them, with layers, masks and a terminal.
 """
 
-__version__ = "1.0.1"
+__version__ = "1.1.0rc1"

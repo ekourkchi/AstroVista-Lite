@@ -86,6 +86,9 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          # a candidate (1.1.0rc1, 1.1.0b2, ...) is a pre-release, never the latest release
+          prerelease=""
+          if echo "$GITHUB_REF_NAME" | grep -Eq '[0-9](a|b|rc)[0-9]+$'; then prerelease="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" dist/* $prerelease \
             --repo "$GITHUB_REPOSITORY" --title "AstroVista Lite ${GITHUB_REF_NAME#v}" \
             --notes "pip install AstroVista — documentation: https://ekourkchi.github.io/AstroVista-Lite/"
