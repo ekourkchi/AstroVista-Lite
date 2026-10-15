@@ -35,8 +35,10 @@ COS3X_SHOWN = [
 ]
 COS4X_SHOWN = [(2, "2: each isophote (default)"), (1, "1: median of all"), (0, "0: none")]
 DEFAULT_PARALLEL = max(1, min(5, (os.cpu_count() or 1) - 1))
-MODES_SHOWN = ["Automatic", "Automatic, adjustable", "Manual"]
-AUTOMATIC, ADJUSTABLE, MANUAL = range(3)
+MODES_SHOWN = ["Automatic", "Automatic, adjustable", "Manual", "Joe's mode"]
+AUTOMATIC, ADJUSTABLE, MANUAL, JOE = range(4)
+# Joe's mode (METHOD=JOE): Joe Jensen's way of fitting a pair, with these settings
+JOE_RUN = ["METHOD=JOE", "CYCLES=12", "CONVERGE=0.02", "TIE=-3", "RMSTAR", "TAIL=measured"]
 # the run of the automatic settings (chosen on simulated pairs; see the changelog)
 AUTO_RUN = [
     "CORES=0",
@@ -563,7 +565,10 @@ class PairPanel(QtWidgets.QWidget):
             "isophotes and the recipe are those that worked best on simulated pairs.\n"
             "Automatic, adjustable: the same values, every one shown and open to change; the "
             "radii and isophotes stay automatic until you untick their auto boxes.\n"
-            "Manual: every setting yours, the radii typed or picked."
+            "Manual: every setting yours, the radii typed or picked.\n"
+            "Joe's mode: Joe Jensen's way. Each galaxy's centre left out while the other is "
+            "fitted; the smaller first, not far out; then the two in turn, each grown only as "
+            "far as its outer ellipses are not pulled towards the other. Fast, no search."
         )
         form.addRow("Settings", tip(self.mode, "pair_auto"))
         self.parallel = whole(1, MAX_PARALLEL, DEFAULT_PARALLEL)
@@ -757,6 +762,14 @@ class PairPanel(QtWidgets.QWidget):
 
         # ---- the run
         form.addRow(heading("4. Run"))
+        self.joe_note = note(
+            "Joe's mode: each galaxy's centre left out while the other is fitted; the smaller "
+            "galaxy first, not far out; then the two in turn, each trying a 30 % larger R1 and "
+            "keeping it only as far as its ellipses (fitted with free centres) do not move "
+            "towards the other; the model kept with fixed centres, smoothed over 3 isophotes, "
+            "the light beyond R1 measured in rings. No search and no sky refinement: about a "
+            "tenth of the calls of Automatic."
+        )
         self.auto_note = note(
             "Automatic: R1 where each galaxy's light fades into the noise; the first fits small "
             "and growing; isophotes about 30 % apart, smoothed over 3 (TIE=-3); bright outliers "
@@ -766,6 +779,7 @@ class PairPanel(QtWidgets.QWidget):
             "change any of it."
         )
         form.addRow(self.auto_note)
+        form.addRow(self.joe_note)
         manual(
             note(
                 "A on D, B on D − M_A, then A on D − M_B and B on D − M_A, cycle after cycle, "
@@ -1186,7 +1200,8 @@ class PairPanel(QtWidgets.QWidget):
 
     # ---- the command
     def is_automatic(self) -> bool:
-        return self.mode.currentIndex() == AUTOMATIC
+        """Automatic or Joe's mode: few settings shown, the rest fixed."""
+        return self.mode.currentIndex() in (AUTOMATIC, JOE)
 
     def set_mode(self, index: int) -> None:
         """Automatic (few settings shown), automatic and adjustable (every setting, at the
@@ -1194,7 +1209,9 @@ class PairPanel(QtWidgets.QWidget):
         if self.mode.currentIndex() != index:
             self.mode.setCurrentIndex(index)  # comes back here
             return
-        self.set_automatic(index == AUTOMATIC)
+        self.set_automatic(index in (AUTOMATIC, JOE))
+        self.auto_note.setVisible(index == AUTOMATIC)
+        self.joe_note.setVisible(index == JOE)
         if index == ADJUSTABLE:
             self.recommended()
         elif index == MANUAL:
@@ -1270,7 +1287,24 @@ class PairPanel(QtWidgets.QWidget):
         parts.append("B: " + self.cards["B"].auto_keywords())
         return " ".join(parts)
 
+    def joe_command(self, n: int) -> str:
+        """The pair command of Joe's mode."""
+        parts = [f"pair {n}", f"SKY={self.sky.value():.10g}"]
+        if self.factor.value() != 1.0:
+            parts.append(f"SKYFACTOR={self.factor.value():.6g}")
+        layers = self.ticked_layers()
+        if layers:
+            parts.append("MASK=" + ",".join(layers))
+        parts += JOE_RUN
+        if self.views.isChecked():
+            parts.append("VIEWS")
+        parts.append("A: " + self.cards["A"].auto_keywords())
+        parts.append("B: " + self.cards["B"].auto_keywords())
+        return " ".join(parts)
+
     def command(self, n: int) -> str:
+        if self.mode.currentIndex() == JOE:
+            return self.joe_command(n)
         if self.is_automatic():
             return self.auto_command(n)
         parts = [f"pair {n}", f"SKY={self.sky.value():.10g}"]

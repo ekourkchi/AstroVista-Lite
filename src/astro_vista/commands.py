@@ -1749,7 +1749,7 @@ KEYWORDS = {
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
     "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X= RUNS= JITTER= SEED= "
-    "HARMONICS= WINGS=",
+    "HARMONICS= WINGS= METHOD= PULLCHECK=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1976,6 +1976,13 @@ Shared (before A:)
                 kept (as TRYCOS3X=-3,-2,-1,0,1,2 TRYCOS4X=0,1,2)
   WINGS=1       mask the light beyond the masks of bright sources (star wings, spikes)
                 that the residual of a first pass shows, joined to their masks
+  METHOD=JOE    Joe's mode: each galaxy's centre left out while the other is fitted, the
+                smaller galaxy first and not far out, then the two in turn, each R1 grown
+                only as far as its ellipses are not pulled towards the other (free
+                centres judge it); fast, no search
+  PULLCHECK=0   no pull check (by default each galaxy of a complete fit is fitted once more
+                with free centres and the report says whether its ellipses move towards
+                the other, and from which radius)
   STOP          stop early once A, B and A + B all change by less than 2 %
   VIEWS         also make the image - sky - B and image - sky - A buffers
   TOMODELA= TOMODELB= TOMODEL= TORESID=   the result buffers (free ones by default)

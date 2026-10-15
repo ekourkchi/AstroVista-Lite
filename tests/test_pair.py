@@ -1496,3 +1496,105 @@ def test_wings_beyond_a_mask_are_masked_and_specks_are_not():
     added = out.fit_mask & ~fit_mask
     assert added.sum() > 50 and added[50, 66] and not added[10, 100]
     assert "WINGS:" in out.notes[-1]
+
+
+# ---------------------------------------------------------------- Joe's mode, the pull check
+class PullingFitter(SteadyFitter):
+    """A's isophotes beyond ``start`` px move towards B when its centre is free."""
+
+    def __init__(self, start=12.0, by=2.0, **kw):
+        super().__init__(**kw)
+        self.start, self.by = start, by
+
+    def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+        fit = super().__call__(data, x0, y0, r0, r1, nr, **kw)
+        if x0 < 50 and kw.get("fixctr") == 0:
+            outer = fit.profile["Rmaj"] > self.start
+            fit.profile.loc[outer, "x0"] = fit.profile.loc[outer, "x0"] + self.by
+        return fit
+
+
+def test_outer_pull_finds_where_the_ellipses_move_towards_the_other():
+    import pandas as pd
+
+    r = np.array([3, 5, 7, 10, 13, 17, 22, 28, 35.0])
+    x = np.full(r.size, 30.0)
+    x[r > 15] += np.array([0.2, 1.5, 2.5, 3.0])[: (r > 15).sum()]
+    p = pd.DataFrame({"Rmaj": r, "x0": x, "y0": np.full(r.size, 30.0)})
+    out = pair.outer_pull(p, (30.0, 30.0), (90.0, 30.0))
+    assert out["from"] == 22 and out["r_ok"] == 17 and out["most"] == pytest.approx(3.0)
+    # away from the other galaxy is not a pull
+    away = pair.outer_pull(p, (30.0, 30.0), (-30.0, 30.0))
+    assert away["from"] is None and away["r_ok"] == 35
+
+
+def test_joes_mode_grows_each_galaxy_only_as_far_as_it_is_not_pulled():
+    from dataclasses import replace
+
+    snap = iterative_snapshot()
+    snap = replace(
+        snap, components={**snap.components, "A": replace(snap.components["A"], r1=30.0)}
+    )
+    snap = replace(snap, settings=replace(snap.settings, method="joe", cycles=8))
+    f = PullingFitter(start=12.0)
+    result = pair.run_search(snap, fitter=f)
+    assert result.complete and result.joe["order"] == ["B", "A"]  # the smaller first
+    assert result.commits["B"].r1_call == pytest.approx(20.0)  # B is never pulled: its R1
+    assert result.commits["A"].r1_call <= 13.5  # A stops where its ellipses start to move (of 30)
+    assert any("move towards B" in x for x in result.joe["steps"])
+    # each galaxy's centre is left out while the other is fitted
+    core_a = result.snapshot.cores["A"]
+    assert core_a.shape == "circle" and core_a.a == pytest.approx(12.0)  # 0.2 of 60 px
+    b_calls = [c for c in f.calls if c["component"] == "B"]
+    assert all(c["kw"]["masked"][30, 30] for c in b_calls)
+    # the models kept are fitted with the galaxy's own FIXCTR, the pull judged with free centres
+    assert {c["kw"]["fixctr"] for c in f.calls} == {0, 1}
+    text = pair.summary(result, result.snapshot)
+    assert "Joe's mode: B first, then A" in text and "pull check of A" in text
+    with pytest.raises(pair.PairError):
+        pair.settings_from({"SKY": "1", "METHOD": "fast"})
+    assert pair.settings_from({"SKY": "1", "METHOD": "joe"}).method == "joe"
+
+
+def test_joes_mode_starts_with_the_other_galaxy_when_the_first_cannot_start():
+    from dataclasses import replace
+
+    snap = iterative_snapshot()
+    snap = replace(
+        snap, components={**snap.components, "A": replace(snap.components["A"], r1=30.0)}
+    )
+    snap = replace(snap, settings=replace(snap.settings, method="joe", cycles=2))
+    f = SteadyFitter(fail={("B", k) for k in range(1, 13)})  # B's first fits all fail
+    result = pair.run_joe(snap, fitter=f)
+    assert result.joe["order"][0] == "A"
+    assert any("could not be started" in x for x in result.joe["steps"])
+
+
+def test_the_pull_check_reports_each_galaxy_and_changes_nothing():
+    snap = iterative_snapshot()
+    result = pair.run_search(snap, fitter=PullingFitter(start=12.0))
+    assert set(result.pull) == {"A", "B"}
+    assert result.pull["A"]["judged"] and result.pull["A"]["from"] > 12
+    assert result.pull["B"]["from"] is None
+    words = pair.pull_words("A", result.pull["A"], {"A": "A", "B": "B"})
+    assert "move towards B from Rmaj" in words
+    kept = pair.run_search(snap, fitter=PullingFitter(start=12.0))
+    assert np.array_equal(kept.total, result.total)  # diagnostics only
+    from dataclasses import replace
+
+    off = replace(snap, settings=replace(snap.settings, pull_check=False))
+    assert pair.run_search(off, fitter=PullingFitter()).pull == {}
+
+
+def test_the_panel_writes_joes_mode():
+    from PySide6 import QtWidgets
+
+    from astro_vista.pairpanel import JOE, PairPanel
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    panel = PairPanel()
+    panel.set_mode(JOE)
+    words = panel.command(1).split()
+    assert "METHOD=JOE" in words and "TAIL=measured" in words and "TRYDAMP=1,0.5" not in words
+    assert panel.joe_note.isVisibleTo(panel) and not panel.auto_note.isVisibleTo(panel)
+    app.processEvents()

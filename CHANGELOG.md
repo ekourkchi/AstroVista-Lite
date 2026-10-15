@@ -5,6 +5,17 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Joe's mode.** Settings ▸ Joe's mode (`METHOD=JOE`) fits a pair the way Joe Jensen
+  does it by hand: each galaxy's centre left out while the other is fitted, the smaller
+  galaxy first and not far out, then the two in turn, each R1 grown only as far as its
+  outer ellipses (fitted with free centres) do not move towards the other. No search and
+  no sky refinement: seconds instead of minutes. On 18 simulated pairs its errors were
+  close to the automatic settings' with worse worst cases; on N6768, N4825 and C328014 it
+  left 1.3 to 3 times more large-scale structure in the residual. A quick first look.
+- **The pull check.** Every complete pair fit ends with Joe's test: each galaxy fitted once
+  more with free centres on the image minus the other's model, and the report says whether
+  its outer ellipses move towards the other galaxy and from which radius (`PULLCHECK=0`:
+  off). On C328014 it shows that B's ellipses move towards A from Rmaj 68 of its 83.
 - **Repeat runs, averaged.** `RUNS=n` (Pair fit ▸ Runs to average) fits the fit kept
   again n − 1 times, each with every galaxy's R0 and R1 changed at random by 10–15 %
   (`JITTER=0.15`, `SEED=`), and averages the complete runs: buffers get the mean A, B and

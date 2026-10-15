@@ -663,6 +663,19 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "pass's residual shows beyond their masks",
                     ),
                     (
+                        "METHOD=JOE",
+                        "Joe's mode: each galaxy's centre left out while the other is fitted, "
+                        "the smaller galaxy first and not far out, then the two in turn, each "
+                        "R1 grown only as far as its ellipses (fitted with free centres) are "
+                        "not pulled towards the other; no search, about a tenth of the calls",
+                    ),
+                    (
+                        "PULLCHECK=0",
+                        "no pull check; by default each galaxy of a complete fit is fitted "
+                        "once more with free centres, and the report says whether its "
+                        "ellipses move towards the other and from which radius",
+                    ),
+                    (
                         "A: … B: …",
                         "each galaxy: X0= Y0= R0= R1= NR=25 NAME= FIXCTR= CORE= ADAPTIVE "
                         "COS3X= COS4X= (ELLIPROF's harmonics in the model: 2 each isophote's, "

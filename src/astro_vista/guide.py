@@ -869,6 +869,26 @@ TIPS = {
     "spread of the models, and the report gives the mean sky and every run. A run whose "
     "residual is more than 50 % above the best is left out of the mean. The runs go "
     "<i>Parallel fits</i> at a time. SEED= repeats the same random changes.",
+    "pair_joe": "<b>Joe's mode</b> (METHOD=JOE) follows Joe Jensen's way of fitting a pair "
+    "by hand. Each galaxy's centre is left out (a circle of 0.2 of the separation, 6 to 30 px) "
+    "while the other is fitted, because ELLIPROF goes astray on the residual of the other's "
+    "centre. The smaller galaxy is fitted first, not far out, then the other on the image "
+    "minus it; if the first cannot be started, the other starts. Then they alternate: each "
+    "tries an R1 30 % larger and keeps it only as far as its outer ellipses, fitted with free "
+    "centres, do not move towards the other galaxy. The model kept is fitted again with the "
+    "galaxy's own centre setting. There is no search and no sky refinement, so it takes "
+    "about a tenth of the elliprof calls of Automatic. On 18 simulated pairs its errors were "
+    "close to Automatic's (the SBF amplitude in the residual within 3 % of the truth for "
+    "half the galaxies, against 2 %; the model within 2.6 %, against 2.2 %), with worse "
+    "worst cases; on three real fields it left 1.3 to 3 times more large-scale structure "
+    "in the residual. Use it as a quick first look, and its steps to see where each galaxy "
+    "is pulled.",
+    "pair_pull": "<b>Pull check</b> (every complete pair fit; PULLCHECK=0 turns it off): each "
+    "galaxy is fitted once more, with free centres, on the image minus the other's model and "
+    "out to its R1. If its outer ellipses' centres move towards the other galaxy (by more "
+    "than 0.5 px or 2 % of the radius, two isophotes in a row) the report says from which "
+    "radius: beyond it the galaxy's light is not separated from the other's. This is Joe "
+    "Jensen's test, done by eye in his pair fits. It does not change the result.",
     "pair_wings": "<b>Mask star wings and spikes</b> (WINGS=1): a first pass is fitted, its "
     "residual smoothed over 1.5 px and compared with its own local spread; light above 2.5 "
     "times that, joined to the mask of a bright source (at least 40 px), up to 150 px from "
@@ -912,7 +932,7 @@ TIPS = {
     "bright outliers along each isophote rejected (RMSTAR); the model beyond R1 continued by "
     "a Sérsic law fitted to the outer profile; the sky factor refined from the residual sky "
     "3 times (with a measured sky); 8 variants of damping, centres and growth fitted and the "
-    "best kept by the residual. The report and the export record every value used.",
+    "best kept by the residual. The report and the export record every value used. <i>Joe's mode</i>: Joe Jensen's way of fitting a pair, quick and without a search (see Joe's mode under Every setting explained). Every complete fit ends with a pull check of the outer ellipses (see Pull check).",
     "pair_tie": "<b>Smoothing with radius</b> (TIE): after each iteration, the ellipticity, "
     "angle and centre are smoothed over neighbouring isophotes: -3 averages over 3 "
     "(recommended), -5 over 5; -1 turns it off; k >= 0 fits a polynomial of order k in "

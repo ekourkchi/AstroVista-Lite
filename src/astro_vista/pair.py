@@ -172,6 +172,8 @@ class Settings:
     jitter: float = 0.15  # JITTER=: each repeat's R0 and R1 change by 2/3 of this to this
     seed: Optional[int] = None  # SEED=: the repeats' random numbers (default: the run's number)
     harmonic_search: bool = False  # HARMONICS=AUTO: every COS3X and COS4X tried for each
+    method: str = "pair"  # METHOD=JOE: Joe's mode (run_joe) instead of the cycles and search
+    pull_check: bool = True  # PULLCHECK=0: no check of the outer ellipses' pull (pull_check)
 
 
 @dataclass
@@ -329,6 +331,8 @@ class PairResult:
     wall: float = 0.0  # run_search: the whole search, from start to end (parallel or not)
     r0_raised: Dict[str, float] = field(default_factory=dict)  # INNER_R0: the R0 used instead
     repeats: List[dict] = field(default_factory=list)  # RUNS: the fit kept and every repeat
+    pull: Dict[str, dict] = field(default_factory=dict)  # pull_check: each galaxy's verdict
+    joe: dict = field(default_factory=dict)  # METHOD=JOE: the order, the radii and the steps
     run_id: int = 0
 
     @property
@@ -426,6 +430,8 @@ SHARED = {
     "JITTER",
     "SEED",
     "HARMONICS",
+    "METHOD",
+    "PULLCHECK",
 }
 OWN = {
     "NAME",
@@ -707,7 +713,11 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         jitter=_num(shared, "JITTER", "", 0.15),
         seed=_num(shared, "SEED", "", None, int) if "SEED" in shared else None,
         harmonic_search=shared.get("HARMONICS", "").strip().upper() == "AUTO",
+        method=shared.get("METHOD", "pair").strip().lower(),
+        pull_check=_num(shared, "PULLCHECK", "", 1, int) != 0,
     )
+    if s.method not in METHODS:
+        raise PairError("METHOD must be PAIR (the cycles and the search) or JOE (Joe's mode)")
     if s.tail not in TAILS:
         raise PairError("TAIL must be one of " + ", ".join(TAILS))
     if "HARMONICS" in shared and not s.harmonic_search:
@@ -1078,6 +1088,7 @@ def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarr
 
 
 TAILS = ("measured", "sersic", "elliprof", "exp", "cut")
+METHODS = ("pair", "joe")
 
 # A failure of the innermost isophotes (within INNER_R0 px: a few PSF widths, where an
 # isophote's shape is set by the pixels and the PSF more than by the galaxy) is retried with
@@ -2064,6 +2075,429 @@ def refine_auto(snap: Snapshot, first: PairResult) -> Tuple[Snapshot, List[str]]
     return replace(snap, components=comps, eval=ev, notes=snap.notes + notes), notes
 
 
+# ---------------------------------------------------------------- the pull of the other galaxy
+# An isophote is "pulled" when its fitted centre (free centres) has moved towards the other
+# galaxy, from the median centre of the inner third of the isophotes, by more than
+# max(PULL_PX, PULL_FRAC x its radius), for PULL_RUN isophotes in a row.  This is Joe
+# Jensen's test, done by eye in his pair fits: the outer ellipses must not start moving
+# towards the other galaxy.  The free-centre fit that judges it starts at PULL_R0 at least,
+# since the centre of a small, undersampled galaxy cannot be fitted freely.
+PULL_PX = 0.5
+PULL_FRAC = 0.02
+PULL_RUN = 2
+PULL_R0 = 8.0
+
+
+def outer_pull(profile, centre: Tuple[float, float], other: Tuple[float, float]) -> dict:
+    """Where a free-centre profile's isophotes start moving towards ``other``: the largest
+    radius not pulled ("r_ok"), the radius from which they are ("from", None if never) and the
+    largest movement towards it ("most", pixels)."""
+    r = profile["Rmaj"].to_numpy(float)
+    x = profile["x0"].to_numpy(float)
+    y = profile["y0"].to_numpy(float)
+    n = len(r)
+    if n < 4:
+        return {"r_ok": float(r[-1]) if n else None, "from": None, "most": 0.0}
+    inner = max(2, n // 3)
+    xr, yr = float(np.median(x[:inner])), float(np.median(y[:inner]))
+    ux, uy = other[0] - centre[0], other[1] - centre[1]
+    d = math.hypot(ux, uy) or 1.0
+    pull = ((x - xr) * ux + (y - yr) * uy) / d
+    bad = pull > np.maximum(PULL_PX, PULL_FRAC * r)
+    run = 0
+    for k in range(inner, n):
+        run = run + 1 if bad[k] else 0
+        if run >= PULL_RUN:
+            first = k - PULL_RUN + 1
+            return {
+                "r_ok": float(r[max(first - 1, inner - 1)]),
+                "from": float(r[first]),
+                "most": float(np.max(pull[inner:])),
+            }
+    return {"r_ok": float(r[-1]), "from": None, "most": float(np.max(pull[inner:]))}
+
+
+def _fit_options(s: Settings, comp: Component) -> dict:
+    cos3x, cos4x = comp.harmonics()
+    return dict(
+        niter=s.niter,
+        sky=s.sky,
+        rmstar=s.rmstar,
+        timeout=s.timeout,
+        cos3x=cos3x,
+        cos4x=cos4x,
+        rlaw=s.rlaw,
+        gain=s.gain,
+        tie=s.tie,
+    )
+
+
+def pull_check(
+    result: PairResult,
+    snap: Snapshot,
+    fitter: Fitter = fit_array,
+    progress: Optional[Callable[[dict], None]] = None,
+) -> Dict[str, dict]:
+    """Joe's test on the result: each galaxy fitted once more with free centres, on the image
+    minus the other's model and out to its R1, and its isophotes checked for a pull towards
+    the other (outer_pull).  Diagnostics only: the result is not changed."""
+    out = {}
+    finite = np.isfinite(snap.image)
+    for cid in ("A", "B"):
+        other = "B" if cid == "A" else "A"
+        comp = snap.components[cid]
+        commit = result.commits[cid]
+        r1 = commit.r1_call
+        r0 = max(comp.r0, PULL_R0) if PULL_R0 < 0.4 * r1 else comp.r0
+        free = replace(comp, r0=r0, r1=r1, fixctr=0)
+        if progress is not None:
+            progress({"phase": "check", "component": cid, "r1": r1})
+        reached = r1
+        for _try in range(3):  # an outer failure: inside the radius where it failed
+            fit = fitter(
+                snap.image - result.commits[other].model,
+                comp.x0,
+                comp.y0,
+                r0,
+                reached,
+                nr_for(free, reached),
+                masked=snap.mask_for(cid),
+                header=snap.header,
+                fixctr=0,
+                **_fit_options(snap.settings, comp),
+            )
+            ok, reason, kind, radius = check(fit, free, reached, finite)
+            if ok or kind != "outer" or radius is None or radius < 0.3 * r1:
+                break
+            reached = min(0.9 * reached, 0.95 * radius)
+        if not ok:
+            out[cid] = {"r1": r1, "judged": False, "reason": reason}
+            continue
+        o = snap.components[other]
+        p = outer_pull(fit.profile, (comp.x0, comp.y0), (o.x0, o.y0))
+        out[cid] = {"r1": r1, "judged": True, "reached": reached, **p}
+    return out
+
+
+def pull_words(cid: str, p: dict, names: Dict[str, str]) -> str:
+    """One line of the report for galaxy ``cid``'s pull check."""
+    other = names["B" if cid == "A" else "A"]
+    if not p.get("judged"):
+        return f"pull check of {names[cid]}: not judged (its free-centre fit failed: {p.get('reason')})"
+    reach = p.get("reached", p["r1"])
+    short = (
+        f" (the free-centre fit reached {reach:.1f} of R1 {p['r1']:.1f})"
+        if reach < p["r1"] - 0.5
+        else ""
+    )
+    if p.get("from") is None:
+        moved = (
+            "not at all"
+            if p["most"] < 0.05
+            else f"at most {p['most']:.2f} px, within {PULL_PX:g} px or "
+            f"{100 * PULL_FRAC:g} % of the radius"
+        )
+        return (
+            f"pull check of {names[cid]}: its ellipses do not move towards {other} out to "
+            f"{reach:.1f} ({moved}){short}"
+        )
+    return (
+        f"pull check of {names[cid]}: its ellipses move towards {other} from Rmaj "
+        f"{p['from']:.1f} (by up to {p['most']:.2f} px); not pulled out to {p['r_ok']:.1f} "
+        f"of R1 {p['r1']:.1f}{short}"
+    )
+
+
+# ---------------------------------------------------------------- Joe's mode
+# METHOD=JOE: Joe Jensen's way of fitting a pair, as he describes it.  Each galaxy's centre is
+# left out (a circle of JOE_CORE x the separation, within JOE_CORE_MIN .. JOE_CORE_MAX px)
+# while the other is fitted.  The smaller galaxy (the smaller R1) is fitted first, not far
+# out (START, or START=AUTO), then the other on the image minus it; if the first cannot be
+# started, the other starts ("either one, actually").  Then they alternate: each time each
+# tries R1 x JOE_GROW (at most its R1), judged with free centres (outer_pull), and keeps the
+# largest radius whose ellipses are not pulled towards the other, never less than it had.
+# The model kept is refitted with the galaxy's own FIXCTR.  It stops when neither grew in
+# two cycles and A, B and A + B changed by less than CONVERGE, or after CYCLES cycles.
+JOE_GROW = 1.3
+JOE_CORE = 0.2
+JOE_CORE_MIN = 6.0
+JOE_CORE_MAX = 30.0
+JOE_MIN_R1 = 8.0
+
+
+def joe_snapshot(snap: Snapshot) -> Snapshot:
+    """The snapshot with Joe's cores: a circle around each centre."""
+    a, b = snap.components["A"], snap.components["B"]
+    sep = math.hypot(a.x0 - b.x0, a.y0 - b.y0)
+    radius = min(max(JOE_CORE * sep, JOE_CORE_MIN), JOE_CORE_MAX)
+    ny, nx = snap.image.shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    cores = {}
+    for c in (a, b):
+        masked = np.hypot(xx + 0.5 - c.x0, yy + 0.5 - c.y0) <= radius
+        cores[c.id] = Core(
+            c.id,
+            "circle",
+            c.x0,
+            c.y0,
+            radius,
+            radius,
+            0.0,
+            f"Joe's mode: {JOE_CORE:g} of the separation ({sep:.1f} px)",
+            masked & ~snap.invalid,
+        )
+    return replace(snap, cores=cores)
+
+
+def run_joe(
+    snap: Snapshot,
+    progress: Optional[Callable[[dict], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+    fitter: Fitter = fit_array,
+) -> PairResult:
+    """METHOD=JOE (see JOE_GROW): Joe's mode.  Each call is listed, as in run()."""
+    snap = joe_snapshot(snap)
+    s = snap.settings
+    comps = dict(snap.components)
+    image = snap.image
+    finite = np.isfinite(image)
+    result = PairResult(status="incomplete_initialization", run_id=snap.run_id, snapshot=snap)
+    start = time.perf_counter()
+    a, b = comps["A"], comps["B"]
+    sep = math.hypot(a.x0 - b.x0, a.y0 - b.y0)
+    order = ("A", "B") if a.r1 <= b.r1 else ("B", "A")
+    committed: Dict[str, Commit] = {}
+    steps: List[str] = []
+    counter = {"n": 0}
+    total = 4 + 4 * s.cycles
+
+    def say(**info):
+        if progress is not None:
+            info.update(call=counter["n"], calls=total)
+            progress(info)
+
+    def stopping():
+        if cancelled is not None and cancelled():
+            raise Cancelled()
+
+    def call(cid, r1, cycle, fixctr, floor=0.0):
+        """A fit of ``cid`` out to ``r1`` that passes the checks, on the image minus the
+        other's model, retried from a larger R0 when the innermost isophotes fail and inside
+        the radius where it failed (never below ``floor``): (fit, r1) or (None, reason)."""
+        comp = comps[cid]
+        other = "B" if cid == "A" else "A"
+        companion = committed.get(other)
+        data = image if companion is None else image - companion.model
+        source = "D" if companion is None else f"D - M_{other}"
+        mask = snap.mask_for(cid)
+        lift = PULL_R0 if fixctr == 0 and PULL_R0 < 0.4 * r1 else 0.0
+        inner, reason = INNER_TRIES, ""
+        for _attempt in range(6):
+            stopping()
+            r0 = max(comp.r0, lift)
+            trial = replace(comp, r0=r0, r1=r1, fixctr=fixctr)
+            counter["n"] += 1
+            say(phase="fit", cycle=cycle, component=cid, r1=r1, retry=0, input=source)
+            fit = fitter(
+                data,
+                comp.x0,
+                comp.y0,
+                r0,
+                r1,
+                nr_for(trial, r1),
+                masked=mask,
+                header=snap.header,
+                fixctr=fixctr,
+                **_fit_options(s, comp),
+            )
+            ok, reason, _kind, radius = check(fit, trial, r1, finite)
+            drift = _centre_drift(fit.profile, comp) if ok else None
+            result.calls.append(
+                Call(
+                    cycle,
+                    cid,
+                    r1,
+                    _clean_arguments(fit.arguments),
+                    fit.returncode,
+                    fit.seconds,
+                    ok,
+                    reason,
+                    fit.precision,
+                    input=source,
+                    companion="none" if companion is None else f"M_{other} ({companion.tag})",
+                    centre_drift=drift,
+                    mask_pixels=int(mask.sum()),
+                )
+            )
+            say(
+                phase="call",
+                cycle=cycle,
+                component=cid,
+                r1=r1,
+                input=source,
+                passed=ok,
+                reason=reason,
+                drift=drift,
+                index=len(result.calls),
+                ellipses=profile_ellipses(fit.profile) if ok else None,
+            )
+            if ok:
+                if fixctr == comp.fixctr:
+                    result.history.append(
+                        {
+                            "call": len(result.calls),
+                            "cycle": cycle,
+                            "galaxy": cid,
+                            "input": source,
+                            "companion": "none" if companion is None else companion.tag,
+                            "r1": r1,
+                            "passed": True,
+                            "reason": "",
+                            "model": fit.model,
+                            "profile": fit.profile,
+                            "companion_model": None if companion is None else companion.model,
+                        }
+                    )
+                return fit, r1, data, mask
+            result.failures[cid] = f"{cycle}: {reason} (R1 {r1:.1f})"
+            if radius is not None and radius <= INNER_R0 and inner and 1.5 * r0 < INNER_SHARE * r1:
+                inner -= 1
+                if lift:
+                    lift = round(1.5 * r0, 1)
+                else:
+                    comps[cid] = comp = replace(comp, r0=round(1.5 * r0, 1))
+                    result.r0_raised[cid] = comp.r0
+                continue
+            shrink = 0.8 * r1
+            if radius is not None and radius > 1.5 * r0:
+                shrink = min(shrink, 0.95 * radius)
+            r1 = shrink
+            if r1 < max(JOE_MIN_R1, floor + 0.5):
+                break
+        return None, reason, None, None
+
+    def place(cid, r_try, cycle) -> bool:
+        """``cid`` out to ``r_try`` and back to where it is not pulled; True if it grew."""
+        comp = comps[cid]
+        other = "B" if cid == "A" else "A"
+        have = committed[cid].r1_call if cid in committed else 0.0
+        fit, r1, data, mask = call(cid, r_try, cycle, 0, floor=have)
+        judged = fit is not None
+        if judged:
+            o = comps[other]
+            p = outer_pull(fit.profile, (comp.x0, comp.y0), (o.x0, o.y0))
+            keep = max(p["r_ok"], JOE_MIN_R1, have)
+            if keep < 0.97 * r1:
+                steps.append(
+                    f"{cycle}: {cid} tried R1 {r1:.1f}; its ellipses move towards {other} "
+                    f"from {p['from']:.1f}: kept to {keep:.1f}"
+                )
+                r1 = keep
+            else:
+                steps.append(f"{cycle}: {cid} R1 {r1:.1f}, not pulled")
+        else:
+            steps.append(
+                f"{cycle}: {cid}'s free-centre fit to {r_try:.1f} failed ({r1}); its own "
+                "centres instead, the pull not judged"
+            )
+            r1 = r_try
+        fit, r1b, data, mask = call(cid, r1, cycle, comp.fixctr, floor=have)
+        if fit is None and have and r1 > have + 0.5:
+            # it cannot grow: refitted at the radius it has, on the other's newer model
+            steps.append(
+                f"{cycle}: {cid} could not grow to R1 {r1:.1f} ({r1b}); refitted at {have:.1f}"
+            )
+            fit, r1b, data, mask = call(cid, have, cycle, comp.fixctr)
+        if fit is None:
+            steps.append(f"{cycle}: {cid} failed at R1 {r1:.1f} ({r1b}); it keeps its model")
+            return False
+        usable = finite & ~mask
+        committed[cid] = Commit(
+            model=tail_model(fit.model, fit.profile, s.tail, data - s.sky, usable),
+            profile=fit.profile,
+            ellipses=profile_ellipses(fit.profile),
+            tag=cycle,
+            r1_call=r1b,
+            support=outer_support(fit.profile, usable),
+            coverage_uncertain=False,
+            requested_r1=comp.r1,
+        )
+        result.attempted_r1[cid] = r1b
+        return r1b > have + 0.5
+
+    def first_r1(cid):
+        c = comps[cid]
+        return c.first_r1 if (c.start or c.radii) else (auto_start(c.r1, sep) or c.r1)
+
+    try:
+        place(order[0], first_r1(order[0]), "init")
+        if order[0] not in committed:
+            steps.append(f"{order[0]} could not be started; {order[1]} first instead")
+            order = (order[1], order[0])
+            place(order[0], first_r1(order[0]), "init")
+        if order[0] in committed:
+            place(order[1], first_r1(order[1]), "init")
+        if len(committed) < 2:
+            result.stability_reason = "; ".join(f"{c}: {result.failures.get(c, '')}" for c in "AB")
+            result.joe = {"order": list(order), "steps": steps}
+            return _finish(result, snap, start, None, committed)
+        quiet, failed_last = 0, []
+        for k in range(1, s.cycles + 1):
+            tag = str(k)
+            prev = dict(committed)
+            grew, failed_last = False, []
+            for cid in order:
+                before = committed[cid]
+                grew |= place(cid, min(JOE_GROW * before.r1_call, comps[cid].r1), tag)
+                if committed[cid] is before:
+                    failed_last.append(cid)
+            prev_t = prev["A"].model + prev["B"].model
+            m = _metrics(snap, committed, prev["A"].model, prev["B"].model, prev_t, s.converge)
+            m.update(
+                cycle=k,
+                A_ok="A" not in failed_last,
+                B_ok="B" not in failed_last,
+                A_tag=committed["A"].tag,
+                B_tag=committed["B"].tag,
+                A_r1=committed["A"].r1_call,
+                B_r1=committed["B"].r1_call,
+                growing=grew,
+                damping=1.0,
+                polish=False,
+            )
+            result.metrics.append(m)
+            say(phase="cycle", cycle=tag, metrics=m)
+            quiet = 0 if grew else quiet + 1
+            if quiet >= 2 and m["stable"]:
+                m["converged"] = True
+                break
+        last = result.metrics[-1]
+        if failed_last:
+            result.status = "retained_after_failed_update"
+            result.stability_reason = "; ".join(
+                f"{c} failed in cycle {last['cycle']}: {result.failures.get(c, '')}"
+                for c in failed_last
+            )
+        elif last["stable"]:
+            result.status = "stable_valid_pair"
+        else:
+            result.status = "valid_pair_not_stable"
+            result.stability_reason = last["reason"]
+        result.joe = {
+            "order": list(order),
+            "steps": steps,
+            "core": snap.cores["A"].a,
+            "r1": {c: committed[c].r1_call for c in "AB"},
+        }
+        return _finish(result, snap, start, (str(last["cycle"]), dict(committed)), committed)
+    except Cancelled:
+        result.status = "cancelled"
+        result.stability_reason = "stopped by the user"
+        result.joe = {"order": list(order), "steps": steps}
+        checkpoint = ("cancelled", dict(committed)) if len(committed) == 2 else None
+        return _finish(result, snap, start, checkpoint, committed)
+
+
 def run_search(
     snap: Snapshot,
     support: Optional[np.ndarray] = None,
@@ -2080,9 +2514,15 @@ def run_search(
     harmonics on the fit kept (choose_harmonics).  The mean of the fits close to the best is
     kept as well (ensemble())."""
     t0 = time.perf_counter()
-    result = _search(snap, support, progress, cancelled, fitter)
-    if snap.settings.runs > 1 and result.complete and not (cancelled is not None and cancelled()):
-        result = _repeat(result, support, progress, cancelled, fitter)
+    stopped = lambda: cancelled is not None and cancelled()  # noqa: E731
+    if snap.settings.method == "joe":
+        result = run_joe(snap, progress, cancelled, fitter)
+    else:
+        result = _search(snap, support, progress, cancelled, fitter)
+        if snap.settings.runs > 1 and result.complete and not stopped():
+            result = _repeat(result, support, progress, cancelled, fitter)
+    if snap.settings.pull_check and result.complete and not stopped():
+        result.pull = pull_check(result, result.snapshot or snap, fitter, progress)
     result.wall = time.perf_counter() - t0
     return result
 
@@ -2712,6 +3152,20 @@ def summary(result: PairResult, snap: Snapshot) -> str:
             if e.get("note"):
                 text += f"; {e['note']}"
             lines.append(text)
+    names = {c: snap.components[c].label for c in ("A", "B")}
+    if result.joe:
+        lines.append(
+            "Joe's mode: "
+            + " first, then ".join(names[c] for c in result.joe.get("order", []))
+            + (
+                f"; centres left out within {result.joe['core']:.1f} px"
+                if "core" in result.joe
+                else ""
+            )
+        )
+        lines += [f"  {x}" for x in result.joe.get("steps", [])[-6:]]
+    for cid, p in result.pull.items():
+        lines.append(pull_words(cid, p, names))
     for cid, r0 in result.r0_raised.items():
         lines.append(
             f"note: {cid}'s innermost isophotes failed; it was fitted from R0 {r0:g} instead "
@@ -3215,6 +3669,13 @@ def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) ->
         )
     for cid, why in result.failures.items():
         add(f"last failure of {cid}: {why}")
+    rnames = {c: snap.components[c].label for c in ("A", "B")}
+    if result.joe:
+        add("Joe's mode: " + " first, then ".join(rnames[c] for c in result.joe.get("order", [])))
+        for x in result.joe.get("steps", []):
+            add(f"  {x}")
+    for cid, p in result.pull.items():
+        add(pull_words(cid, p, rnames))
     for cid, r0 in result.r0_raised.items():
         add(f"{cid}: the innermost isophotes failed; fitted from R0 {r0:g}")
     for cid, r1 in result.bootstraps.items():

@@ -221,6 +221,25 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
   <pre><code>pair 1 SKY=1000 MASK=stars RUNS=4 PARALLEL=4 \
        A: NAME=A X0=294.3 Y0=263.8 R0=3 R1=120 \
        B: NAME=B X0=421.18 Y0=322.97 R0=3 R1=50 NR=20</code></pre>
+  <h3>Joe's mode</h3>
+  <p><b>Joe's mode</b> (Settings ▸ Joe's mode, <code>METHOD=JOE</code>) fits a pair the
+  way Joe Jensen does it by hand. Each galaxy's centre is left out while the other is
+  fitted. The smaller galaxy is fitted first, not far out, then the other on the image
+  minus it. Then the two take turns, and each R1 grows only as far as its outer ellipses,
+  fitted with free centres, do not move towards the other galaxy. There is no search and
+  no sky refinement, so it takes seconds where Automatic takes a minute or more. On
+  simulated pairs its errors were close to Automatic's, with worse worst cases; on real
+  fields it left more large-scale structure in the residual. It is a quick first look,
+  and its steps in the report show where each galaxy is pulled.</p>
+  <pre><code>pair 1 SKY=1000 MASK=stars METHOD=JOE CYCLES=12 TIE=-3 RMSTAR TAIL=measured \
+       A: X0=294.3 Y0=263.8 R0=3 R1=120 FIXCTR=1 \
+       B: X0=421.18 Y0=322.97 R0=3 R1=50 NR=20 FIXCTR=1</code></pre>
+  <p><b>The pull check.</b> Every complete fit, whatever the settings, ends with Joe's
+  test. Each galaxy is fitted once more with free centres, on the image minus the other's
+  model, and the report says whether its outer ellipses move towards the other galaxy and
+  from which radius. Beyond that radius the galaxy's light is not separated from the
+  other's. The check changes nothing in the result; <code>PULLCHECK=0</code> turns it
+  off.</p>
   <p>Some pairs used to fail at their first fit, and the fit now starts them anyway:</p>
   <ul>
     <li>A fitting mask that covers a galaxy's own centre (a mask made to fit the other
