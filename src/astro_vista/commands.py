@@ -1992,15 +1992,12 @@ Shared (before A:)
                 measured (the light measured in rings of the last isophote's shape)
   SKYPLANE=1    a plane fitted to the residual of the fit kept; if significant, the search
                 again on the image minus its tilt (kept when the residual is lower)
-  PARALLEL=1    fit this many variants at the same time (1 to 16); with two or more fits
-                within 5 % of the best score, their mean sky, mean A, B and A + B models,
-                mean residual (image - mean sky - mean A + B), the models' spread and each
-                fit's own model and residual are made as well
-  RUNS=1        fit the fit kept again RUNS - 1 times with each galaxy's R0 and R1 changed
-                at random by 2/3 JITTER to JITTER (JITTER=0.15: 10 to 15 %), up or down;
-                the mean of the complete runs (all but those 50 % above the best score)
-                gives the mean models, sky, residual (image - mean sky - mean A + B),
-                spread, and each run's model and residual  [SEED= the random numbers]
+  PARALLEL=1    N fits, all averaged (1 to 16): the fit kept and N - 1 repeats with each
+                galaxy's R0 and R1 changed at random by 2/3 JITTER to JITTER (JITTER=0.15:
+                10 to 15 %), run N at a time, each refining its own sky; the mean A, B and
+                A + B models, mean residual (image - mean sky - mean A + B), the models'
+                spread and each fit's own model and residual go to buffers  [SEED=]
+  RUNS=         the number of fits averaged, when not PARALLEL's (RUNS=10 PARALLEL=5)
   HARMONICS=AUTO   try every COS3X and COS4X for each galaxy, A's then B's, on the fit
                 kept (as TRYCOS3X=-3,-2,-1,0,1,2 TRYCOS4X=0,1,2)
   WINGS=1       mask the light beyond the masks of bright sources (star wings, spikes)

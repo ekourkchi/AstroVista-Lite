@@ -1323,12 +1323,14 @@ def test_parallel_fits_give_the_same_result_and_their_mean():
     )
     assert [r["score"] for r in one.search] == [r["score"] for r in many.search]
     assert [r.get("chosen") for r in one.search] == [r.get("chosen") for r in many.search]
-    # every variant gave the same models: all are in the mean, which has no spread
+    # PARALLEL=4: four fits averaged (the fit kept and three repeats); this fake's models
+    # depend on the image alone, so the mean has no spread
+    assert not one.ensemble  # PARALLEL=1: a single fit, no mean
     e = many.ensemble
-    assert e["members"] == 4 and e["of"] == 4
+    assert e["members"] == 4 and e["of"] == 4 and e["repeats"]
     assert np.allclose(e["model"], many.total) and np.allclose(e["spread"], 0)
     assert np.allclose(e["residual"], many.residual) and e["sky"] == pytest.approx(100.0)
-    assert "mean of the 4 fits" in pair.summary(many, many.snapshot)
+    assert "mean of 4 fits (the fit kept and 3 repeats" in pair.summary(many, many.snapshot)
     with pytest.raises(pair.PairError):
         pair.settings_from({"SKY": "1", "PARALLEL": "0"})
     assert pair.settings_from({"SKY": "1", "PARALLEL": "5"}).parallel == 5
@@ -1412,13 +1414,16 @@ def test_repeat_runs_change_r0_and_r1_and_are_averaged():
     e = result.ensemble
     assert e["repeats"] and e["members"] == 4
     assert np.allclose(e["A"] + e["B"], e["model"])
-    assert "mean of 4 runs of 4" in pair.summary(result, result.snapshot)
+    assert "mean of 4 fits" in pair.summary(result, result.snapshot)
     # the same seed, the same changes
     again = pair.run_search(snap, fitter=PureFitter())
     assert [r["variant"] for r in again.repeats] == [r["variant"] for r in rows]
     # with a search, its rows are no longer marked as in the mean: the repeats' mean replaced it
     searched = replace(snap, settings=replace(snap.settings, runs=3, try_fix=[0, 1]))
-    assert any(r.get("mean") for r in pair._search(searched, None, None, None, PureFitter()).search)
+    # the search makes no mean of its own: only the fits averaged are marked
+    assert not any(
+        r.get("mean") for r in pair._search(searched, None, None, None, PureFitter()).search
+    )
     rows_ = pair.run_search(searched, fitter=PureFitter()).search
     assert len(rows_) == 2 and not any(r.get("mean") for r in rows_)
     # an R0 close to R1: a repeat's shrunk R1 never falls to R0 or below it

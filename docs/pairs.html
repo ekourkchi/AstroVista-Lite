@@ -197,17 +197,13 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
   a galaxy, a fit that settles on slightly different models from slightly different
   radii, many variants to fit, or isophotes that are not quite ellipses.</p>
   <ul>
-    <li><b>Parallel fits</b> (<code>PARALLEL=</code>) fit that many variants of the search
-    at the same time. The fit kept is the same; only the time changes. When two or more
-    fits are within 5 % of the best residual, their mean model, the mean residual (the
-    image minus the mean sky minus the mean model), the spread of their models and each
-    fit's own model and residual are put in buffers too. The spread shows where the answer
-    depends on the choices searched.</li>
-    <li><b>Runs to average</b> (<code>RUNS=</code>, <code>JITTER=</code>) fit the fit kept
-    again, each time with every galaxy's R0 and R1 changed at random by 10–15 %. The runs
-    are averaged into the mean A, B and A + B models and the mean sky; the mean residual is
-    the image minus the mean sky minus the mean A + B. Buffers also hold the spread of the
-    models and every run's own model and residual, and the report lists every run. <code>SEED=</code> repeats the same changes.</li>
+    <li><b>Fits to average</b> (<code>PARALLEL=N</code>): N fits, all averaged. The fit
+    kept is fitted again N − 1 times, each time with every galaxy's R0 and R1 changed at
+    random by 10–15 % (<code>JITTER=</code>, <code>SEED=</code>), N at a time, each refining
+    its own sky. Buffers get the mean A, B and A + B models, the mean residual (the image
+    minus the mean sky minus the mean A + B), the spread of the models (where the fits
+    disagree) and every fit's own model and residual. <code>RUNS=</code> sets another
+    number of fits than PARALLEL's.</li>
     <li><b>Mask star wings and spikes</b> (<code>WINGS=1</code>): the light of a bright
     star reaches beyond its segment, and its wings and diffraction spikes are left in the
     residual. With this setting a first pass is fitted, and what its residual shows next to
@@ -220,7 +216,7 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
     disky galaxies. The search takes about 1.7 times as long and matters mostly next to
     a bright star.</li>
   </ul>
-  <pre><code>pair 1 SKY=1000 MASK=stars RUNS=4 PARALLEL=4 \
+  <pre><code>pair 1 SKY=1000 MASK=stars PARALLEL=4 \
        A: NAME=A X0=294.3 Y0=263.8 R0=3 R1=120 \
        B: NAME=B X0=421.18 Y0=322.97 R0=3 R1=50 NR=20</code></pre>
   <h3>Joe's mode</h3>
@@ -300,10 +296,11 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
     SEGMENT</code>). Where does it end, and how close is it to the true 1000?</li>
     <li>Make a closer pair in Python: <code>astro_vista.synthetic.pair(separation=95)</code>.
     How does the fit end?</li>
-    <li>Fit the pair with <code>RUNS=5</code>. Display the spread of the models: where do
-    the runs disagree, and by how much compared with the noise?</li>
+    <li>Fit the pair with <code>PARALLEL=5</code>. Display the spread of the models and the
+    five fits' residuals: where do the fits disagree, and by how much compared with the
+    noise?</li>
     <li>Fit it with <code>PARALLEL=1</code> and then <code>PARALLEL=4</code> in the
-    automatic settings. Compare the time, and the fit kept.</li>
+    automatic settings. Compare the time, the fit kept and the mean residual.</li>
   </ol>
 </section>
 </main>

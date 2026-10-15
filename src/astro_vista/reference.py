@@ -642,17 +642,16 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ),
                     (
                         "PARALLEL=",
-                        "fit this many variants of the search at the same time (1 to 16); "
-                        "with two or more fits within 5 % of the best residual, their mean "
-                        "A + B model, the mean residual (image − mean sky − mean A + B), the "
-                        "models' spread and each fit's own model and residual go to buffers",
+                        "N fits, all averaged (1 to 16): the fit kept and N − 1 repeats with "
+                        "R0 and R1 changed at random by 10–15 % (JITTER=0.15, SEED=), run N at "
+                        "a time, each refining its own sky; buffers get the mean A, B and "
+                        "A + B models, the mean residual (image − mean sky − mean A + B), the "
+                        "models' spread and every fit's own model and residual",
                     ),
                     (
-                        "RUNS=, JITTER=, SEED=",
-                        "fit the fit kept again RUNS − 1 times with R0 and R1 changed at random "
-                        "by 10–15 % (JITTER=0.15); the mean A, B and A + B models, the mean "
-                        "residual (image − mean sky − mean A + B), the spread and each run's "
-                        "model and residual go to buffers",
+                        "RUNS=",
+                        "the number of fits averaged when it is not PARALLEL's (RUNS=10 "
+                        "PARALLEL=5: ten fits, five at a time)",
                     ),
                     (
                         "HARMONICS=AUTO",

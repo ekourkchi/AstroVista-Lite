@@ -27,7 +27,6 @@ from .pair import (
     JOE_CORE_MIN,
     JOE_GROW,
     MAX_PARALLEL,
-    MAX_RUNS,
     PULL_FRAC,
     PULL_PX,
     PULL_R0,
@@ -615,21 +614,11 @@ class PairPanel(QtWidgets.QWidget):
         form.addRow("Settings", tip(self.mode, "pair_auto"))
         self.parallel = whole(1, MAX_PARALLEL, DEFAULT_PARALLEL)
         self.parallel.setToolTip(
-            "PARALLEL: how many fits of the search run at the same time (each ELLIPROF call is "
-            "a process of its own). The fit kept does not depend on it, only the time. With "
-            "two or more fits close to the best, their mean model, mean residual and the "
-            "models' spread are put in buffers too"
-        )
-        self.parallel_note = note(f"this computer has {os.cpu_count() or 1} cores")
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.parallel)
-        row.addWidget(self.parallel_note, 1)
-        form.addRow("Parallel fits", tip(row, "pair_parallel"))
-        self.runs = whole(1, MAX_RUNS, 1)
-        self.runs.setToolTip(
-            "RUNS: fit the fit kept again this many times in all, each time with R0 and R1 "
-            "changed at random, and average the runs: the mean model, residual and sky, and "
-            "how much the runs differ"
+            "PARALLEL: N fits, all averaged: the fit kept and N - 1 repeats with each galaxy's "
+            "R0 and R1 changed at random, run N at a time (each ELLIPROF call is a process of "
+            "its own). Each refines its own sky. Buffers get the mean A, B and A + B models, "
+            "the mean residual (image - mean sky - mean A + B), the models' spread and every "
+            "fit's own model and residual. 1: one fit, no mean"
         )
         self.jitter = whole(1, 50, 15)
         self.jitter.setSuffix(" %")
@@ -638,11 +627,13 @@ class PairPanel(QtWidgets.QWidget):
             "(15 %: 10 to 15 %)"
         )
         row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.runs)
-        row.addWidget(QtWidgets.QLabel("vary R0 and R1 by up to"))
+        row.addWidget(self.parallel)
+        row.addWidget(QtWidgets.QLabel("at the same time; R0, R1 varied by"))
         row.addWidget(self.jitter)
         row.addStretch(1)
-        form.addRow("Runs to average", tip(row, "pair_runs"))
+        form.addRow("Fits to average", tip(row, "pair_parallel"))
+        self.parallel_note = note(f"this computer has {os.cpu_count() or 1} cores; 1: a single fit")
+        form.addRow(self.parallel_note)
         self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic (COS3X, COS4X)")
         self.all_harmonics.setToolTip(
             "HARMONICS=AUTO: on the fit kept, try every COS3X and COS4X for A, then for B, and "
@@ -1483,12 +1474,10 @@ class PairPanel(QtWidgets.QWidget):
         self._summary_line()
 
     def run_keywords(self) -> List[str]:
-        """PARALLEL, RUNS, JITTER, HARMONICS and WINGS: shown in every mode."""
+        """PARALLEL (the fits averaged), JITTER, HARMONICS and WINGS: shown in every mode."""
         out = []
         if self.parallel.value() > 1:
             out.append(f"PARALLEL={self.parallel.value()}")
-        if self.runs.value() > 1:
-            out.append(f"RUNS={self.runs.value()}")
             if self.jitter.value() != 15:
                 out.append(f"JITTER={self.jitter.value() / 100:g}")
         if self.all_harmonics.isChecked():

@@ -188,9 +188,9 @@ class Settings:
     try_fix: List[int] = field(default_factory=list)  # TRYFIX=: centre fitting variants
     try_factor: List[float] = field(default_factory=list)  # TRYFACTOR=: growth factors
     polish: int = 2  # POLISH=: undamped final cycles after damped ones
-    parallel: int = 1  # PARALLEL=: variants fitted at the same time (threads)
+    parallel: int = 1  # PARALLEL=: fits at the same time, and the fits averaged (averaged())
     wings: bool = False  # WINGS=1: mask what a first pass's residual shows around bright sources
-    runs: int = 1  # RUNS=: the fit kept, and RUNS - 1 repeats with R0 and R1 changed at random
+    runs: int = 1  # RUNS=: the fits averaged, when not PARALLEL's number (see averaged())
     jitter: float = 0.15  # JITTER=: each repeat's R0 and R1 change by 2/3 of this to this
     seed: Optional[int] = None  # SEED=: the repeats' random numbers (default: the run's number)
     harmonic_search: bool = False  # HARMONICS=AUTO: every COS3X and COS4X tried for each
@@ -2760,7 +2760,7 @@ def run_search(
         result = run_joe(snap, progress, cancelled, fitter)
     else:
         result = _search(snap, support, progress, cancelled, fitter)
-        if snap.settings.runs > 1 and result.complete and not stopped():
+        if averaged(snap.settings) > 1 and result.complete and not stopped():
             result = _repeat(result, support, progress, cancelled, fitter)
     if snap.settings.pull_check and result.complete and not stopped():
         result.pull = pull_check(result, result.snapshot or snap, fitter, progress)
@@ -2768,20 +2768,25 @@ def run_search(
     return result
 
 
+def averaged(s: Settings) -> int:
+    """How many fits are averaged: RUNS= when given, else PARALLEL= (N fits at the same time
+    make N models: the fit kept and N - 1 repeats)."""
+    return s.runs if s.runs > 1 else s.parallel
+
+
 def _repeat(result, support, progress, cancelled, fitter) -> PairResult:
-    """RUNS: the fit kept, fitted again RUNS - 1 times with R0 and R1 changed at random
-    (jittered()); the mean of the complete ones (ensemble()) replaces the search's mean."""
+    """The fit kept, fitted again averaged() - 1 times with R0 and R1 changed at random
+    (jittered()), each refining its own sky as the fit kept did; every complete one is in the
+    mean (ensemble())."""
     kept_snap = result.snapshot
     s = kept_snap.settings
     more = _fit_each(
         jittered(kept_snap, s), support, progress, cancelled, fitter, s.parallel, light=True
     )
-    for row in result.search:  # the repeats' mean replaces the search's
-        row.pop("mean", None)
     rows = [_search_row("the fit kept", result, kept_snap)]
     rows += [dict(_search_row(label, r, sn), repeat=True) for label, r, sn in more]
     result.ensemble = ensemble(
-        [(result, kept_snap)] + [(r, sn) for _l, r, sn in more], rows, REPEAT_SHARE, True
+        [(result, kept_snap)] + [(r, sn) for _l, r, sn in more], rows, float("inf"), True
     )
     result.repeats = rows
     return result
@@ -2878,7 +2883,6 @@ def _search(snap, support, progress, cancelled, fitter) -> PairResult:
             cid: replace(c, try_cos3x=[], try_cos4x=[]) for cid, c in base.components.items()
         },
     )
-    result.ensemble = ensemble(pairs_, rows)
     if len(rows) > 1:
         result.search = rows
         result.search_choice = why
@@ -3010,11 +3014,9 @@ def choose_harmonics(kept: PairResult, tried: List[Tuple[PairResult, Snapshot]])
     )
 
 
-# The mean of a search: the fits whose residual score is within this share of the best
+# ensemble()'s default: the fits whose residual score is within this share of the best (the
+# mean of PARALLEL / RUNS takes every complete fit, whatever its score)
 ENSEMBLE_SHARE = 0.05
-# The mean of RUNS: every complete repeat but those whose score is this share above the best
-# (a repeat that went wrong, not the variance the repeats are for)
-REPEAT_SHARE = 0.5
 
 
 def all_harmonics(snap: Snapshot) -> Snapshot:
@@ -3037,7 +3039,7 @@ def jittered(snap: Snapshot, s: Settings) -> List[Tuple[str, Snapshot]]:
     the fit may settle on another model; their mean averages that variance out."""
     rng = np.random.default_rng(s.seed if s.seed is not None else snap.run_id)
     out = []
-    for k in range(2, s.runs + 1):
+    for k in range(2, averaged(s) + 1):
         comps, words = {}, []
         for cid, c in snap.components.items():
             f0, f1 = (
@@ -3480,9 +3482,15 @@ def summary(result: PairResult, snap: Snapshot) -> str:
     if e:
         lines.append(
             (
-                f"mean of {e['members']} runs of {e['of']} (the fit kept and its repeats with "
-                f"R0 and R1 changed by {100 * 2 * s_.jitter / 3:.0f}-{100 * s_.jitter:.0f} %; "
-                f"those more than {100 * e['share']:g} % above the best score left out)"
+                f"mean of {e['members']} fits (the fit kept and {e['of'] - 1} repeats with R0 "
+                f"and R1 changed by {100 * 2 * s_.jitter / 3:.0f}-{100 * s_.jitter:.0f} %, "
+                f"{s_.parallel} at a time, each with its own sky"
+                + (
+                    f"; {e['of'] - e['members']} incomplete left out"
+                    if e["of"] > e["members"]
+                    else ""
+                )
+                + ")"
                 if e.get("repeats")
                 else f"mean of the {e['members']} fits within {100 * e['share']:g} % of the "
                 f"best score (of {e['of']})"

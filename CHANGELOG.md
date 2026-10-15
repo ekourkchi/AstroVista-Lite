@@ -30,7 +30,7 @@ newest is at the top.
   more with free centres on the image minus the other's model, and the report says whether
   its outer ellipses move towards the other galaxy and from which radius (`PULLCHECK=0`:
   off). On C328014 it shows that B's ellipses move towards A from Rmaj 68 of its 83.
-- **Repeat runs, averaged.** `RUNS=n` (Pair fit ▸ Runs to average) fits the fit kept
+- **Repeat runs, averaged.** `RUNS=n` (now set by Fits to average, PARALLEL=) fits the fit kept
   again n − 1 times, each with every galaxy's R0 and R1 changed at random by 10–15 %
   (`JITTER=0.15`, `SEED=`), and averages the complete runs: buffers get the mean A, B and
   A + B models, the mean residual (the original image minus the mean sky minus the mean
@@ -50,12 +50,11 @@ newest is at the top.
   its isophotes at 3 and 4.5 px crossed); a close pair whose first radius (~10 px) is too
   small for ELLIPROF is started further out. All four such failures (two real, two
   simulated) now fit.
-- **Parallel pair fits.** `PARALLEL=n` (Pair fit ▸ Parallel fits, 5 by default on a
-  computer with 6 cores or more) fits n variants of the search at the same time; the fit
-  kept does not depend on it. On NGC 6768 the automatic search took 24 s instead of 56 s.
-  When two or more fits are within 5 % of the best residual, their mean A + B model, mean
-  residual and the spread of their models go to buffers, and the report gives their mean
-  sky.
+- **Fits to average.** `PARALLEL=N` (Pair fit ▸ Fits to average, 5 by default on a
+  computer with 6 cores or more) makes N fits and averages all of them: the fit kept and
+  N − 1 repeats with R0 and R1 varied, N at a time, each refining its own sky. (It first
+  set only how many variants of the search ran at once, with a mean of those within 5 % of
+  the best score, often 2 of 8; that mean is gone.) `RUNS=` sets another number of fits.
 - **Harmonics in ELLIPROF's terms.** Each galaxy's `COS3X=` and `COS4X=` (2 each isophote's
   own, the default; 1 the median; 0 none; COS3X −2, −1, −3 the 6th order) in the panel
   and the command, and `TRYCOS3X=`/`TRYCOS4X=` to try other values on the fit kept: A's
