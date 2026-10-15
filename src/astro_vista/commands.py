@@ -1749,7 +1749,8 @@ KEYWORDS = {
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
     "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X= RUNS= JITTER= SEED= "
-    "HARMONICS= WINGS= METHOD= PULLCHECK=",
+    "HARMONICS= WINGS= METHOD= PULLCHECK= PULLPX= PULLFRAC= PULLRUN= PULLR0= FIRST= JOEGROW= "
+    "JOECORE= JOECOREMIN= JOECOREMAX=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1980,6 +1981,12 @@ Shared (before A:)
                 smaller galaxy first and not far out, then the two in turn, each R1 grown
                 only as far as its ellipses are not pulled towards the other (free
                 centres judge it); fast, no search
+  FIRST=SMALLER|A|B  JOEGROW=1.3  JOECORE=0.2 JOECOREMIN=6 JOECOREMAX=30   Joe's mode:
+                the galaxy fitted first, the R1 tried each cycle (x the last), each centre
+                left out (a share of the separation, within these pixels; 0: none)
+  PULLPX=0.5 PULLFRAC=0.02 PULLRUN=2 PULLR0=8   a pull (Joe's mode and the check): a
+                move towards the other of more than PULLPX px or PULLFRAC of the radius,
+                PULLRUN isophotes in a row, judged by a free-centre fit from R0 >= PULLR0
   PULLCHECK=0   no pull check (by default each galaxy of a complete fit is fitted once more
                 with free centres and the report says whether its ellipses move towards
                 the other, and from which radius)

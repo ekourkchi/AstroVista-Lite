@@ -12,6 +12,11 @@ newest is at the top.
   no sky refinement: seconds instead of minutes. On 18 simulated pairs its errors were
   close to the automatic settings' with worse worst cases; on N6768, N4825 and C328014 it
   left 1.3 to 3 times more large-scale structure in the residual. A quick first look.
+  Its settings, in its own box of the panel: the galaxy fitted first (`FIRST=`), the R1
+  tried each cycle (`JOEGROW=`), the centre left out (`JOECORE=`, `JOECOREMIN=`,
+  `JOECOREMAX=`), what counts as a pull (`PULLPX=`, `PULLFRAC=`, `PULLRUN=`, `PULLR0=`, also
+  used by the pull check), the centres of the model kept, the cycles, the smoothing and the
+  model beyond R1.
 - **The pull check.** Every complete pair fit ends with Joe's test: each galaxy fitted once
   more with free centres on the image minus the other's model, and the report says whether
   its outer ellipses move towards the other galaxy and from which radius (`PULLCHECK=0`:

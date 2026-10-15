@@ -21,7 +21,18 @@ from PySide6.QtCore import Qt
 from . import guide
 from .fitting import MODES
 from .flow import FlowLayout
-from .pair import MAX_PARALLEL, MAX_RUNS
+from .pair import (
+    JOE_CORE,
+    JOE_CORE_MAX,
+    JOE_CORE_MIN,
+    JOE_GROW,
+    MAX_PARALLEL,
+    MAX_RUNS,
+    PULL_FRAC,
+    PULL_PX,
+    PULL_R0,
+    PULL_RUN,
+)
 from .panels import heading, note, number, plain_table, tip, title_row, whole
 
 COLOURS = {"A": "#ff4dff", "B": "#ff9f1c"}
@@ -613,6 +624,13 @@ class PairPanel(QtWidgets.QWidget):
         )
         form.addRow(tip(self.all_harmonics, "pair_mode"))
         form.addRow(tip(self.wings, "pair_wings"))
+        self.pull_check = QtWidgets.QCheckBox("Check the pull of the outer ellipses after the fit")
+        self.pull_check.setChecked(True)
+        self.pull_check.setToolTip(
+            "Each galaxy fitted once more with free centres; the report says whether its outer "
+            "ellipses move towards the other galaxy and from which radius (PULLCHECK=0: off)"
+        )
+        form.addRow(tip(self.pull_check, "pair_pull"))
 
         # ---- the sky
         form.addRow(heading("1. Sky"))
@@ -780,6 +798,8 @@ class PairPanel(QtWidgets.QWidget):
         )
         form.addRow(self.auto_note)
         form.addRow(self.joe_note)
+        self.joe_box = self._joe_settings()
+        form.addRow(self.joe_box)
         manual(
             note(
                 "A on D, B on D − M_A, then A on D − M_B and B on D − M_A, cycle after cycle, "
@@ -1162,6 +1182,168 @@ class PairPanel(QtWidgets.QWidget):
         if self._next is not None:
             self.factor.setValue(self._next)
 
+    # ---- Joe's mode
+    def _joe_settings(self) -> QtWidgets.QGroupBox:
+        """Joe's mode's own settings (shown in that mode only), at its defaults."""
+        box = QtWidgets.QGroupBox("Joe's mode")
+        f = QtWidgets.QFormLayout(box)
+        f.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)  # labels above in a narrow dock
+        self.joe_first = QtWidgets.QComboBox()
+        for label, key in (("the smaller (smaller R1)", "smaller"), ("A", "a"), ("B", "b")):
+            self.joe_first.addItem(label, key)
+        self.joe_first.setToolTip(
+            "FIRST: the galaxy fitted first, not far out; if it cannot be started, the other "
+            "starts instead"
+        )
+        f.addRow("Fit first", tip(self.joe_first, "pair_joe"))
+        self.joe_grow = number(1.02, 3.0, JOE_GROW, decimals=2, step=0.05)
+        self.joe_grow.setPrefix("× ")
+        self.joe_grow.setToolTip("JOEGROW: each cycle, each galaxy tries its last R1 times this")
+        f.addRow("R1 tried each cycle", self.joe_grow)
+        self.joe_core = number(0.0, 1.0, JOE_CORE, decimals=2, step=0.05)
+        self.joe_core_min = number(0.0, 200.0, JOE_CORE_MIN, decimals=1, step=1)
+        self.joe_core_max = number(0.0, 500.0, JOE_CORE_MAX, decimals=1, step=5)
+        for b, key in (
+            (self.joe_core, "JOECORE: a share of the distance between the centres (0: none)"),
+            (self.joe_core_min, "JOECOREMIN: at least this many pixels"),
+            (self.joe_core_max, "JOECOREMAX: at most this many pixels"),
+        ):
+            b.setToolTip(key)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.joe_core)
+        row.addWidget(QtWidgets.QLabel("of the separation"))
+        row.addStretch(1)
+        f.addRow("Centre left out", row)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.joe_core_min)
+        row.addWidget(QtWidgets.QLabel("to"))
+        row.addWidget(self.joe_core_max)
+        row.addWidget(QtWidgets.QLabel("px"))
+        row.addStretch(1)
+        f.addRow("… within", row)
+        self.pull_px = number(0.05, 50.0, PULL_PX, decimals=2, step=0.1)
+        self.pull_frac = number(0.0, 50.0, 100 * PULL_FRAC, decimals=1, step=0.5)
+        self.pull_frac.setSuffix(" %")
+        self.pull_run = whole(1, 10, PULL_RUN)
+        for b, key in (
+            (self.pull_px, "PULLPX: a move towards the other galaxy of more than this (px)"),
+            (self.pull_frac, "PULLFRAC: ... or more than this share of the isophote's radius"),
+            (self.pull_run, "PULLRUN: ... for this many isophotes in a row"),
+        ):
+            b.setToolTip(key)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.pull_px)
+        row.addWidget(QtWidgets.QLabel("px or"))
+        row.addWidget(self.pull_frac)
+        row.addWidget(QtWidgets.QLabel("of radius"))
+        row.addStretch(1)
+        f.addRow("Pulled if moved", tip(row, "pair_pull"))
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.pull_run)
+        row.addWidget(QtWidgets.QLabel("isophotes in a row"))
+        row.addStretch(1)
+        f.addRow("… for", row)
+        self.pull_r0 = number(0.0, 200.0, PULL_R0, decimals=1, step=1)
+        self.pull_r0.setSuffix(" px")
+        self.pull_r0.setToolTip(
+            "PULLR0: the free-centre fit that judges the pull starts at this R0 at least (the "
+            "centre of a small, undersampled galaxy cannot be fitted freely); 0: its own R0"
+        )
+        f.addRow("Free-centre fit from", self.pull_r0)
+        self.joe_fixctr = QtWidgets.QComboBox()
+        for label, v in (("fixed at X0, Y0", 1), ("free", 0), ("median of the fitted centres", 2)):
+            self.joe_fixctr.addItem(label, v)
+        self.joe_fixctr.setToolTip(
+            "FIXCTR of the model kept (the pull is always judged with free centres); Joe's own "
+            "fits use free centres"
+        )
+        f.addRow("Centres of the model", self.joe_fixctr)
+        self.joe_cycles = whole(1, 50, 12, tip="CYCLES: at most this many A → B cycles")
+        self.joe_converge = number(0.01, 50, 2.0, decimals=2, step=0.5)
+        self.joe_converge.setSuffix(" %")
+        self.joe_converge.setToolTip(
+            "CONVERGE: it stops when neither galaxy grew for two cycles and A, B and A + B "
+            "changed by less than this"
+        )
+        f.addRow("Cycles, at most", self.joe_cycles)
+        f.addRow("Stable below", self.joe_converge)
+        self.joe_tie = whole(-50, 10, -3, tip="TIE: -3 smooths over 3 isophotes; -1 none")
+        self.joe_rmstar = QtWidgets.QCheckBox("RMSTAR")
+        self.joe_rmstar.setChecked(True)
+        self.joe_rmstar.setToolTip("RMSTAR: bright outliers along each isophote rejected")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("TIE"))
+        row.addWidget(self.joe_tie)
+        row.addWidget(self.joe_rmstar)
+        row.addStretch(1)
+        f.addRow("Isophotes", row)
+        self.joe_tail = QtWidgets.QComboBox()
+        for label, key in (
+            ("measured in rings", "measured"),
+            ("Sérsic law", "sersic"),
+            ("elliprof's extrapolation", "elliprof"),
+            ("exponential", "exp"),
+            ("cut at R1", "cut"),
+        ):
+            self.joe_tail.addItem(label, key)
+        self.joe_tail.setToolTip(
+            "TAIL: the model beyond each galaxy's last isophote, subtracted from the other's "
+            "image (elliprof's extrapolation is often much too bright)"
+        )
+        f.addRow("Beyond R1", self.joe_tail)
+        reset = QtWidgets.QPushButton("Joe's defaults")
+        reset.clicked.connect(self.joe_defaults)
+        f.addRow(reset)
+        box.setVisible(False)
+        return box
+
+    def joe_defaults(self) -> None:
+        self.joe_first.setCurrentIndex(0)
+        self.joe_grow.setValue(JOE_GROW)
+        self.joe_core.setValue(JOE_CORE)
+        self.joe_core_min.setValue(JOE_CORE_MIN)
+        self.joe_core_max.setValue(JOE_CORE_MAX)
+        self.pull_px.setValue(PULL_PX)
+        self.pull_frac.setValue(100 * PULL_FRAC)
+        self.pull_run.setValue(PULL_RUN)
+        self.pull_r0.setValue(PULL_R0)
+        self.joe_fixctr.setCurrentIndex(0)
+        self.joe_cycles.setValue(12)
+        self.joe_converge.setValue(2.0)
+        self.joe_tie.setValue(-3)
+        self.joe_rmstar.setChecked(True)
+        self.joe_tail.setCurrentIndex(0)
+
+    def joe_keywords(self) -> List[str]:
+        """Joe's mode's keywords: the method, its cycles and isophote settings, and those of
+        its own settings that differ from the defaults."""
+        out = [
+            "METHOD=JOE",
+            f"CYCLES={self.joe_cycles.value()}",
+            f"CONVERGE={self.joe_converge.value() / 100:g}",
+            f"TIE={self.joe_tie.value()}",
+        ]
+        if self.joe_rmstar.isChecked():
+            out.append("RMSTAR")
+        out.append(f"TAIL={self.joe_tail.currentData()}")
+        if self.joe_first.currentData() != "smaller":
+            out.append(f"FIRST={self.joe_first.currentData().upper()}")
+        for key, box, default, scale in (
+            ("JOEGROW", self.joe_grow, JOE_GROW, 1),
+            ("JOECORE", self.joe_core, JOE_CORE, 1),
+            ("JOECOREMIN", self.joe_core_min, JOE_CORE_MIN, 1),
+            ("JOECOREMAX", self.joe_core_max, JOE_CORE_MAX, 1),
+            ("PULLPX", self.pull_px, PULL_PX, 1),
+            ("PULLFRAC", self.pull_frac, PULL_FRAC, 100),
+            ("PULLR0", self.pull_r0, PULL_R0, 1),
+        ):
+            v = box.value() / scale
+            if abs(v - default) > 1e-9:
+                out.append(f"{key}={v:g}")
+        if self.pull_run.value() != PULL_RUN:
+            out.append(f"PULLRUN={self.pull_run.value()}")
+        return out
+
     # ---- masks
     def set_mask_layers(self, layers) -> None:
         """List the layers that can be used for fitting (role fit, or none)."""
@@ -1212,6 +1394,7 @@ class PairPanel(QtWidgets.QWidget):
         self.set_automatic(index in (AUTOMATIC, JOE))
         self.auto_note.setVisible(index == AUTOMATIC)
         self.joe_note.setVisible(index == JOE)
+        self.joe_box.setVisible(index == JOE)
         if index == ADJUSTABLE:
             self.recommended()
         elif index == MANUAL:
@@ -1281,6 +1464,8 @@ class PairPanel(QtWidgets.QWidget):
         # the sky iterations need a measured sky (its support); a typed sky goes as typed
         parts += [p for p in AUTO_RUN if self.sky_id or not p.startswith("SKYITER")]
         parts += self.run_keywords()
+        if not self.pull_check.isChecked():
+            parts.append("PULLCHECK=0")
         if self.views.isChecked():
             parts.append("VIEWS")
         parts.append("A: " + self.cards["A"].auto_keywords())
@@ -1295,11 +1480,14 @@ class PairPanel(QtWidgets.QWidget):
         layers = self.ticked_layers()
         if layers:
             parts.append("MASK=" + ",".join(layers))
-        parts += JOE_RUN
+        parts += self.joe_keywords()
+        if not self.pull_check.isChecked():
+            parts.append("PULLCHECK=0")
         if self.views.isChecked():
             parts.append("VIEWS")
-        parts.append("A: " + self.cards["A"].auto_keywords())
-        parts.append("B: " + self.cards["B"].auto_keywords())
+        fix = f"FIXCTR={self.joe_fixctr.currentData()}"
+        for cid in ("A", "B"):
+            parts.append(f"{cid}: " + self.cards[cid].auto_keywords().replace("FIXCTR=1", fix))
         return " ".join(parts)
 
     def command(self, n: int) -> str:
@@ -1359,6 +1547,8 @@ class PairPanel(QtWidgets.QWidget):
         if self.views.isChecked():
             parts.append("VIEWS")
         parts += self.run_keywords()
+        if not self.pull_check.isChecked():
+            parts.append("PULLCHECK=0")
         parts.append("A: " + self.cards["A"].keywords())
         parts.append("B: " + self.cards["B"].keywords())
         return " ".join(parts)

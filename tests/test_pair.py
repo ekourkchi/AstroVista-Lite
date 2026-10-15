@@ -1598,3 +1598,74 @@ def test_the_panel_writes_joes_mode():
     assert "METHOD=JOE" in words and "TAIL=measured" in words and "TRYDAMP=1,0.5" not in words
     assert panel.joe_note.isVisibleTo(panel) and not panel.auto_note.isVisibleTo(panel)
     app.processEvents()
+
+
+def test_joes_mode_settings_choose_the_order_growth_core_and_pull():
+    from dataclasses import replace
+
+    snap = iterative_snapshot()
+    snap = replace(
+        snap, components={**snap.components, "A": replace(snap.components["A"], r1=30.0)}
+    )
+    s = pair.settings_from(
+        {
+            "SKY": "100",
+            "METHOD": "JOE",
+            "FIRST": "A",
+            "JOEGROW": "1.5",
+            "JOECORE": "0",
+            "PULLPX": "3",
+            "PULLFRAC": "0",
+            "PULLRUN": "1",
+            "PULLR0": "0",
+            "CYCLES": "6",
+        }
+    )
+    snap = replace(snap, settings=replace(s, sky=100.0))
+    f = PullingFitter(start=12.0, by=2.0)  # a 2 px pull: below PULLPX=3, so never a pull
+    result = pair.run_search(snap, fitter=f)
+    assert result.joe["order"] == ["A", "B"]  # FIRST=A, though A is the larger
+    assert result.snapshot.cores["A"].shape == "none"  # JOECORE=0: no centre left out
+    assert not any(c["kw"]["masked"].any() for c in f.calls)
+    assert result.commits["A"].r1_call == pytest.approx(30.0)  # not pulled: it reached its R1
+    a_calls = sorted({round(c["r1"], 2) for c in f.calls if c["component"] == "A"})
+    assert 15.0 in a_calls  # START=AUTO 10 x JOEGROW 1.5
+    assert result.pull["A"]["px"] == 3 and result.pull["A"]["from"] is None
+    assert "R1 x 1.5 each cycle" in pair.summary(result, result.snapshot)
+    for bad in (
+        {"FIRST": "C"},
+        {"JOEGROW": "1"},
+        {"JOECORE": "2"},
+        {"PULLRUN": "0"},
+        {"JOECOREMIN": "40", "JOECOREMAX": "30"},
+    ):
+        with pytest.raises(pair.PairError):
+            pair.settings_from({"SKY": "1", **bad})
+
+
+def test_the_panel_writes_joes_settings():
+    from PySide6 import QtWidgets
+
+    from astro_vista.pairpanel import JOE, JOE_RUN, PairPanel
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    panel = PairPanel()
+    panel.set_mode(JOE)
+    assert panel.joe_box.isVisibleTo(panel)
+    assert panel.joe_keywords() == JOE_RUN  # Joe's defaults: nothing more written
+    panel.joe_first.setCurrentIndex(panel.joe_first.findData("b"))
+    panel.joe_grow.setValue(1.5)
+    panel.pull_frac.setValue(5)
+    panel.pull_run.setValue(3)
+    panel.joe_fixctr.setCurrentIndex(panel.joe_fixctr.findData(0))
+    panel.joe_tail.setCurrentIndex(panel.joe_tail.findData("cut"))
+    panel.pull_check.setChecked(False)
+    words = panel.command(1).split()
+    for w in ("FIRST=B", "JOEGROW=1.5", "PULLFRAC=0.05", "PULLRUN=3", "TAIL=cut", "PULLCHECK=0"):
+        assert w in words, w
+    assert "FIXCTR=0" in words and "FIXCTR=1" not in words
+    panel.joe_defaults()
+    assert panel.joe_keywords() == JOE_RUN
+    panel.set_mode(0)
+    assert not panel.joe_box.isVisibleTo(panel)
+    app.processEvents()

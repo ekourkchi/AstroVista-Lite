@@ -67,6 +67,19 @@ CROSSING = 1.02  # an inner ellipse may reach 2 % beyond the next one out
 OUTER_SUPPORT = 0.5
 
 
+# Joe's mode and the pull check (see outer_pull and run_joe); each can be set (Settings)
+PULL_PX = 0.5
+PULL_FRAC = 0.02
+PULL_RUN = 2
+PULL_R0 = 8.0
+JOE_GROW = 1.3
+JOE_CORE = 0.2
+JOE_CORE_MIN = 6.0
+JOE_CORE_MAX = 30.0
+JOE_MIN_R1 = 8.0
+JOE_FIRST = ("smaller", "a", "b")
+
+
 class PairError(Exception):
     pass
 
@@ -174,6 +187,15 @@ class Settings:
     harmonic_search: bool = False  # HARMONICS=AUTO: every COS3X and COS4X tried for each
     method: str = "pair"  # METHOD=JOE: Joe's mode (run_joe) instead of the cycles and search
     pull_check: bool = True  # PULLCHECK=0: no check of the outer ellipses' pull (pull_check)
+    pull_px: float = PULL_PX  # PULLPX=: a pull is a move towards the other of more than this
+    pull_frac: float = PULL_FRAC  # PULLFRAC=: ... or this share of the isophote's radius
+    pull_run: int = PULL_RUN  # PULLRUN=: ... for this many isophotes in a row
+    pull_r0: float = PULL_R0  # PULLR0=: the free-centre fit that judges it starts here at least
+    joe_first: str = "smaller"  # FIRST=: the galaxy Joe's mode fits first (SMALLER, A or B)
+    joe_grow: float = JOE_GROW  # JOEGROW=: the R1 each cycle tries, x the last one kept
+    joe_core: float = JOE_CORE  # JOECORE=: each centre left out: this share of the separation
+    joe_core_min: float = JOE_CORE_MIN  # JOECOREMIN=: ... at least this many pixels
+    joe_core_max: float = JOE_CORE_MAX  # JOECOREMAX=: ... at most this many
 
 
 @dataclass
@@ -432,6 +454,15 @@ SHARED = {
     "HARMONICS",
     "METHOD",
     "PULLCHECK",
+    "PULLPX",
+    "PULLFRAC",
+    "PULLRUN",
+    "PULLR0",
+    "FIRST",
+    "JOEGROW",
+    "JOECORE",
+    "JOECOREMIN",
+    "JOECOREMAX",
 }
 OWN = {
     "NAME",
@@ -715,7 +746,31 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         harmonic_search=shared.get("HARMONICS", "").strip().upper() == "AUTO",
         method=shared.get("METHOD", "pair").strip().lower(),
         pull_check=_num(shared, "PULLCHECK", "", 1, int) != 0,
+        pull_px=_num(shared, "PULLPX", "", PULL_PX),
+        pull_frac=_num(shared, "PULLFRAC", "", PULL_FRAC),
+        pull_run=_num(shared, "PULLRUN", "", PULL_RUN, int),
+        pull_r0=_num(shared, "PULLR0", "", PULL_R0),
+        joe_first=shared.get("FIRST", "smaller").strip().lower(),
+        joe_grow=_num(shared, "JOEGROW", "", JOE_GROW),
+        joe_core=_num(shared, "JOECORE", "", JOE_CORE),
+        joe_core_min=_num(shared, "JOECOREMIN", "", JOE_CORE_MIN),
+        joe_core_max=_num(shared, "JOECOREMAX", "", JOE_CORE_MAX),
     )
+    for ok, why in (
+        (s.joe_first in JOE_FIRST, "FIRST must be SMALLER (the smaller R1), A or B"),
+        (1.02 <= s.joe_grow <= 3, "JOEGROW must be 1.02 to 3 (the R1 tried each cycle, x)"),
+        (0 <= s.joe_core <= 1, "JOECORE must be 0 to 1 (a share of the separation; 0: none)"),
+        (
+            0 <= s.joe_core_min <= s.joe_core_max,
+            "JOECOREMIN and JOECOREMAX: 0 <= min <= max (pixels)",
+        ),
+        (0 < s.pull_px <= 50, "PULLPX must be above 0 and at most 50 (pixels)"),
+        (0 <= s.pull_frac <= 0.5, "PULLFRAC must be 0 to 0.5 (a share of the radius)"),
+        (1 <= s.pull_run <= 10, "PULLRUN must be 1 to 10 (isophotes in a row)"),
+        (0 <= s.pull_r0 <= 200, "PULLR0 must be 0 to 200 (pixels; 0: the galaxy's own R0)"),
+    ):
+        if not ok:
+            raise PairError(why)
     if s.method not in METHODS:
         raise PairError("METHOD must be PAIR (the cycles and the search) or JOE (Joe's mode)")
     if s.tail not in TAILS:
@@ -2082,13 +2137,16 @@ def refine_auto(snap: Snapshot, first: PairResult) -> Tuple[Snapshot, List[str]]
 # Jensen's test, done by eye in his pair fits: the outer ellipses must not start moving
 # towards the other galaxy.  The free-centre fit that judges it starts at PULL_R0 at least,
 # since the centre of a small, undersampled galaxy cannot be fitted freely.
-PULL_PX = 0.5
-PULL_FRAC = 0.02
-PULL_RUN = 2
-PULL_R0 = 8.0
 
 
-def outer_pull(profile, centre: Tuple[float, float], other: Tuple[float, float]) -> dict:
+def outer_pull(
+    profile,
+    centre: Tuple[float, float],
+    other: Tuple[float, float],
+    px: float = PULL_PX,
+    frac: float = PULL_FRAC,
+    in_a_row: int = PULL_RUN,
+) -> dict:
     """Where a free-centre profile's isophotes start moving towards ``other``: the largest
     radius not pulled ("r_ok"), the radius from which they are ("from", None if never) and the
     largest movement towards it ("most", pixels)."""
@@ -2103,12 +2161,12 @@ def outer_pull(profile, centre: Tuple[float, float], other: Tuple[float, float])
     ux, uy = other[0] - centre[0], other[1] - centre[1]
     d = math.hypot(ux, uy) or 1.0
     pull = ((x - xr) * ux + (y - yr) * uy) / d
-    bad = pull > np.maximum(PULL_PX, PULL_FRAC * r)
+    bad = pull > np.maximum(px, frac * r)
     run = 0
     for k in range(inner, n):
         run = run + 1 if bad[k] else 0
-        if run >= PULL_RUN:
-            first = k - PULL_RUN + 1
+        if run >= in_a_row:
+            first = k - in_a_row + 1
             return {
                 "r_ok": float(r[max(first - 1, inner - 1)]),
                 "from": float(r[first]),
@@ -2148,7 +2206,8 @@ def pull_check(
         comp = snap.components[cid]
         commit = result.commits[cid]
         r1 = commit.r1_call
-        r0 = max(comp.r0, PULL_R0) if PULL_R0 < 0.4 * r1 else comp.r0
+        lift = snap.settings.pull_r0
+        r0 = max(comp.r0, lift) if lift < 0.4 * r1 else comp.r0
         free = replace(comp, r0=r0, r1=r1, fixctr=0)
         if progress is not None:
             progress({"phase": "check", "component": cid, "r1": r1})
@@ -2174,8 +2233,18 @@ def pull_check(
             out[cid] = {"r1": r1, "judged": False, "reason": reason}
             continue
         o = snap.components[other]
-        p = outer_pull(fit.profile, (comp.x0, comp.y0), (o.x0, o.y0))
-        out[cid] = {"r1": r1, "judged": True, "reached": reached, **p}
+        s_ = snap.settings
+        p = outer_pull(
+            fit.profile, (comp.x0, comp.y0), (o.x0, o.y0), s_.pull_px, s_.pull_frac, s_.pull_run
+        )
+        out[cid] = {
+            "r1": r1,
+            "judged": True,
+            "reached": reached,
+            "px": s_.pull_px,
+            "frac": s_.pull_frac,
+            **p,
+        }
     return out
 
 
@@ -2194,8 +2263,8 @@ def pull_words(cid: str, p: dict, names: Dict[str, str]) -> str:
         moved = (
             "not at all"
             if p["most"] < 0.05
-            else f"at most {p['most']:.2f} px, within {PULL_PX:g} px or "
-            f"{100 * PULL_FRAC:g} % of the radius"
+            else f"at most {p['most']:.2f} px, within {p.get('px', PULL_PX):g} px or "
+            f"{100 * p.get('frac', PULL_FRAC):g} % of the radius"
         )
         return (
             f"pull check of {names[cid]}: its ellipses do not move towards {other} out to "
@@ -2218,18 +2287,14 @@ def pull_words(cid: str, p: dict, names: Dict[str, str]) -> str:
 # largest radius whose ellipses are not pulled towards the other, never less than it had.
 # The model kept is refitted with the galaxy's own FIXCTR.  It stops when neither grew in
 # two cycles and A, B and A + B changed by less than CONVERGE, or after CYCLES cycles.
-JOE_GROW = 1.3
-JOE_CORE = 0.2
-JOE_CORE_MIN = 6.0
-JOE_CORE_MAX = 30.0
-JOE_MIN_R1 = 8.0
 
 
 def joe_snapshot(snap: Snapshot) -> Snapshot:
     """The snapshot with Joe's cores: a circle around each centre."""
     a, b = snap.components["A"], snap.components["B"]
     sep = math.hypot(a.x0 - b.x0, a.y0 - b.y0)
-    radius = min(max(JOE_CORE * sep, JOE_CORE_MIN), JOE_CORE_MAX)
+    s = snap.settings
+    radius = min(max(s.joe_core * sep, s.joe_core_min), s.joe_core_max) if s.joe_core > 0 else 0.0
     ny, nx = snap.image.shape
     yy, xx = np.mgrid[0:ny, 0:nx]
     cores = {}
@@ -2237,14 +2302,15 @@ def joe_snapshot(snap: Snapshot) -> Snapshot:
         masked = np.hypot(xx + 0.5 - c.x0, yy + 0.5 - c.y0) <= radius
         cores[c.id] = Core(
             c.id,
-            "circle",
+            "circle" if radius > 0 else "none",
             c.x0,
             c.y0,
             radius,
             radius,
             0.0,
-            f"Joe's mode: {JOE_CORE:g} of the separation ({sep:.1f} px)",
-            masked & ~snap.invalid,
+            f"Joe's mode: {s.joe_core:g} of the separation ({sep:.1f} px), "
+            f"{s.joe_core_min:g} to {s.joe_core_max:g} px",
+            (masked if radius > 0 else np.zeros_like(masked)) & ~snap.invalid,
         )
     return replace(snap, cores=cores)
 
@@ -2265,7 +2331,12 @@ def run_joe(
     start = time.perf_counter()
     a, b = comps["A"], comps["B"]
     sep = math.hypot(a.x0 - b.x0, a.y0 - b.y0)
-    order = ("A", "B") if a.r1 <= b.r1 else ("B", "A")
+    if s.joe_first == "a":
+        order = ("A", "B")
+    elif s.joe_first == "b":
+        order = ("B", "A")
+    else:  # the smaller R1 first
+        order = ("A", "B") if a.r1 <= b.r1 else ("B", "A")
     committed: Dict[str, Commit] = {}
     steps: List[str] = []
     counter = {"n": 0}
@@ -2290,7 +2361,7 @@ def run_joe(
         data = image if companion is None else image - companion.model
         source = "D" if companion is None else f"D - M_{other}"
         mask = snap.mask_for(cid)
-        lift = PULL_R0 if fixctr == 0 and PULL_R0 < 0.4 * r1 else 0.0
+        lift = s.pull_r0 if fixctr == 0 and s.pull_r0 < 0.4 * r1 else 0.0
         inner, reason = INNER_TRIES, ""
         for _attempt in range(6):
             stopping()
@@ -2385,7 +2456,9 @@ def run_joe(
         judged = fit is not None
         if judged:
             o = comps[other]
-            p = outer_pull(fit.profile, (comp.x0, comp.y0), (o.x0, o.y0))
+            p = outer_pull(
+                fit.profile, (comp.x0, comp.y0), (o.x0, o.y0), s.pull_px, s.pull_frac, s.pull_run
+            )
             keep = max(p["r_ok"], JOE_MIN_R1, have)
             if keep < 0.97 * r1:
                 steps.append(
@@ -2448,7 +2521,7 @@ def run_joe(
             grew, failed_last = False, []
             for cid in order:
                 before = committed[cid]
-                grew |= place(cid, min(JOE_GROW * before.r1_call, comps[cid].r1), tag)
+                grew |= place(cid, min(s.joe_grow * before.r1_call, comps[cid].r1), tag)
                 if committed[cid] is before:
                     failed_last.append(cid)
             prev_t = prev["A"].model + prev["B"].model
@@ -3159,9 +3232,12 @@ def summary(result: PairResult, snap: Snapshot) -> str:
             + " first, then ".join(names[c] for c in result.joe.get("order", []))
             + (
                 f"; centres left out within {result.joe['core']:.1f} px"
-                if "core" in result.joe
-                else ""
+                if result.joe.get("core")
+                else ("; no centre left out" if "core" in result.joe else "")
             )
+            + f"; R1 x {snap.settings.joe_grow:g} each cycle; pulled: more than "
+            f"{snap.settings.pull_px:g} px or {100 * snap.settings.pull_frac:g} % of the radius "
+            f"towards the other, {snap.settings.pull_run} isophotes in a row"
         )
         lines += [f"  {x}" for x in result.joe.get("steps", [])[-6:]]
     for cid, p in result.pull.items():

@@ -231,7 +231,15 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
   simulated pairs its errors were close to Automatic's, with worse worst cases; on real
   fields it left more large-scale structure in the residual. It is a quick first look,
   and its steps in the report show where each galaxy is pulled.</p>
+  <p>Its box in the panel sets which galaxy goes first (<code>FIRST=</code>), how much R1
+  grows each cycle (<code>JOEGROW=</code>, 1.3), the centre left out
+  (<code>JOECORE=</code> 0.2 of the separation, from <code>JOECOREMIN=</code> 6 to
+  <code>JOECOREMAX=</code> 30 px), what counts as a pull (<code>PULLPX=</code> 0.5 px or
+  <code>PULLFRAC=</code> 2 % of the radius, <code>PULLRUN=</code> 2 isophotes in a row,
+  judged by a free-centre fit from <code>PULLR0=</code> 8 px), the centres of the model
+  kept, the cycles, the smoothing and the model beyond R1.</p>
   <pre><code>pair 1 SKY=1000 MASK=stars METHOD=JOE CYCLES=12 TIE=-3 RMSTAR TAIL=measured \
+       FIRST=B JOEGROW=1.25 PULLPX=1 \
        A: X0=294.3 Y0=263.8 R0=3 R1=120 FIXCTR=1 \
        B: X0=421.18 Y0=322.97 R0=3 R1=50 NR=20 FIXCTR=1</code></pre>
   <p><b>The pull check.</b> Every complete fit, whatever the settings, ends with Joe's

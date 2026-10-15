@@ -670,6 +670,19 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "not pulled towards the other; no search, about a tenth of the calls",
                     ),
                     (
+                        "FIRST=, JOEGROW=, JOECORE=, JOECOREMIN=, JOECOREMAX=",
+                        "Joe's mode: the galaxy fitted first (SMALLER, A or B), the R1 each "
+                        "cycle tries (× the last one kept, 1.3), each centre left out while "
+                        "the other is fitted (0.2 of the separation, 6 to 30 px; 0: none)",
+                    ),
+                    (
+                        "PULLPX=, PULLFRAC=, PULLRUN=, PULLR0=",
+                        "what counts as a pull, in Joe's mode and the pull check: a move "
+                        "towards the other of more than PULLPX px (0.5) or PULLFRAC of the "
+                        "radius (0.02), PULLRUN isophotes in a row (2), in a free-centre fit "
+                        "starting at R0 PULLR0 at least (8 px)",
+                    ),
+                    (
                         "PULLCHECK=0",
                         "no pull check; by default each galaxy of a complete fit is fitted "
                         "once more with free centres, and the report says whether its "

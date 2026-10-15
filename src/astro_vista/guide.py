@@ -882,7 +882,11 @@ TIPS = {
     "half the galaxies, against 2 %; the model within 2.6 %, against 2.2 %), with worse "
     "worst cases; on three real fields it left 1.3 to 3 times more large-scale structure "
     "in the residual. Use it as a quick first look, and its steps to see where each galaxy "
-    "is pulled.",
+    "is pulled. Its box in the panel sets which galaxy goes first, how much R1 grows each "
+    "cycle, the centre left out, what counts as a pull (pixels, share of the radius, "
+    "isophotes in a row, where the free-centre fit starts), the centres of the model kept, "
+    "the cycles, the smoothing and the model beyond R1; <i>Joe's defaults</i> puts them "
+    "back.",
     "pair_pull": "<b>Pull check</b> (every complete pair fit; PULLCHECK=0 turns it off): each "
     "galaxy is fitted once more, with free centres, on the image minus the other's model and "
     "out to its R1. If its outer ellipses' centres move towards the other galaxy (by more "
