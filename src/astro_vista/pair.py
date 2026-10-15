@@ -1963,9 +1963,13 @@ def _local_spread(img: np.ndarray, good: np.ndarray, block: int = 8, size: int =
     by, bx = -(-ny // block), -(-nx // block)
     pad = np.full((by * block, bx * block), np.nan)
     pad[:ny, :nx] = np.where(good, np.abs(img), np.nan)
-    med = np.nanmedian(
-        pad.reshape(by, block, bx, block).transpose(0, 2, 1, 3).reshape(by, bx, -1), axis=2
-    )
+    import warnings
+
+    with warnings.catch_warnings():  # blocks with no good pixel: filled below
+        warnings.simplefilter("ignore", RuntimeWarning)
+        med = np.nanmedian(
+            pad.reshape(by, block, bx, block).transpose(0, 2, 1, 3).reshape(by, bx, -1), axis=2
+        )
     fill = np.nanmedian(med) if np.isfinite(med).any() else 1.0
     med = np.where(np.isfinite(med), med, fill)
     med = ndimage.median_filter(med, size=size, mode="nearest")
