@@ -1163,15 +1163,41 @@ class Session(ImageCommands):
                 self.buffers[m].note = job.line
                 made.append(f"{m} {name.split(' pair ', 1)[1]}")
             e = result.ensemble
+            # the mean's buffers of an earlier fit of this image go first (a fit with fewer
+            # members, or none, must not leave them behind)
+            stale = [
+                m
+                for m, b in self.buffers.items()
+                if b.family == image.key
+                and m not in job.outputs.values()
+                and m != n
+                and (
+                    b.name.startswith(f"{image.name} pair mean")
+                    or b.name == f"{image.name} pair model spread"
+                )
+            ]
+            for m in stale:
+                del self.buffers[m]
+            if stale:
+                made.append("removed the earlier mean's " + ", ".join(str(m) for m in stale))
             if e:
                 taken = set(job.outputs.values()) | {n}
-                for kind, data in (
+                outputs = [
                     ("pair mean A model", e["A"]),
                     ("pair mean B model", e["B"]),
                     ("pair mean A+B model", e["model"]),
+                ]
+                if e.get("sky_map") is not None:
+                    outputs.append(("pair mean sky", e["sky_map"]))
+                outputs += [
                     ("pair mean residual", e["residual"]),
                     ("pair model spread", e["spread"]),
-                ):
+                ]
+                total = len(e.get("fits", []))
+                for k, f in enumerate(e.get("fits", []), 1):
+                    outputs.append((f"pair mean fit {k} of {total} model", f["model"]))
+                    outputs.append((f"pair mean fit {k} of {total} residual", f["residual"]))
+                for kind, data in outputs:
                     m = self.output_buffer(n, kind)
                     while m in taken:
                         m = self.free_buffer(m)
@@ -1968,11 +1994,13 @@ Shared (before A:)
                 again on the image minus its tilt (kept when the residual is lower)
   PARALLEL=1    fit this many variants at the same time (1 to 16); with two or more fits
                 within 5 % of the best score, their mean sky, mean A, B and A + B models,
-                mean residual and the models' spread are made as well
+                mean residual (image - mean sky - mean A + B), the models' spread and each
+                fit's own model and residual are made as well
   RUNS=1        fit the fit kept again RUNS - 1 times with each galaxy's R0 and R1 changed
                 at random by 2/3 JITTER to JITTER (JITTER=0.15: 10 to 15 %), up or down;
                 the mean of the complete runs (all but those 50 % above the best score)
-                gives the mean models, residual, sky and spread  [SEED= the random numbers]
+                gives the mean models, sky, residual (image - mean sky - mean A + B),
+                spread, and each run's model and residual  [SEED= the random numbers]
   HARMONICS=AUTO   try every COS3X and COS4X for each galaxy, A's then B's, on the fit
                 kept (as TRYCOS3X=-3,-2,-1,0,1,2 TRYCOS4X=0,1,2)
   WINGS=1       mask the light beyond the masks of bright sources (star wings, spikes)

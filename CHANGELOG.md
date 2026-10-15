@@ -33,8 +33,11 @@ newest is at the top.
 - **Repeat runs, averaged.** `RUNS=n` (Pair fit ▸ Runs to average) fits the fit kept
   again n − 1 times, each with every galaxy's R0 and R1 changed at random by 10–15 %
   (`JITTER=0.15`, `SEED=`), and averages the complete runs: buffers get the mean A, B and
-  A + B models, the mean residual and the spread of the models, and the report the mean
-  sky and every run.
+  A + B models, the mean residual (the original image minus the mean sky minus the mean
+  A + B, with any sky tilt a fit removed counted in its sky; the mean sky is a buffer
+  then), the spread of the models and every run's own model and residual; the report gives
+  the mean sky and every run. A later fit of the image without a mean clears these
+  buffers.
 - **Every harmonic searched.** `HARMONICS=AUTO` (Search every harmonic) tries every
   `COS3X` and `COS4X` for A, then for B, on the fit kept, and keeps the stable fit with
   the smallest residual.

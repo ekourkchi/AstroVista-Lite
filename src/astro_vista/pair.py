@@ -3060,16 +3060,37 @@ def jittered(snap: Snapshot, s: Settings) -> List[Tuple[str, Snapshot]]:
     return out
 
 
+def sky_of(snap: Snapshot):
+    """The sky a fit subtracted, in the original image's frame: its level, plus the tilt
+    SKYPLANE took out of the image (an image then; a number otherwise)."""
+    if snap.tilt:
+        from . import sky as skies
+
+        return snap.settings.sky + skies.plane_image(snap.tilt, snap.image.shape)
+    return float(snap.settings.sky)
+
+
+def original_image(snap: Snapshot) -> np.ndarray:
+    """The image a fit was made on, with any SKYPLANE tilt put back: D itself."""
+    if snap.tilt:
+        from . import sky as skies
+
+        return snap.image + skies.plane_image(snap.tilt, snap.image.shape)
+    return snap.image
+
+
 def ensemble(
     fits: List[Tuple[PairResult, Snapshot]],
     rows: List[dict],
     share: float = ENSEMBLE_SHARE,
     repeats: bool = False,
 ) -> dict:
-    """The mean sky, A + B model and residual of the complete fits of a search whose score
-    is within ENSEMBLE_SHARE of the best, and the spread of their models (the standard
-    deviation, pixel by pixel): how much the answer depends on the choices searched.
-    Empty with fewer than two such fits.  Marks the members' rows with "mean"."""
+    """The mean of the complete fits of a search whose score is within ENSEMBLE_SHARE of
+    the best (or of RUNS's repeats): the mean A, B and A + B models, the mean sky (an image
+    when a fit's sky had a tilt, else a level), and the mean residual D - mean sky - mean
+    A + B on the original image D; the spread of the models (their standard deviation, pixel
+    by pixel); and each member's own model and residual, D - its sky - its A + B.  Empty
+    with fewer than two such fits.  Marks the members' rows with "mean"."""
     scores = [
         (r.quality.get("score"), i)
         for i, (r, _s) in enumerate(fits)
@@ -3081,11 +3102,29 @@ def ensemble(
     members = [i for sc, i in scores if sc <= best * (1 + share)]
     if len(members) < 2:
         return {}
+    d = original_image(fits[members[0]][1])
     totals = np.stack([fits[i][0].total for i in members])
-    residuals = np.stack([fits[i][0].residual for i in members])
-    skies_ = np.array([fits[i][1].settings.sky for i in members])
-    for i in members:
+    skies_ = [sky_of(fits[i][1]) for i in members]
+    levels = np.array([fits[i][1].settings.sky for i in members])
+    tilted = any(not np.isscalar(x) for x in skies_)
+    mean_sky = (
+        np.mean([np.broadcast_to(x, d.shape) for x in skies_], axis=0)
+        if tilted
+        else float(np.mean(skies_))
+    )
+    model = totals.mean(axis=0)
+    out_members = []
+    for i, total, sky in zip(members, totals, skies_):
         rows[i]["mean"] = True
+        out_members.append(
+            {
+                "label": rows[i].get("variant", f"fit {i + 1}"),
+                "score": fits[i][0].quality.get("score"),
+                "sky": float(np.mean(sky)),
+                "model": total,
+                "residual": d - sky - total,
+            }
+        )
     return {
         "members": len(members),
         "of": len(fits),
@@ -3093,11 +3132,13 @@ def ensemble(
         "repeats": repeats,
         "A": np.mean([fits[i][0].commits["A"].model for i in members], axis=0),
         "B": np.mean([fits[i][0].commits["B"].model for i in members], axis=0),
-        "sky": float(skies_.mean()),
-        "sky_spread": float(skies_.std(ddof=1)),
-        "model": totals.mean(axis=0),
-        "residual": residuals.mean(axis=0),
+        "sky": float(levels.mean()),
+        "sky_spread": float(levels.std(ddof=1)),
+        "sky_map": mean_sky if tilted else None,
+        "model": model,
+        "residual": d - mean_sky - model,
         "spread": totals.std(axis=0, ddof=1),
+        "fits": out_members,
     }
 
 
@@ -3446,9 +3487,18 @@ def summary(result: PairResult, snap: Snapshot) -> str:
                 else f"mean of the {e['members']} fits within {100 * e['share']:g} % of the "
                 f"best score (of {e['of']})"
             )
-            + f": sky {e['sky']:.6g} ± {e['sky_spread']:.2g}; the A + B models "
-            f"differ by {float(np.median(e['spread'])):.3g} (median per pixel)"
+            + f": mean sky {e['sky']:.6g} ± {e['sky_spread']:.2g}"
+            + (
+                " (with the tilts the fits removed: an image)"
+                if e.get("sky_map") is not None
+                else ""
+            )
+            + f"; the A + B models differ by {float(np.median(e['spread'])):.3g} (median per "
+            "pixel); mean residual = image - mean sky - mean A + B"
         )
+        for k, f in enumerate(e.get("fits", []), 1):
+            score = "-" if f["score"] is None else format(f["score"], ".3f")
+            lines.append(f"  fit {k} of the mean: {f['label']}; sky {f['sky']:.6g}, score {score}")
     for note in snap.notes + [n for n in result.notes_extra if n not in snap.notes]:
         lines.append(f"note: {note}")
     calls = len(result.calls)

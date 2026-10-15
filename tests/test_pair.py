@@ -1788,3 +1788,64 @@ def test_joes_guard_refits_off_trend_outer_isophotes():
     assert any("did better, kept" in x for x in flat.joe["steps"])
     with pytest.raises(pair.PairError):
         pair.settings_from({"SKY": "1", "SHAPETOL": "2"})
+
+
+def test_the_mean_residual_is_the_image_minus_the_mean_sky_and_the_mean_model():
+    from dataclasses import replace
+
+    from astro_vista import sky as skies
+
+    snap = iterative_snapshot()
+    d = snap.image
+    shape = d.shape
+
+    def member(level, a, b, tilt=None):
+        sn = replace(snap, settings=replace(snap.settings, sky=level))
+        if tilt is not None:
+            sn = replace(sn, image=d - skies.plane_image(tilt, shape), tilt=tilt)
+        r = pair.PairResult("stable_valid_pair")
+        r.commits = {
+            "A": pair.Commit(np.full(shape, a), None, [], "1", 20.0, [], False),
+            "B": pair.Commit(np.full(shape, b), None, [], "1", 20.0, [], False),
+        }
+        r.total = r.commits["A"].model + r.commits["B"].model
+        r.residual = sn.image - level - r.total
+        r.quality = {"score": 1.0}
+        return r, sn
+
+    tilt = {"s0": 0.0, "gx": 0.01, "gy": -0.02, "xc": shape[1] / 2, "yc": shape[0] / 2}
+    fits = [member(100.0, 3.0, 1.0), member(102.0, 2.0, 2.0), member(101.0, 4.0, 0.5, tilt)]
+    rows = [{"variant": f"v{k}"} for k in range(3)]
+    e = pair.ensemble(fits, rows)
+    plane = skies.plane_image(tilt, shape)
+    mean_sky = (100.0 + 102.0 + (101.0 + plane)) / 3
+    mean_model = np.full(shape, (4.0 + 4.0 + 4.5) / 3)
+    assert np.allclose(e["sky_map"], mean_sky) and e["sky"] == pytest.approx(101.0)
+    assert np.allclose(e["model"], mean_model)
+    assert np.allclose(e["residual"], d - mean_sky - mean_model)  # on the original image
+    assert len(e["fits"]) == 3 and e["fits"][2]["label"] == "v2"
+    assert np.allclose(e["fits"][2]["residual"], d - (101.0 + plane) - 4.5)
+    assert np.allclose(e["fits"][0]["model"], 4.0)
+    # without tilts the mean sky is one level
+    e2 = pair.ensemble(fits[:2], rows[:2])
+    assert e2["sky_map"] is None and np.allclose(e2["residual"], d - 101.0 - 4.0)
+
+
+def test_the_mean_makes_a_buffer_for_each_fit_and_clears_an_earlier_mean():
+    from astro_vista.commands import Session
+
+    ses = Session()
+    folder = Path(__file__).resolve().parent.parent / "examples" / "pair_synthetic"
+    ses.execute(f"rd 1 {folder / 'pair.fits'}")
+    line = (
+        "pair 1 SKY=1000 RUNS=3 SEED=1 A: X0=294.3 Y0=263.8 R0=3 R1=120 FIXCTR=1 "
+        "B: X0=421.18 Y0=322.97 R0=3 R1=50 NR=20 FIXCTR=1"
+    )
+    text = ses.execute(line).text
+    names = [b.name for b in ses.buffers.values()]
+    members = [x for x in names if "pair mean fit" in x]
+    assert members and len(members) % 2 == 0 and any(x.endswith("residual") for x in members)
+    assert "mean residual = image - mean sky - mean A + B" in text
+    # a fit with no mean removes the earlier mean's buffers
+    ses.execute(line.replace("RUNS=3 SEED=1 ", ""))
+    assert not [b for b in ses.buffers.values() if "pair mean" in b.name]
