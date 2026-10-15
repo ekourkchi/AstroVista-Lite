@@ -32,6 +32,7 @@ from .pair import (
     PULL_PX,
     PULL_R0,
     PULL_RUN,
+    SHAPE_TOL,
 )
 from .panels import heading, note, number, plain_table, tip, title_row, whole
 
@@ -1321,6 +1322,15 @@ class PairPanel(QtWidgets.QWidget):
             "image (elliprof's extrapolation is often much too bright)"
         )
         f.addRow("Beyond R1", self.joe_tail)
+        self.shape_tol = number(0.0, 1.0, SHAPE_TOL, decimals=2, step=0.02)
+        self.shape_tol.setSpecialValueText("off")
+        self.shape_tol.setToolTip(
+            "SHAPETOL: at the end, when one of a galaxy's 3 outermost ellipses is off the trend "
+            "of those inside it by more than this (ellipticity and angle together), or its "
+            "model beyond R1 is anomalous, coarser isophotes and a smaller R1 are tried, the "
+            "largest clean one kept, and both galaxies fitted once more; 0: off"
+        )
+        f.addRow("Outer ellipses off by", tip(self.shape_tol, "pair_shape"))
         reset = QtWidgets.QPushButton("Joe's defaults")
         reset.clicked.connect(self.joe_defaults)
         f.addRow(reset)
@@ -1343,6 +1353,7 @@ class PairPanel(QtWidgets.QWidget):
         self.joe_tie.setValue(-3)
         self.joe_rmstar.setChecked(True)
         self.joe_tail.setCurrentIndex(0)
+        self.shape_tol.setValue(SHAPE_TOL)
 
     def joe_keywords(self) -> List[str]:
         """Joe's mode's keywords: the method, its cycles and isophote settings, and those of
@@ -1366,6 +1377,7 @@ class PairPanel(QtWidgets.QWidget):
             ("PULLPX", self.pull_px, PULL_PX, 1),
             ("PULLFRAC", self.pull_frac, PULL_FRAC, 100),
             ("PULLR0", self.pull_r0, PULL_R0, 1),
+            ("SHAPETOL", self.shape_tol, SHAPE_TOL, 1),
         ):
             v = box.value() / scale
             if abs(v - default) > 1e-9:

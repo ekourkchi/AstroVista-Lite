@@ -683,6 +683,14 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "starting at R0 PULLR0 at least (8 px)",
                     ),
                     (
+                        "SHAPETOL=",
+                        "Joe's mode, at the end: when one of a galaxy's 3 outermost ellipses "
+                        "is off the trend inside it by more than this (0.12; ellipticity and "
+                        "angle together) or its model beyond R1 is anomalous, coarser "
+                        "isophotes and a smaller R1 are tried and the largest clean fit kept "
+                        "(0: off)",
+                    ),
+                    (
                         "PULLCHECK=0",
                         "no pull check; by default each galaxy of a complete fit is fitted "
                         "once more with free centres, and the report says whether its "

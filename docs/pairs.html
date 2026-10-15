@@ -240,6 +240,13 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
   kept, the cycles, the smoothing and the model beyond R1. Each galaxy's card sets its R0,
   R1, first R1 (<code>START=</code>), NR and harmonics (<code>COS3X=</code>,
   <code>COS4X=</code>); each can stay automatic.</p>
+  <p><b>Outer ellipses.</b> The outermost ellipses of a fit can turn much rounder or flatter
+  than the rest, and the model ELLIPROF continues beyond R1 from them then goes astray. At
+  the end, Joe's mode compares each galaxy's 3 outermost ellipses with the trend inside
+  them, and checks that its model falls outwards beyond R1. When one is off by more than
+  <code>SHAPETOL=</code> (0.12), coarser isophotes and a smaller R1 are tried, the largest
+  clean fit is kept, and both galaxies are fitted once more. On simulated pairs this
+  brought Joe's mode's SBF recovery level with the automatic settings'.</p>
   <pre><code>pair 1 SKY=1000 MASK=stars METHOD=JOE CYCLES=12 TIE=-3 RMSTAR TAIL=measured \
        FIRST=B JOEGROW=1.25 PULLPX=1 \
        A: X0=294.3 Y0=263.8 R0=3 R1=120 FIXCTR=1 \

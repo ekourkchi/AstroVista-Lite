@@ -1750,7 +1750,7 @@ KEYWORDS = {
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
     "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X= RUNS= JITTER= SEED= "
     "HARMONICS= WINGS= METHOD= PULLCHECK= PULLPX= PULLFRAC= PULLRUN= PULLR0= FIRST= JOEGROW= "
-    "JOECORE= JOECOREMIN= JOECOREMAX=",
+    "JOECORE= JOECOREMIN= JOECOREMAX= SHAPETOL=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -1987,6 +1987,9 @@ Shared (before A:)
   PULLPX=0.5 PULLFRAC=0.02 PULLRUN=2 PULLR0=8   a pull (Joe's mode and the check): a
                 move towards the other of more than PULLPX px or PULLFRAC of the radius,
                 PULLRUN isophotes in a row, judged by a free-centre fit from R0 >= PULLR0
+  SHAPETOL=0.12  Joe's mode, at the end: an outermost ellipse off the trend by more than
+                this (or a model anomalous beyond R1) refitted with coarser isophotes or a
+                smaller R1, the largest clean fit kept (0: off)
   PULLCHECK=0   no pull check (by default each galaxy of a complete fit is fitted once more
                 with free centres and the report says whether its ellipses move towards
                 the other, and from which radius)

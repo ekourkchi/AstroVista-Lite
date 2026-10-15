@@ -78,6 +78,15 @@ JOE_CORE_MIN = 6.0
 JOE_CORE_MAX = 30.0
 JOE_MIN_R1 = 8.0
 JOE_FIRST = ("smaller", "a", "b")
+# Joe's mode's outer-shape guard (outer_shape, model_anomaly): one of the SHAPE_OUTER
+# outermost isophotes is off the trend when its shape, e exp(2i PA), differs from the median
+# of the SHAPE_REF isophotes inside the outermost ones by more than SHAPE_TOL; then coarser
+# isophotes (NR x SHAPE_COARSE, when NR is automatic) and an R1 inside it are tried.  Changes
+# further in are left alone: a twist or a change of ellipticity there is the galaxy's own.
+SHAPE_TOL = 0.12
+SHAPE_REF = 4
+SHAPE_OUTER = 3
+SHAPE_COARSE = 0.7
 
 
 class PairError(Exception):
@@ -196,6 +205,7 @@ class Settings:
     joe_core: float = JOE_CORE  # JOECORE=: each centre left out: this share of the separation
     joe_core_min: float = JOE_CORE_MIN  # JOECOREMIN=: ... at least this many pixels
     joe_core_max: float = JOE_CORE_MAX  # JOECOREMAX=: ... at most this many
+    shape_tol: float = SHAPE_TOL  # SHAPETOL=: Joe's mode's outer-shape guard (0: off)
 
 
 @dataclass
@@ -355,6 +365,7 @@ class PairResult:
     repeats: List[dict] = field(default_factory=list)  # RUNS: the fit kept and every repeat
     pull: Dict[str, dict] = field(default_factory=dict)  # pull_check: each galaxy's verdict
     joe: dict = field(default_factory=dict)  # METHOD=JOE: the order, the radii and the steps
+    shape_fixes: List[dict] = field(default_factory=list)  # SHAPETOL: each refit and why
     run_id: int = 0
 
     @property
@@ -463,6 +474,7 @@ SHARED = {
     "JOECORE",
     "JOECOREMIN",
     "JOECOREMAX",
+    "SHAPETOL",
 }
 OWN = {
     "NAME",
@@ -755,6 +767,7 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         joe_core=_num(shared, "JOECORE", "", JOE_CORE),
         joe_core_min=_num(shared, "JOECOREMIN", "", JOE_CORE_MIN),
         joe_core_max=_num(shared, "JOECOREMAX", "", JOE_CORE_MAX),
+        shape_tol=_num(shared, "SHAPETOL", "", SHAPE_TOL),
     )
     for ok, why in (
         (s.joe_first in JOE_FIRST, "FIRST must be SMALLER (the smaller R1), A or B"),
@@ -768,6 +781,7 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         (0 <= s.pull_frac <= 0.5, "PULLFRAC must be 0 to 0.5 (a share of the radius)"),
         (1 <= s.pull_run <= 10, "PULLRUN must be 1 to 10 (isophotes in a row)"),
         (0 <= s.pull_r0 <= 200, "PULLR0 must be 0 to 200 (pixels; 0: the galaxy's own R0)"),
+        (0 <= s.shape_tol <= 1, "SHAPETOL must be 0 to 1 (0: no outer-shape guard)"),
     ):
         if not ok:
             raise PairError(why)
@@ -2277,6 +2291,58 @@ def pull_words(cid: str, p: dict, names: Dict[str, str]) -> str:
     )
 
 
+def outer_shape(
+    profile, tol: float = SHAPE_TOL, ref: int = SHAPE_REF, outer: int = SHAPE_OUTER
+) -> Optional[dict]:
+    """The first of the ``outer`` outermost isophotes whose shape is off the trend of the
+    ``ref`` isophotes inside them (see SHAPE_TOL): its radius ("r"), the last radius before it
+    ("good") and how far off it is ("d"); None when they follow the trend."""
+    r = profile["Rmaj"].to_numpy(float)
+    e = profile["ellip"].to_numpy(float)
+    z = e * np.exp(2j * np.radians(profile["alpha"].to_numpy(float)))
+    n = len(r)
+    first = n - outer
+    if first < ref:
+        return None
+    inner = z[first - ref : first]
+    mid = complex(np.median(inner.real), np.median(inner.imag))
+    # a gradient continued outwards is the galaxy's own: the shape is compared with the
+    # median of the isophotes inside and with their straight-line trend in log radius, and
+    # is off only when it is far from both
+    x = np.log(r[first - ref : first])
+    slope_re, icpt_re = np.polyfit(x, inner.real, 1)
+    slope_im, icpt_im = np.polyfit(x, inner.imag, 1)
+    for k in range(first, n):
+        xk = math.log(r[k])
+        trend = complex(slope_re * xk + icpt_re, slope_im * xk + icpt_im)
+        d = min(abs(z[k] - mid), abs(z[k] - trend))
+        if d > tol:
+            return {"r": float(r[k]), "good": float(r[k - 1]), "d": float(d)}
+    return None
+
+
+def model_anomaly(model, profile, light, usable) -> Optional[str]:
+    """Why a galaxy's model is anomalous beyond its last isophote, or None: in rings of the
+    last isophote's shape, 1 to 1.3 and 1.3 to 1.6 times its radius, the model must fall
+    outwards and must not be brighter than the light there (the image minus the sky and
+    the other galaxy's model) by more than the larger of 0.2 of that light and its noise."""
+    rr = _ellipse_radius(profile.iloc[-1], model.shape)
+    a = float(profile["Rmaj"].iloc[-1])
+    rings = [usable & (rr >= lo * a) & (rr < hi * a) for lo, hi in ((1.0, 1.3), (1.3, 1.6))]
+    if any(int(m.sum()) < 50 for m in rings):
+        return None
+    m1, m2 = (float(np.median(model[m])) for m in rings)
+    lit = light[rings[0]]
+    level = float(np.median(lit))
+    noise = float(1.4826 * np.median(np.abs(lit - level))) / math.sqrt(lit.size)
+    if m2 > 1.05 * m1 and m1 > 0:
+        return f"the model rises beyond R1 ({m1:.3g} to {m2:.3g})"
+    excess = float(np.median(model[rings[0]] - lit))
+    if excess > max(0.2 * abs(level), 3 * noise):
+        return f"the model beyond R1 is brighter than the light there by {excess:.3g}"
+    return None
+
+
 # ---------------------------------------------------------------- Joe's mode
 # METHOD=JOE: Joe Jensen's way of fitting a pair, as he describes it.  Each galaxy's centre is
 # left out (a circle of JOE_CORE x the separation, within JOE_CORE_MIN .. JOE_CORE_MAX px)
@@ -2341,6 +2407,8 @@ def run_joe(
     steps: List[str] = []
     counter = {"n": 0}
     total = 4 + 4 * s.cycles
+    nr_over: Dict[str, int] = {}  # the outer-shape guard's NR for a galaxy, kept from then on
+    r_cap: Dict[str, float] = {}  # ... and its R1, never exceeded from then on
 
     def say(**info):
         if progress is not None:
@@ -2351,7 +2419,7 @@ def run_joe(
         if cancelled is not None and cancelled():
             raise Cancelled()
 
-    def call(cid, r1, cycle, fixctr, floor=0.0):
+    def call(cid, r1, cycle, fixctr, floor=0.0, nr=None):
         """A fit of ``cid`` out to ``r1`` that passes the checks, on the image minus the
         other's model, retried from a larger R0 when the innermost isophotes fail and inside
         the radius where it failed (never below ``floor``): (fit, r1) or (None, reason)."""
@@ -2366,7 +2434,8 @@ def run_joe(
         for _attempt in range(6):
             stopping()
             r0 = max(comp.r0, lift)
-            trial = replace(comp, r0=r0, r1=r1, fixctr=fixctr)
+            n_use = nr if nr is not None else nr_over.get(cid, comp.nr)
+            trial = replace(comp, r0=r0, r1=r1, fixctr=fixctr, nr=n_use)
             counter["n"] += 1
             say(phase="fit", cycle=cycle, component=cid, r1=r1, retry=0, input=source)
             fit = fitter(
@@ -2452,7 +2521,8 @@ def run_joe(
         comp = comps[cid]
         other = "B" if cid == "A" else "A"
         have = committed[cid].r1_call if cid in committed else 0.0
-        fit, r1, data, mask = call(cid, r_try, cycle, 0, floor=have)
+        r_try = min(r_try, r_cap.get(cid, r_try))
+        fit, r1, data, mask = call(cid, r_try, cycle, 0, floor=min(have, r_try))
         judged = fit is not None
         if judged:
             o = comps[other]
@@ -2484,9 +2554,18 @@ def run_joe(
         if fit is None:
             steps.append(f"{cycle}: {cid} failed at R1 {r1:.1f} ({r1b}); it keeps its model")
             return False
+        commit(cid, fit, r1b, data, mask, None, cycle)
+        return r1b > have + 0.5
+
+    def commit(cid, fit, r1b, data, mask, model, cycle):
+        comp = comps[cid]
         usable = finite & ~mask
         committed[cid] = Commit(
-            model=tail_model(fit.model, fit.profile, s.tail, data - s.sky, usable),
+            model=(
+                model
+                if model is not None
+                else tail_model(fit.model, fit.profile, s.tail, data - s.sky, usable)
+            ),
             profile=fit.profile,
             ellipses=profile_ellipses(fit.profile),
             tag=cycle,
@@ -2496,7 +2575,69 @@ def run_joe(
             requested_r1=comp.r1,
         )
         result.attempted_r1[cid] = r1b
-        return r1b > have + 0.5
+
+    def flaw(fit, data, mask):
+        """What is wrong with a fit's outer isophotes or its model (None: nothing), and its
+        model."""
+        usable = finite & ~mask
+        model = tail_model(fit.model, fit.profile, s.tail, data - s.sky, usable)
+        bad = outer_shape(fit.profile, s.shape_tol)
+        if bad is not None:
+            return bad, model
+        why = model_anomaly(model, fit.profile, data - s.sky, usable)
+        return ({"r": None, "good": None, "d": 0.0, "model": why} if why else None), model
+
+    def guard(cid, fit, r1, data, mask, cycle):
+        """SHAPETOL: when an outer isophote is off the trend or the model is anomalous,
+        coarser isophotes (automatic NR) and an R1 inside the bad isophote are tried; the
+        largest radius whose isophotes and model are fine is kept (else the smallest)."""
+        bad, model = flaw(fit, data, mask)
+        if bad is None:
+            return fit, r1, data, mask, model, None
+        comp = comps[cid]
+        what = (
+            f"its ellipse at {bad['r']:.1f} is off the trend (by {bad['d']:.2f})"
+            if bad["r"] is not None
+            else bad["model"]
+        )
+        trims = []
+        if bad["good"] is not None and bad["good"] >= JOE_MIN_R1:
+            trims.append(bad["good"])
+        elif bad["r"] is None:
+            trims.append(0.85 * r1)  # an anomalous model: a little further in
+        tries = []
+        n_now = nr_for(replace(comp, nr=nr_over.get(cid, comp.nr)), r1)
+        if comp.nr == 0 and n_now > 5:
+            tries.append((r1, max(4, int(round(SHAPE_COARSE * n_now)))))
+        for t in trims:
+            tries.append((t, None))
+            if comp.nr == 0 and nr_for(comp, t) > 5:
+                tries.append((t, max(4, int(round(SHAPE_COARSE * nr_for(comp, t))))))
+        clean, shaped = None, None  # the largest fine fit; the largest with fine isophotes
+        for r_try, nr in tries:
+            f2, r2, d2, m2 = call(cid, r_try, cycle, comp.fixctr, nr=nr)
+            if f2 is None:
+                continue
+            b2, model2 = flaw(f2, d2, m2)
+            option = (f2, r2, d2, m2, model2, nr)
+            if b2 is None and (clean is None or r2 > clean[1] + 0.5):
+                clean = option
+            if (b2 is None or b2["r"] is None) and (shaped is None or r2 > shaped[1] + 0.5):
+                shaped = option
+        # an off-trend isophote is always replaced by fine ones; an anomalous model alone is
+        # replaced only by a fit that is fine in both (never shrinking R1 cycle after cycle)
+        chosen = clean or (shaped if bad["r"] is not None else None)
+        if chosen is None:
+            steps.append(f"{cycle}: {cid}: {what}; no other radius or NR did better, kept")
+            return fit, r1, data, mask, model, None
+        f2, r2, d2, m2, model2, nr = chosen
+        how = f"R1 {r2:.1f}" + (f", NR {nr}" if nr else "")
+        steps.append(
+            f"{cycle}: {cid}: {what}; refitted with {how}"
+            + ("" if chosen is clean else " (its isophotes fine, its model not)")
+        )
+        result.shape_fixes.append({"cycle": cycle, "galaxy": cid, "why": what, "kept": how})
+        return f2, r2, d2, m2, model2, nr
 
     def first_r1(cid):
         c = comps[cid]
@@ -2514,16 +2655,17 @@ def run_joe(
             result.stability_reason = "; ".join(f"{c}: {result.failures.get(c, '')}" for c in "AB")
             result.joe = {"order": list(order), "steps": steps}
             return _finish(result, snap, start, None, committed)
-        quiet, failed_last = 0, []
-        for k in range(1, s.cycles + 1):
+
+        def cycle_once(k: int, grow: bool):
             tag = str(k)
             prev = dict(committed)
-            grew, failed_last = False, []
+            grew, failed = False, []
             for cid in order:
                 before = committed[cid]
-                grew |= place(cid, min(s.joe_grow * before.r1_call, comps[cid].r1), tag)
+                want = s.joe_grow * before.r1_call if grow else before.r1_call
+                grew |= place(cid, min(want, comps[cid].r1), tag)
                 if committed[cid] is before:
-                    failed_last.append(cid)
+                    failed.append(cid)
             prev_t = prev["A"].model + prev["B"].model
             m = _metrics(snap, committed, prev["A"].model, prev["B"].model, prev_t, s.converge)
             m.update(
@@ -2536,14 +2678,40 @@ def run_joe(
                 B_r1=committed["B"].r1_call,
                 growing=grew,
                 damping=1.0,
-                polish=False,
+                polish=not grow,
             )
             result.metrics.append(m)
             say(phase="cycle", cycle=tag, metrics=m)
+            return m, grew, failed
+
+        quiet, failed_last, k = 0, [], 0
+        for k in range(1, s.cycles + 1):
+            m, grew, failed_last = cycle_once(k, True)
             quiet = 0 if grew else quiet + 1
             if quiet >= 2 and m["stable"]:
                 m["converged"] = True
                 break
+        if s.shape_tol > 0:
+            # the outer-shape guard, on the final fits: an outermost ellipse off the trend or
+            # an anomalous model is refitted with coarser isophotes or a smaller R1, kept from
+            # then on; then one more cycle at those radii, so each model sees the other's
+            changed = False
+            for cid in order:
+                c = committed[cid]
+                fit, r1b, data, mask = call(cid, c.r1_call, "shape", comps[cid].fixctr)
+                if fit is None:
+                    continue
+                f2, r2, d2, m2, model2, nr = guard(cid, fit, r1b, data, mask, "shape")
+                if f2 is fit:
+                    continue
+                if r2 < c.r1_call - 0.5:
+                    r_cap[cid] = r2
+                if nr is not None:
+                    nr_over[cid] = nr
+                commit(cid, f2, r2, d2, m2, model2, "shape")
+                changed = True
+            if changed:
+                m, _grew, failed_last = cycle_once(k + 1, False)
         last = result.metrics[-1]
         if failed_last:
             result.status = "retained_after_failed_update"

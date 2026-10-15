@@ -17,6 +17,15 @@ newest is at the top.
   `JOECOREMAX=`), what counts as a pull (`PULLPX=`, `PULLFRAC=`, `PULLRUN=`, `PULLR0=`, also
   used by the pull check), the centres of the model kept, the cycles, the smoothing and the
   model beyond R1. Each galaxy's card sets its R0, R1, first R1, NR and harmonics.
+- **Joe's mode: outer ellipses.** At the end of the fit, a galaxy whose 3 outermost ellipses
+  leave the trend inside them (`SHAPETOL=0.12`, ellipticity and angle together, compared
+  with both the median and the log-radius trend of the 4 inside), or whose model rises or
+  is brighter than the light beyond R1, is refitted with coarser isophotes or an R1 just
+  inside the bad ellipse; the largest clean fit is kept and both galaxies are fitted once
+  more. On 18 simulated pairs the SBF amplitude in the residual came within 1.6 % of the
+  truth for half the galaxies (2.8 % without; the automatic settings 1.7 %), and 6 fits
+  ended stable instead of 1. A guard applied while the galaxies grow, or to every
+  isophote, cut real changes of shape short (C328014's A to 36 px) and was dropped.
 - **The pull check.** Every complete pair fit ends with Joe's test: each galaxy fitted once
   more with free centres on the image minus the other's model, and the report says whether
   its outer ellipses move towards the other galaxy and from which radius (`PULLCHECK=0`:

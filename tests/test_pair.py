@@ -1535,7 +1535,8 @@ def test_joes_mode_grows_each_galaxy_only_as_far_as_it_is_not_pulled():
     snap = replace(
         snap, components={**snap.components, "A": replace(snap.components["A"], r1=30.0)}
     )
-    snap = replace(snap, settings=replace(snap.settings, method="joe", cycles=8))
+    # the fake's flat models are "anomalous" beyond R1: the outer-shape guard off here
+    snap = replace(snap, settings=replace(snap.settings, method="joe", cycles=8, shape_tol=0))
     f = PullingFitter(start=12.0)
     result = pair.run_search(snap, fitter=f)
     assert result.complete and result.joe["order"] == ["B", "A"]  # the smaller first
@@ -1619,6 +1620,7 @@ def test_joes_mode_settings_choose_the_order_growth_core_and_pull():
             "PULLRUN": "1",
             "PULLR0": "0",
             "CYCLES": "6",
+            "SHAPETOL": "0",
         }
     )
     snap = replace(snap, settings=replace(s, sky=100.0))
@@ -1679,7 +1681,9 @@ def test_joes_mode_uses_each_galaxys_r0_nr_first_r1_and_harmonics():
         "A": replace(snap.components["A"], r0=4.0, r1=30.0, nr=8, cos4x=1, start=14.0),
         "B": replace(snap.components["B"], cos3x=0),
     }
-    snap = replace(snap, components=comps, settings=replace(snap.settings, method="joe"))
+    snap = replace(
+        snap, components=comps, settings=replace(snap.settings, method="joe", shape_tol=0)
+    )
     f = SteadyFitter()
     pair.run_joe(snap, fitter=f)
     a_calls = [c for c in f.calls if c["component"] == "A"]
@@ -1717,3 +1721,70 @@ def test_the_panel_shows_and_writes_each_galaxys_settings_in_joes_mode():
     panel.set_mode(0)  # Automatic: those rows hidden again, the values to try back
     assert not card.form.isRowVisible(card._row_of["nr"]) and not card.try_cos3x.isHidden()
     app.processEvents()
+
+
+class ShapedFitter(SteadyFitter):
+    """Models that fall with radius (never anomalous); A's isophotes beyond ``off`` px turn
+    round when there are more than ``coarse_ok`` of them (finer rings are noisier).  More
+    than SHAPE_OUTER of them would be a change of the galaxy's own shape, not a guard case."""
+
+    def __init__(self, off=20.0, coarse_ok=99, **kw):
+        super().__init__(**kw)
+        self.off, self.coarse_ok = off, coarse_ok
+
+    def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+        fit = super().__call__(data, x0, y0, r0, r1, nr, **kw)
+        ny, nx = data.shape
+        yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
+        fit.model[:] = 50.0 * np.exp(-np.hypot(xx - x0, yy - y0))  # nothing beyond R1
+        p = fit.profile
+        p["ellip"] = 0.3
+        p["alpha"] = 30.0
+        if x0 < 50 and nr > self.coarse_ok:
+            p.loc[p["Rmaj"] > self.off, "ellip"] = 0.02  # off the trend: the guard's case
+        return fit
+
+
+def test_outer_shape_finds_the_first_isophote_off_the_trend():
+    import pandas as pd
+
+    r = np.array([3, 4, 5, 7, 9, 12, 15, 20, 26, 34.0])
+    e = np.array([0.2, 0.22, 0.25, 0.27, 0.3, 0.31, 0.33, 0.35, 0.1, 0.36])
+    p = pd.DataFrame({"Rmaj": r, "ellip": e, "alpha": np.full(r.size, 40.0)})
+    bad = pair.outer_shape(p)
+    assert bad["r"] == 26 and bad["good"] == 20 and bad["d"] > 0.2
+    # further in, a change of shape is the galaxy's own: left alone
+    inside = p.assign(ellip=np.where(r == 12, 0.02, 0.3))
+    assert pair.outer_shape(inside) is None
+    smooth = p.assign(ellip=np.linspace(0.1, 0.4, r.size))  # a real gradient is fine
+    assert pair.outer_shape(smooth) is None
+    # the angle counts in proportion to the ellipticity
+    turned = p.assign(ellip=0.3, alpha=np.where(r > 25, 80.0, 40.0))
+    assert pair.outer_shape(turned)["r"] == 26
+
+
+def test_joes_guard_refits_off_trend_outer_isophotes():
+    from dataclasses import replace
+
+    snap = iterative_snapshot()
+    snap = replace(
+        snap, components={**snap.components, "A": replace(snap.components["A"], r1=30.0, nr=0)}
+    )
+    snap = replace(snap, settings=replace(snap.settings, method="joe", cycles=4))
+    # coarser isophotes are fine: the guard keeps R1 and uses fewer of them
+    result = pair.run_joe(snap, fitter=ShapedFitter(off=24.0, coarse_ok=8))
+    assert result.complete and result.shape_fixes
+    assert pair.outer_shape(result.commits["A"].profile) is None
+    assert any("NR" in x["kept"] for x in result.shape_fixes)
+    # every NR is off beyond 24 px: the guard keeps the radius inside the bad isophote
+    result = pair.run_joe(snap, fitter=ShapedFitter(off=24.0, coarse_ok=0))
+    assert result.commits["A"].r1_call <= 24.0
+    assert pair.outer_shape(result.commits["A"].profile) is None
+    assert any("off the trend" in x for x in result.joe["steps"])
+    # an anomalous model alone never shrinks R1: flat models (brighter than the light
+    # beyond R1) keep the radius the pull allows
+    flat = pair.run_joe(snap, fitter=SteadyFitter())
+    assert flat.commits["A"].r1_call > 25  # it grew (x 1.3 a cycle), never shrank
+    assert any("did better, kept" in x for x in flat.joe["steps"])
+    with pytest.raises(pair.PairError):
+        pair.settings_from({"SKY": "1", "SHAPETOL": "2"})
