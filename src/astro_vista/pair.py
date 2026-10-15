@@ -72,7 +72,7 @@ PULL_PX = 0.5
 PULL_FRAC = 0.02
 PULL_RUN = 2
 PULL_R0 = 8.0
-JOE_GROW = 1.3
+JOE_GROW = 1.2
 JOE_CORE = 0.2
 JOE_CORE_MIN = 6.0
 JOE_CORE_MAX = 30.0
@@ -541,7 +541,7 @@ AUTO_R1_EDGE = 0.9  # ... at most this fraction of the distance to the frame's e
 START_SHARE = 1 / 3  # the first R1: this share of the final R1, ...
 START_SEPARATION = 0.35  # ... at most this share of the distance between the centres, ...
 START_MIN = 9.0  # ... and at least this many pixels
-AUTO_FACTOR = 1.5  # the growth factor with START=AUTO
+AUTO_FACTOR = 1.2  # the growth factor with START=AUTO
 
 
 def auto_r1(

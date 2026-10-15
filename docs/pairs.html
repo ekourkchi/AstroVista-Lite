@@ -183,7 +183,7 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
   (<code>SKYITER=3</code>). <i>Automatic, adjustable</i> shows the same values so that you
   can change any of them. <i>Manual</i> is the command used above.</p>
   <pre><code>pair 1 SKY=1000 MASK=stars CORES=0 CYCLES=6 CONVERGE=0.02 CONSECUTIVE=2 \
-       DAMP=0.5 TRYDAMP=1,0.5 TRYFIX=1,0 TRYFACTOR=1.5,1.25 TIE=-3 RMSTAR \
+       DAMP=0.5 TRYDAMP=1,0.5 TRYFIX=1,0 TRYFACTOR=1.2,1.35 TIE=-3 RMSTAR \
        TAIL=measured SKYPLANE=1 PARALLEL=3 \
        A: X0=294.3 Y0=263.8 R0=3 R1=AUTO START=AUTO NR=AUTO FIXCTR=1 \
        B: X0=421.18 Y0=322.97 R0=3 R1=AUTO START=AUTO NR=AUTO FIXCTR=1</code></pre>
@@ -230,7 +230,7 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
   fields it left more large-scale structure in the residual. It is a quick first look,
   and its steps in the report show where each galaxy is pulled.</p>
   <p>Its box in the panel sets which galaxy goes first (<code>FIRST=</code>), how much R1
-  grows each cycle (<code>JOEGROW=</code>, 1.3), the centre left out
+  grows each cycle (<code>JOEGROW=</code>, 1.2), the centre left out
   (<code>JOECORE=</code> 0.2 of the separation, from <code>JOECOREMIN=</code> 6 to
   <code>JOECOREMAX=</code> 30 px), what counts as a pull (<code>PULLPX=</code> 0.5 px or
   <code>PULLFRAC=</code> 2 % of the radius, <code>PULLRUN=</code> 2 isophotes in a row,

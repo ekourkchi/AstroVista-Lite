@@ -1976,7 +1976,7 @@ Shared (before A:)
                 A, B and A + B each changed by less than CONVERGE (0: run every cycle)
   DAMP=1        damping: subtract alpha x new + (1 - alpha) x previous companion model;
                 below 1, POLISH=2 undamped cycles end the run (the result: ELLIPROF's models)
-  TRYDAMP=1,0.5 TRYFIX=1,0 TRYFACTOR=1.5,1.25   fit every combination and keep the one
+  TRYDAMP=1,0.5 TRYFIX=1,0 TRYFACTOR=1.2,1.35   fit every combination and keep the one
                 whose two models describe the pair best: stable fits first, then the
                 smallest residual, fixed centres unless free ones lower it by > 0.01
   ONFAIL=reduce on a failed fit keep the last valid model and: reduce (try halfway, then
@@ -2006,7 +2006,7 @@ Shared (before A:)
                 smaller galaxy first and not far out, then the two in turn, each R1 grown
                 only as far as its ellipses are not pulled towards the other (free
                 centres judge it); fast, no search
-  FIRST=SMALLER|A|B  JOEGROW=1.3  JOECORE=0.2 JOECOREMIN=6 JOECOREMAX=30   Joe's mode:
+  FIRST=SMALLER|A|B  JOEGROW=1.2  JOECORE=0.2 JOECOREMIN=6 JOECOREMAX=30   Joe's mode:
                 the galaxy fitted first, the R1 tried each cycle (x the last), each centre
                 left out (a share of the separation, within these pixels; 0: none)
   PULLPX=0.5 PULLFRAC=0.02 PULLRUN=2 PULLR0=8   a pull (Joe's mode and the check): a

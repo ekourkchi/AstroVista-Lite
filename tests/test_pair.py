@@ -1201,7 +1201,7 @@ def test_automatic_radii_and_isophotes():
         "B": {"X0": "300", "Y0": "200", "R0": "3", "R1": "40"},
     }
     notes = pair.resolve_auto(own, light, masked, 1.0)
-    assert float(own["A"]["R1"]) == r1 and own["A"]["FACTOR"] == "1.5"
+    assert float(own["A"]["R1"]) == r1 and own["A"]["FACTOR"] == "1.2"
     assert float(own["A"]["START"]) == pair.auto_start(r1, 100)
     assert any("R1=AUTO ->" in n for n in notes)
     comps = pair.components_from(own)
@@ -1546,7 +1546,7 @@ def test_joes_mode_grows_each_galaxy_only_as_far_as_it_is_not_pulled():
     result = pair.run_search(snap, fitter=f)
     assert result.complete and result.joe["order"] == ["B", "A"]  # the smaller first
     assert result.commits["B"].r1_call == pytest.approx(20.0)  # B is never pulled: its R1
-    assert result.commits["A"].r1_call <= 13.5  # A stops where its ellipses start to move (of 30)
+    assert result.commits["A"].r1_call <= 15.0  # A stops where its ellipses start to move (of 30)
     assert any("move towards B" in x for x in result.joe["steps"])
     # each galaxy's centre is left out while the other is fitted
     core_a = result.snapshot.cores["A"]
@@ -1775,7 +1775,7 @@ def test_joes_guard_refits_off_trend_outer_isophotes():
     snap = replace(
         snap, components={**snap.components, "A": replace(snap.components["A"], r1=30.0, nr=0)}
     )
-    snap = replace(snap, settings=replace(snap.settings, method="joe", cycles=4))
+    snap = replace(snap, settings=replace(snap.settings, method="joe", cycles=10))
     # coarser isophotes are fine: the guard keeps R1 and uses fewer of them
     result = pair.run_joe(snap, fitter=ShapedFitter(off=24.0, coarse_ok=8))
     assert result.complete and result.shape_fixes
@@ -1854,3 +1854,43 @@ def test_the_mean_makes_a_buffer_for_each_fit_and_clears_an_earlier_mean():
     # a fit with no mean removes the earlier mean's buffers
     ses.execute(line.replace("RUNS=3 SEED=1 ", ""))
     assert not [b for b in ses.buffers.values() if "pair mean" in b.name]
+
+
+def test_cancel_stops_the_fit_and_keeps_nothing():
+    from PySide6 import QtCore, QtWidgets
+
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    window.show()
+
+    def settle(seconds=120):
+        deadline = QtCore.QDeadlineTimer(int(seconds * 1000))
+        while (
+            window.busy() or getattr(window, "_pair_worker", None)
+        ) and not deadline.hasExpired():
+            app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        app.processEvents()
+
+    window.open_pair_example()
+    settle()
+    panel = window.pair_panel
+    panel.sky_requested.emit()
+    settle()
+    before = {n: (b.name, id(b.data)) for n, b in window.session.buffers.items()}
+    pairs_before = dict(window.session.pairs)
+    panel.parallel.setValue(3)  # three fits averaged: plenty of buffers if it were kept
+    panel.run_requested.emit()
+    deadline = QtCore.QDeadlineTimer(30000)
+    while not getattr(window, "_pair_worker", None) and not deadline.hasExpired():
+        app.processEvents(QtCore.QEventLoop.AllEvents, 20)
+    assert window._pair_worker is not None and panel.cancel.isEnabled()
+    panel.cancel.click()
+    settle()
+    after = {n: (b.name, id(b.data)) for n, b in window.session.buffers.items()}
+    assert after == before  # no buffer made, changed or removed
+    assert dict(window.session.pairs) == pairs_before
+    assert "cancelled" in panel.status.text() and panel.iterations.rowCount() == 0
+    assert not panel.cancel.isEnabled() and panel.run.isEnabled()
+    window.close()

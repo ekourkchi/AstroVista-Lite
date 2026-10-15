@@ -59,7 +59,7 @@ AUTO_RUN = [
     "DAMP=0.5",
     "TRYDAMP=1,0.5",
     "TRYFIX=1,0",
-    "TRYFACTOR=1.5,1.25",
+    "TRYFACTOR=1.2,1.35",
     "TIE=-3",
     "RMSTAR",
     "TAIL=measured",
@@ -251,7 +251,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.start_pick.setEnabled(False)
         self.growth = QtWidgets.QComboBox()
         self.growth.addItems(["× factor", "+ pixels", "list of radii"])
-        self.growth_value = number(0.01, 1e4, 1.5, decimals=2, step=0.1, tip="the factor or step")
+        self.growth_value = number(0.01, 1e4, 1.2, decimals=2, step=0.05, tip="the factor or step")
         self.radii = QtWidgets.QLineEdit()
         self.radii.setPlaceholderText("40, 60, 90, 130, 180")
         self.radii.setToolTip("RADII: the R1 of each fit, increasing; the final R1 ends it")
@@ -409,7 +409,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.growth_value.setVisible(index < 2)
         self.radii.setVisible(index == 2)
         if index == 0 and self.growth_value.value() < 1.01:
-            self.growth_value.setValue(1.5)
+            self.growth_value.setValue(1.2)
         if index == 1 and self.growth_value.value() < 2:
             self.growth_value.setValue(20)
         self._show_schedule()
@@ -574,6 +574,7 @@ class PairPanel(QtWidgets.QWidget):
     pick_requested = QtCore.Signal(str, str)  # "A" or "B"; "centre", "r0" or "r1"
     run_requested = QtCore.Signal()
     stop_requested = QtCore.Signal()
+    cancel_requested = QtCore.Signal()  # stop, and keep nothing of the fit
     export_requested = QtCore.Signal()
     blink_requested = QtCore.Signal()
     report_requested = QtCore.Signal()
@@ -804,7 +805,7 @@ class PairPanel(QtWidgets.QWidget):
         form.addRow(heading("4. Run"))
         self.joe_note = note(
             "Joe's mode: each galaxy's centre left out while the other is fitted; the smaller "
-            "galaxy first, not far out; then the two in turn, each trying a 30 % larger R1 and "
+            "galaxy first, not far out; then the two in turn, each trying a 20 % larger R1 and "
             "keeping it only as far as its ellipses (fitted with free centres) do not move "
             "towards the other; the model kept with fixed centres, smoothed over 3 isophotes, "
             "the light beyond R1 measured in rings. No search and no sky refinement: about a "
@@ -903,7 +904,7 @@ class PairPanel(QtWidgets.QWidget):
         self.try_damp = QtWidgets.QLineEdit("1, 0.5")
         self.try_fix = QtWidgets.QComboBox()
         self.try_fix.addItems(["fixed and free", "fixed only", "free only"])
-        self.try_factor = QtWidgets.QLineEdit("1.5, 1.25")
+        self.try_factor = QtWidgets.QLineEdit("1.2, 1.35")
         for row, (label, w, tipkey) in enumerate(
             (
                 ("Damping values", self.try_damp, "TRYDAMP"),
@@ -973,8 +974,16 @@ class PairPanel(QtWidgets.QWidget):
             "which both fits passed is kept"
         )
         self.stop.clicked.connect(self.stop_requested)
+        self.cancel = QtWidgets.QPushButton("Cancel")
+        self.cancel.setEnabled(False)
+        self.cancel.setToolTip(
+            "Stop the fit as soon as the elliprof calls running now end, and keep nothing of "
+            "it: no models, residuals, means or views; the buffers stay as they were"
+        )
+        self.cancel.clicked.connect(self.cancel_requested)
         buttons.addWidget(self.run, 2)
         buttons.addWidget(self.stop, 1)
+        buttons.addWidget(self.cancel, 1)
         form.addRow(buttons)
         self.progress = note()
         form.addRow(self.progress)
@@ -1448,7 +1457,7 @@ class PairPanel(QtWidgets.QWidget):
         self.search.setChecked(True)
         self.try_damp.setText("1, 0.5")
         self.try_fix.setCurrentIndex(0)
-        self.try_factor.setText("1.5, 1.25")
+        self.try_factor.setText("1.2, 1.35")
         self.tie.setValue(-3)
         self.rmstar.setChecked(True)
         self.tail.setCurrentIndex(self.tail.findData("measured"))
@@ -1459,7 +1468,7 @@ class PairPanel(QtWidgets.QWidget):
             card.r0.setValue(3)
             card.fixctr.setCurrentIndex(1)
             card.growth.setCurrentIndex(0)
-            card.growth_value.setValue(1.5)
+            card.growth_value.setValue(1.2)
             for box in (card.r1_auto, card.start_auto, card.nr_auto):
                 box.setChecked(True)
 
@@ -1641,6 +1650,7 @@ class PairPanel(QtWidgets.QWidget):
     def set_running(self, on: bool) -> None:
         self.run.setEnabled(not on)
         self.stop.setEnabled(on)
+        self.cancel.setEnabled(on)
         if on:
             self.status.setText("")
             self.clear_iterations()

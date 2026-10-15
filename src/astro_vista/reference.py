@@ -673,7 +673,7 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     (
                         "FIRST=, JOEGROW=, JOECORE=, JOECOREMIN=, JOECOREMAX=",
                         "Joe's mode: the galaxy fitted first (SMALLER, A or B), the R1 each "
-                        "cycle tries (× the last one kept, 1.3), each centre left out while "
+                        "cycle tries (× the last one kept, 1.2), each centre left out while "
                         "the other is fitted (0.2 of the separation, 6 to 30 px; 0: none)",
                     ),
                     (

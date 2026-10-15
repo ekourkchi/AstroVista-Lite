@@ -5,6 +5,15 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Cancel.** The Pair fit tool's Cancel stops a fit as soon as the elliprof calls running
+  then end and keeps nothing of it: no models, residuals, means or views; the buffers and
+  the last pair result stay as they were. (Stop still keeps the last cycle that passed.)
+- **R1 grows by 1.2.** The growth factor of R1 is 1.2 by default (it was 1.5): START=AUTO,
+  each galaxy's "× factor", and Joe's mode (it was 1.3); the automatic search tries 1.2
+  and 1.35 (it tried 1.5 and 1.25). On 18 simulated pairs, the automatic settings' SBF
+  amplitude came within 1.5 % of the truth for half the galaxies (1.7 % before; 17 better,
+  10 worse, not significant) and 9 fits ended stable instead of 6; each fit takes a few
+  more elliprof calls.
 - **Joe's mode.** Settings ▸ Joe's mode (`METHOD=JOE`) fits a pair the way Joe Jensen
   does it by hand: each galaxy's centre left out while the other is fitted, the smaller
   galaxy first and not far out, then the two in turn, each R1 grown only as far as its

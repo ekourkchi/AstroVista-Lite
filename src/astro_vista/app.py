@@ -927,6 +927,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pp.pick_requested.connect(self.pair_pick)
         pp.run_requested.connect(self.run_pair)
         pp.stop_requested.connect(self.stop_pair)
+        pp.cancel_requested.connect(self.cancel_pair)
         pp.export_requested.connect(self.export_pair)
         pp.blink_requested.connect(self.blink_pair)
         pp.report_requested.connect(self.copy_pair_report)
@@ -1480,7 +1481,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 shape = (f[info.hdu] if info.hdu else f[0]).data.shape
             r1 = pairs.suggested_r1(info.centres, shape)
             for cid, (x, y, name) in info.centres.items():
-                # start at a third of the final R1 and grow by 1.5 each cycle (starting
+                # start at a third of the final R1 and grow by 1.2 each cycle (starting
                 # values to check, not results); fixed centres
                 p.cards[cid].set_values(
                     {
@@ -1674,6 +1675,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._enable_runs(False)
         self.pair_panel.set_running(True)
         self._pair_stop = False
+        self._pair_cancel = False
         self._pair_live = {}
         self._pair_live_key = job.image.key
         worker = PairWorker(job, lambda: self._pair_stop, self)
@@ -1732,11 +1734,29 @@ class MainWindow(QtWidgets.QMainWindow):
             "stopping after the current elliprof call (at most its timeout)…"
         )
 
+    def cancel_pair(self) -> None:
+        """Stop the fit and keep nothing of it (see _pair_done)."""
+        if getattr(self, "_pair_worker", None) is None:
+            return
+        self._pair_stop = True
+        self._pair_cancel = True
+        self.pair_panel.progress.setText("cancelling: waiting for the elliprof calls running now…")
+
     def _pair_done(self, line: str, job, result) -> None:
         self._pair_worker = None
         self._pair_live = {}
         self.pair_panel.set_running(False)
         self.pair_panel.progress.setText("")
+        if getattr(self, "_pair_cancel", False):
+            # cancelled: nothing of the fit is kept; the buffers, the pair record and the
+            # results shown stay as they were before it started
+            self._pair_cancel = False
+            self.pair_panel.clear_iterations()
+            self.pair_panel.status.setText("cancelled: nothing kept")
+            self._queue.clear()
+            self._overlays()
+            self._finished(line, Reply("pair cancelled: nothing kept, no buffer changed"), None)
+            return
         if job.snap.run_id != result.run_id:
             return  # a result of another run: never shown
         reply = self.session.pair_commit(job, result)
