@@ -1052,7 +1052,7 @@ def check(fit: ArrayFit, comp: Component, r1_call: float, image_finite: np.ndarr
                 "outer",
                 float(r[k + 1]),
             )
-    x, y, q = cols["x0"], cols["y0"], 1 - e
+    x, y = cols["x0"], cols["y0"]
     for k in range(1, len(r)):
         jump = math.hypot(x[k] - x[k - 1], y[k] - y[k - 1])
         if jump > max(JUMP_PIXELS, JUMP_FRACTION * r[k]):
@@ -2092,7 +2092,11 @@ def _repeat(result, support, progress, cancelled, fitter) -> PairResult:
     (jittered()); the mean of the complete ones (ensemble()) replaces the search's mean."""
     kept_snap = result.snapshot
     s = kept_snap.settings
-    more = _fit_each(jittered(kept_snap, s), support, progress, cancelled, fitter, s.parallel)
+    more = _fit_each(
+        jittered(kept_snap, s), support, progress, cancelled, fitter, s.parallel, light=True
+    )
+    for row in result.search:  # the repeats' mean replaces the search's
+        row.pop("mean", None)
     rows = [_search_row("the fit kept", result, kept_snap)]
     rows += [dict(_search_row(label, r, sn), repeat=True) for label, r, sn in more]
     result.ensemble = ensemble(
@@ -2201,11 +2205,14 @@ def _search(snap, support, progress, cancelled, fitter) -> PairResult:
     return _with_plane(result, base, support, progress, cancelled, fitter)
 
 
-def _fit_each(options, support, progress, cancelled, fitter, workers: int):
+def _fit_each(options, support, progress, cancelled, fitter, workers: int, light=False):
     """run_sky on every (label, snapshot), ``workers`` at a time: a Python thread each,
     since the time goes into elliprof's subprocesses (and NumPy, which mostly lets go of
     the interpreter lock).  Returns (label, result, the snapshot of the fit) in the order
-    given; a variant not started before a stop is left out."""
+    given; a variant not started before a stop is left out.  ``light``: fits that can never
+    be the result (RUNS's repeats) drop every call's models as soon as they end, keeping
+    only what ensemble() averages (a frame's worth of arrays per call adds up on a large
+    image)."""
 
     def one(item):
         k, (label, variant) = item
@@ -2221,6 +2228,8 @@ def _fit_each(options, support, progress, cancelled, fitter, workers: int):
         result = run_sky(variant, support, say, cancelled, fitter)
         chosen_snap = with_r0(result.snapshot or variant, result)
         result.quality = quality(result, chosen_snap)
+        if light:
+            result.history, result.diagnostics, result.partial = [], {}, {}
         return label, result, chosen_snap
 
     items = list(enumerate(options, 1))
@@ -2355,8 +2364,8 @@ def jittered(snap: Snapshot, s: Settings) -> List[Tuple[str, Snapshot]]:
                 for _ in range(2)
             )
             r0, r1 = c.r0 * f0, c.r1 * f1
-            if r0 >= 0.5 * r1:
-                r0 = c.r0
+            if r0 >= 0.5 * r1:  # R0 stays as asked, and below R1 (a shrunk R1 may pass it)
+                r0 = min(c.r0, 0.5 * r1)
             changes = dict(r0=round(r0, 2), r1=round(r1, 2), try_cos3x=[], try_cos4x=[])
             if c.radii:
                 radii = [round(x * f1, 2) for x in c.radii if r0 < x * f1 <= r1]

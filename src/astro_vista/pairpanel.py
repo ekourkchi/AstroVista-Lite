@@ -11,7 +11,7 @@ import math
 import os
 import re
 import shlex
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import numpy as np
 import pyqtgraph as pg
@@ -94,7 +94,6 @@ class SkyMap(QtWidgets.QWidget):
             return
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
-        n = int(r.settings["CELLS"])
         ny, nx = r.support.shape
         side = min(self.width() - 8, (self.height() - 8) * nx / ny)
         w, h = side, side * ny / nx
@@ -392,7 +391,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
 
     def schedule(self) -> List[float]:
         """The R1 of each fit, as the engine will make it (empty if not valid)."""
-        from .pair import Component, PairError, components_from
+        from .pair import PairError, components_from
 
         keys = {"X0": "1", "Y0": "1", "R0": f"{self.r0.value():g}", "R1": f"{self.r1.value():g}"}
         for k in self.growth_keywords():
@@ -1345,8 +1344,11 @@ class PairPanel(QtWidgets.QWidget):
         self.iterations.insertRow(row)
         status = "done" if info.get("passed") else f"FAILED: {info.get('reason', '')}"
         drift = info.get("drift")
+        cycle = str(info.get("cycle", ""))
+        if info.get("variant_number"):  # parallel fits interleave: say whose call it is
+            cycle = f"variant {info['variant_number']}: {cycle}"
         cells = [
-            str(info.get("cycle", "")),
+            cycle,
             info.get("component", ""),
             info.get("input", ""),
             f"{info.get('r1', 0):.1f}",

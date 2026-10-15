@@ -1389,6 +1389,9 @@ def test_the_panel_writes_harmonics_and_parallel_fits():
     assert "PARALLEL=4" in panel.command(1).split()
     card.set_values({"mode": "4m"})  # an older named mode: its COS3X and COS4X
     assert (card.cos3x.currentData(), card.cos4x.currentData()) == (0, 1)
+    # parallel fits' calls interleave in the table: each row says which variant made it
+    panel.add_iteration(dict(cycle="1", component="A", r1=20.0, passed=True, variant_number=3))
+    assert panel.iterations.item(panel.iterations.rowCount() - 1, 0).text() == "variant 3: 1"
     app.processEvents()
 
 
@@ -1413,6 +1416,19 @@ def test_repeat_runs_change_r0_and_r1_and_are_averaged():
     # the same seed, the same changes
     again = pair.run_search(snap, fitter=PureFitter())
     assert [r["variant"] for r in again.repeats] == [r["variant"] for r in rows]
+    # with a search, its rows are no longer marked as in the mean: the repeats' mean replaced it
+    searched = replace(snap, settings=replace(snap.settings, runs=3, try_fix=[0, 1]))
+    assert any(r.get("mean") for r in pair._search(searched, None, None, None, PureFitter()).search)
+    rows_ = pair.run_search(searched, fitter=PureFitter()).search
+    assert len(rows_) == 2 and not any(r.get("mean") for r in rows_)
+    # an R0 close to R1: a repeat's shrunk R1 never falls to R0 or below it
+    close = replace(
+        snap, components={**snap.components, "A": replace(snap.components["A"], r0=18.0)}
+    )
+    settings = replace(snap.settings, runs=30)
+    for _label, sn in pair.jittered(close, settings):
+        for c in sn.components.values():
+            assert 0 < c.r0 < c.r1
     with pytest.raises(pair.PairError):
         pair.settings_from({"SKY": "1", "RUNS": "0"})
     with pytest.raises(pair.PairError):
