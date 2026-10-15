@@ -488,6 +488,13 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ("MASKFILE=", "a mask file (FITS or .dmask, 0 = masked)"),
                     ("TOMODEL=, TORESID=", "the buffers for the model and the residual"),
                     ("RAW", "the residual on every pixel (masked ones too), not blanked"),
+                    (
+                        "RESIDMASK=, RESIDTHRESH=, RESIDGROW=, RESIDCORE=",
+                        "n rounds: the faint sources the residual shows (above 8 × its local "
+                        "RMS, not within 10 px of the centre) masked, grown by 2 px, and the "
+                        "galaxy fitted again; the layer residsources and a source run per "
+                        "round are made",
+                    ),
                     ("MINUS=", "buffers subtracted from the image before the fit"),
                     (
                         "MODE=",
@@ -690,6 +697,13 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "angle together) or its model beyond R1 is anomalous, coarser "
                         "isophotes and a smaller R1 are tried and the largest clean fit kept "
                         "(0: off)",
+                    ),
+                    (
+                        "RESIDMASK=, RESIDTHRESH=, RESIDGROW=, RESIDCORE=",
+                        "n rounds: the faint sources in the residual of the fit kept (above "
+                        "8 × its local RMS, not within 10 px of a centre) masked, grown by "
+                        "2 px, and the fit kept fitted again; the layer residsources and a "
+                        "source run per round are made",
                     ),
                     (
                         "PULLCHECK=0",

@@ -158,6 +158,73 @@ class BufferChoice(QtWidgets.QComboBox):
         self._value = data if isinstance(data, int) else None
 
 
+class InputChoice(QtWidgets.QComboBox):
+    """The buffer a tool works on: the image shown (the default) or a buffer chosen from
+    those loaded."""
+
+    def __init__(self, what: str, parent=None):
+        super().__init__(parent)
+        self._value: Optional[int] = None
+        self.setToolTip(
+            f"The image the {what} works on: the one shown, or any buffer (its models, "
+            "residuals and masks go with that image)"
+        )
+        self.activated.connect(lambda i: setattr(self, "_value", self.itemData(i)))
+        self.set_buffers({})
+
+    def value(self) -> Optional[int]:
+        """The buffer chosen, or None for the image shown."""
+        return self._value
+
+    def set_value(self, n: Optional[int]) -> None:
+        self._value = n
+        self.setCurrentIndex(max(self.findData(n), 0) if n is not None else 0)
+
+    def set_buffers(self, occupied: dict) -> None:
+        """The buffers loaded now (number -> name); a chosen buffer that is gone goes back
+        to the image shown."""
+        if self._value is not None and self._value not in occupied:
+            self._value = None
+        self.blockSignals(True)
+        self.clear()
+        self.addItem("the image shown", None)
+        for n in sorted(occupied):
+            self.addItem(f"{n}  {occupied[n]}", n)
+        self.setCurrentIndex(max(self.findData(self._value), 0) if self._value is not None else 0)
+        self.blockSignals(False)
+
+
+def residual_sources_row(rounds: int = 0, thresh: float = 8.0):
+    """RESIDMASK: rounds of faint sources found in the residual, masked, fitted again; and
+    their detection threshold.  (rounds box, threshold box, the row)"""
+    r = whole(0, 5, rounds)
+    r.setSpecialValueText("off")
+    r.setToolTip(
+        "RESIDMASK: after the fit, the faint sources its residual shows (globular clusters, "
+        "stars and galaxies on the galaxy, which the source finder could not separate from "
+        "its light) are found, masked and the fit made again, this many times; the layer "
+        "residsources and a source run per round are made"
+    )
+    t = number(1.0, 100.0, thresh, decimals=1, step=0.5)
+    t.setSuffix(" σ")
+    t.setToolTip("RESIDTHRESH: their detection threshold, in units of the residual's local RMS")
+    row = QtWidgets.QHBoxLayout()
+    row.addWidget(r)
+    row.addWidget(QtWidgets.QLabel("rounds, found above"))
+    row.addWidget(t)
+    row.addStretch(1)
+    return r, t, row
+
+
+def residual_keywords(rounds, thresh) -> list:
+    if not rounds.value():
+        return []
+    out = [f"RESIDMASK={rounds.value()}"]
+    if abs(thresh.value() - 8.0) > 1e-9:
+        out.append(f"RESIDTHRESH={thresh.value():g}")
+    return out
+
+
 def output_row(box: QtWidgets.QCheckBox, choice: BufferChoice) -> QtWidgets.QHBoxLayout:
     """A result's tick box with the buffer it goes into; the buffer is chosen only while
     the box is ticked."""
@@ -199,6 +266,8 @@ class ElliprofPanel(QtWidgets.QWidget):
                 "centre outwards."
             )
         )
+        self.input = InputChoice("fit")
+        form.addRow("Image", tip(self.input, "tool_input"))
 
         form.addRow(heading("Centre"))
         self.x0 = number(0, 1e6, 0, tip="X0: in pixels; the first pixel spans 0 to 1")
@@ -245,6 +314,8 @@ class ElliprofPanel(QtWidgets.QWidget):
         form.addRow("NR", tip(self.nr, "nr"))
         form.addRow("NITER", tip(self.niter, "niter"))
         form.addRow(tip(self.rmstar, "rmstar"))
+        self.resid_rounds, self.resid_thresh, row = residual_sources_row()
+        form.addRow("Residual sources", tip(row, "resid_sources"))
 
         form.addRow(heading("Sky"))
         self.use_sky = QtWidgets.QCheckBox("Subtract a constant sky")
@@ -417,6 +488,7 @@ class ElliprofPanel(QtWidgets.QWidget):
             parts.append(f"SKY={self.sky.value():g}")
         if self.rmstar.isChecked():
             parts.append("RMSTAR")
+        parts += residual_keywords(self.resid_rounds, self.resid_thresh)
         mask = self.mask_file.text().strip()
         if mask:
             parts.append("MASKFILE=" + shlex.quote(mask))
@@ -450,6 +522,8 @@ class SourceFinderPanel(QtWidgets.QWidget):
                 "shape, flux, magnitude and size."
             )
         )
+        self.input = InputChoice("source finder")
+        form.addRow("Image", tip(self.input, "tool_input"))
         self.fields = {}
         group = None
         for key, label, default, kind, explanation, section in detection.SETTINGS:

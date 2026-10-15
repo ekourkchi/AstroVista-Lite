@@ -883,6 +883,21 @@ TIPS = {
     "the cycles, the smoothing and the model beyond R1; <i>Joe's defaults</i> puts them "
     "back. Each galaxy's card sets its R0, its R1 (or automatic), its first R1 (or "
     "automatic), its NR (or automatic) and its harmonics (COS3X, COS4X).",
+    "resid_sources": "<b>Residual sources</b> (RESIDMASK=n, RESIDTHRESH=8): the source finder "
+    "cannot separate globular clusters, faint stars and small galaxies that sit on a bright "
+    "galaxy from its light, so they stay in the fit. Once a fit is made, they stand out in "
+    "its residual: with this setting they are found there (above RESIDTHRESH times the "
+    "residual's local RMS, not within RESIDCORE=10 px of a galaxy's centre, where a "
+    "residual is the model's error), grown by RESIDGROW=2 px, added to the fitting mask, "
+    "and the fit is made again, n times. A source run per round goes to Results ▸ Sources "
+    "and the pixels to the mask layer <i>residsources</i> (role fit), for later fits. A low "
+    "threshold also finds the bright peaks of the SBF; masking only bright peaks biases "
+    "the isophotes low, so on simulated pairs 3 sigma made the models worse and 8 sigma, "
+    "where every source found was real, did not.",
+    "tool_input": "<b>Image</b>: the buffer the tool works on. <i>the image shown</i> (the "
+    "default) follows the viewer; a buffer chosen here is used whatever is shown, so you can "
+    "look at a residual while you fit the image, or fit a cropped copy. Models, residuals, "
+    "masks and the sky go with the image chosen.",
     "pair_shape": "<b>Outer ellipses</b> (Joe's mode, SHAPETOL=0.12): the outermost ellipses "
     "of a fit can turn much rounder or flatter than the rest, and the model, which ELLIPROF "
     "continues beyond R1 from them, then goes astray. At the end of Joe's mode each galaxy's "

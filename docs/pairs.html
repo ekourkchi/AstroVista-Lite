@@ -255,6 +255,13 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
   from which radius. Beyond that radius the galaxy's light is not separated from the
   other's. The check changes nothing in the result; <code>PULLCHECK=0</code> turns it
   off.</p>
+  <p><b>Residual sources.</b> Globular clusters, faint stars and small galaxies sitting on a
+  bright galaxy are part of its segment, so the source finder leaves them in the fit. Its
+  residual shows them: <i>Residual sources</i> (<code>RESIDMASK=n</code>) finds them there
+  (above <code>RESIDTHRESH=</code> 8 times the residual's local RMS), masks them and fits
+  again, n times. The layer <i>residsources</i> keeps them for later fits, and each round's
+  catalogue is in Results ▸ Sources. A low threshold also finds the bright peaks of the
+  SBF, and masking only those biases the isophotes low.</p>
   <p>Some pairs used to fail at their first fit, and the fit now starts them anyway:</p>
   <ul>
     <li>A fitting mask that covers a galaxy's own centre (a mask made to fit the other

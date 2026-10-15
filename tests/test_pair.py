@@ -1894,3 +1894,80 @@ def test_cancel_stops_the_fit_and_keeps_nothing():
     assert "cancelled" in panel.status.text() and panel.iterations.rowCount() == 0
     assert not panel.cancel.isEnabled() and panel.run.isEnabled()
     window.close()
+
+
+def test_the_tools_work_on_the_buffer_chosen_and_the_clock_times_them():
+    from PySide6 import QtCore, QtWidgets
+
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    window.show()
+
+    def settle(seconds=120):
+        deadline = QtCore.QDeadlineTimer(int(seconds * 1000))
+        while (
+            window.busy() or getattr(window, "_pair_worker", None)
+        ) and not deadline.hasExpired():
+            app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        app.processEvents()
+
+    window.open_pair_example()
+    settle()
+    window.run_command("copy 1 7")
+    settle()
+    window.show_buffer(1)
+    app.processEvents()
+    # the Source finder on buffer 7 while buffer 1 is shown
+    window.finder.input.set_value(7)
+    assert window._tool_number(window.finder.input) == 7
+    window.run_detection()
+    settle()
+    run = window.session.runs[-1]
+    assert run.image_name == window.session.buffers[7].name
+    assert "took" in window.clock.text() and "sources" in window.clock.text()
+    # every tool offers the buffers loaded; a buffer that goes away falls back to "shown"
+    assert window.pair_panel.input.findData(7) >= 0 and window.elliprof.input.findData(7) >= 0
+    window.run_command("close 7")
+    settle()
+    assert window.finder.input.value() is None
+    window.close()
+
+
+def test_faint_sources_on_a_galaxy_are_found_in_the_residual_and_masked(tmp_path):
+    from astropy.io import fits
+
+    folder = Path(__file__).resolve().parent.parent / "examples" / "pair_synthetic"
+    data = fits.getdata(folder / "pair.fits").astype(np.float64)
+    # point sources on A's bright body, which a first source finding keeps in A's segment
+    spots = [(294.3 + dx, 263.8 + dy) for dx, dy in ((25, 5), (-30, 12), (8, -28), (-14, -35))]
+    yy, xx = np.mgrid[0 : data.shape[0], 0 : data.shape[1]] + 0.5
+    for x, y in spots:
+        data += 900.0 * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * 1.1**2))
+    fits.PrimaryHDU(data.astype(np.float32)).writeto(tmp_path / "spots.fits")
+    ses = Session()
+    ses.execute(f"rd 1 {tmp_path / 'spots.fits'}")
+    ses.execute(f"mask load stars {folder / 'pair.dmask'} 1")
+    ses.execute("mask role stars fit")
+    runs_before = len(ses.runs)
+    text = ses.execute(
+        "pair 1 SKY=1000 MASK=stars METHOD=JOE TAIL=measured RESIDMASK=1 "
+        "A: X0=294.3 Y0=263.8 R0=3 R1=110 FIXCTR=1 B: X0=421.18 Y0=322.97 R0=3 R1=50 FIXCTR=1"
+    ).text
+    assert "sources in the residual" in text and "residsources" in ses.masks
+    layer = ses.masks["residsources"]
+    assert layer.role == "fit"
+    for x, y in spots:  # each one masked
+        assert layer.masked[int(y), int(x)], (x, y)
+    assert not layer.masked[int(263.8), int(294.3)]  # never A's own centre
+    run = ses.runs[runs_before]
+    assert run.image_name.endswith("residual") and len(run) >= len(spots)
+    rec = list(ses.pairs.values())[-1]
+    assert rec.result.snapshot.fit_mask[int(spots[0][1]), int(spots[0][0])]  # in the refit
+    # the single fit too
+    text = ses.execute(
+        "elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=90 NR=14 SKY=1000 MASK=stars RESIDMASK=1"
+    ).text
+    assert "mask layer residsources" in text
+    assert all(ses.masks["residsources"].masked[int(y), int(x)] for x, y in spots)

@@ -252,9 +252,18 @@ def galaxy(run: SourceRun, shape) -> Optional[int]:
     return int(np.argmax(score))
 
 
-def detect(image: Image, settings: Dict[str, object], number: int = 1, masked=None) -> SourceRun:
+def detect(
+    image: Image,
+    settings: Dict[str, object],
+    number: int = 1,
+    masked=None,
+    local_rms: bool = False,
+) -> SourceRun:
     """Find the sources in ``image``; ``settings`` uses SExtractor's keyword names.
-    ``masked`` (True = masked) leaves pixels out of the detection and the background."""
+    ``masked`` (True = masked) leaves pixels out of the detection and the background.
+    ``local_rms``: the threshold is relative to the background mesh's local RMS map (as
+    SExtractor's), not its global RMS: needed in a residual, where the SBF and the noise
+    near a galaxy's centre are larger than in the sky."""
     import sep
 
     unknown = sorted(k for k in settings if k not in DEFAULTS)
@@ -297,7 +306,7 @@ def detect(image: Image, settings: Dict[str, object], number: int = 1, masked=No
     objects, segmentation = sep.extract(
         sub,
         float(get("DETECT_THRESH")),
-        err=None if absolute else background.globalrms,
+        err=None if absolute else (background.rms() if local_rms else background.globalrms),
         mask=mask,
         minarea=int(get("DETECT_MINAREA")),
         filter_kernel=kernel,
@@ -395,3 +404,53 @@ def detect(image: Image, settings: Dict[str, object], number: int = 1, masked=No
         image_key=image.key,
         engine="SEP",
     )
+
+
+# Faint sources in a residual (RESIDMASK): what the first source finding could not separate
+# from the galaxies' light (globular clusters, faint stars and background galaxies on them)
+RESID_THRESH = 3.0  # in units of the residual's local RMS
+RESID_MINAREA = 5
+RESID_GROW = 2  # pixels added around each one in the mask
+RESID_BACK = 32  # the background mesh: what a model leaves at larger scales is not a source
+RESID_CORE = 10.0  # left alone around each galaxy's centre: a model's error, not a source
+
+
+def residual_sources(
+    image: Image,
+    residual: np.ndarray,
+    masked: np.ndarray,
+    centres,
+    number: int = 1,
+    thresh: float = RESID_THRESH,
+    minarea: int = RESID_MINAREA,
+    grow: int = RESID_GROW,
+    core: float = RESID_CORE,
+):
+    """The sources in a fit's residual (not in ``masked``, not within ``core`` px of a
+    galaxy's ``centres``), as a source run, and the pixels to add to the fitting mask: their
+    segments grown by ``grow`` px."""
+    from scipy import ndimage
+
+    ny, nx = residual.shape
+    yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
+    near = np.zeros(residual.shape, bool)
+    for x, y in centres:
+        near |= np.hypot(xx - x, yy - y) <= core
+    settings = dict(
+        DETECT_THRESH=float(thresh),
+        DETECT_MINAREA=int(minarea),
+        BACK_SIZE=RESID_BACK,
+        BACK_FILTERSIZE=3,
+    )
+    data = np.where(np.isfinite(residual), residual, np.nan)
+    run = detect(
+        image.derived(f"{image.name} residual", data),
+        settings,
+        number,
+        masked=masked | near,
+        local_rms=True,
+    )
+    run.image_key = image.key
+    seg = run.segmentation > 0 if run.segmentation is not None else np.zeros_like(masked)
+    add = (ndimage.binary_dilation(seg, iterations=grow) if grow else seg) & ~masked & ~near
+    return run, add

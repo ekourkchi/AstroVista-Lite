@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 import re
 import shlex
 import sys
@@ -485,6 +486,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.message.setStyleSheet("color: #8b9099")
         self.statusBar().addPermanentWidget(self.message, 1)
         self.statusBar().messageChanged.connect(lambda text: text and self.message.setText(text))
+        # the clock: how long the command running now has taken, then how long it took
+        self.clock = QtWidgets.QLabel()
+        self.clock.setStyleSheet("color: #d29922; font-variant-numeric: tabular-nums")
+        self.clock.setToolTip("How long the command running now has taken (then: how long it took)")
+        self._clock_start: Optional[float] = None
+        self._clock_line = ""
+        self._clock_timer = QtCore.QTimer(self, interval=200)
+        self._clock_timer.timeout.connect(self._tick)
+        self.statusBar().addPermanentWidget(self.clock)
         self.position = ElidedLabel()
         self.zoom_label = QtWidgets.QLabel()
         self.statusBar().addPermanentWidget(self.position, 1)
@@ -1046,6 +1056,34 @@ class MainWindow(QtWidgets.QMainWindow):
     def busy(self) -> bool:
         return self._busy or bool(self._queue)
 
+    @staticmethod
+    def _duration(seconds: float) -> str:
+        if seconds < 60:
+            return f"{seconds:.1f} s"
+        m, s = divmod(int(round(seconds)), 60)
+        return f"{m} min {s:02d} s" if m < 60 else f"{m // 60} h {m % 60:02d} min"
+
+    def _start_clock(self, line: str) -> None:
+        self._clock_start = time.perf_counter()
+        self._clock_line = verb_of(line) or line.split()[0]
+        self._tick()
+        self._clock_timer.start()
+
+    def _tick(self) -> None:
+        if self._clock_start is not None:
+            elapsed = time.perf_counter() - self._clock_start
+            self.clock.setText(f"⏱ {self._clock_line} {self._duration(elapsed)}")
+
+    def _stop_clock(self) -> Optional[float]:
+        """Stop the clock; how long the command took (None if none was timed)."""
+        self._clock_timer.stop()
+        if self._clock_start is None:
+            return None
+        elapsed = time.perf_counter() - self._clock_start
+        self._clock_start = None
+        self.clock.setText(f"{self._clock_line} took {self._duration(elapsed)}")
+        return elapsed
+
     def _next(self) -> None:
         if self._busy or not self._queue:
             return
@@ -1060,6 +1098,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(f"Running: {line}")
             self._enable_runs(False)
             self._running = line
+            self._start_clock(line)
             shell = self.session.is_shell(line)
             threaded = shell or os.environ.get("ASTROVISTA_MAIN_THREAD", "") != "1"
             self._task = Task(lambda: self.session.execute(line), self, threaded=threaded)
@@ -1089,6 +1128,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.finder.run.setEnabled(False)
 
     def _finished(self, line: str, reply: Optional[Reply], error: Optional[str]) -> None:
+        took = self._stop_clock()
+        if took is not None and took >= 0.5 and reply is not None:  # not for instant ones
+            reply.text = (reply.text + "\n" if reply.text else "") + f"took {self._duration(took)}"
         self._busy = False
         self._task = None
         self._running = None
@@ -1206,6 +1248,8 @@ class MainWindow(QtWidgets.QMainWindow):
             *self.skyplane.choices(),
         ):
             choice.set_buffers(occupied)
+        for choice in (self.elliprof.input, self.finder.input, self.pair_panel.input):
+            choice.set_buffers(occupied)
         self.viewer.set_blink_buffers(
             [
                 (n, b.label, f"{b.name}: {b.note}" if b.note else b.name)
@@ -1282,6 +1326,13 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if ok and text.strip():
             self.run_command(f'tag {n} "{text.strip()}"')
+
+    def _tool_number(self, choice, say: bool = True) -> Optional[int]:
+        """The buffer a tool works on: the one chosen in its Image box, else the one shown."""
+        n = choice.value()
+        if n is not None and n in self.session.buffers:
+            return n
+        return self._current_number(say)
 
     def _current_number(self, say: bool = True) -> Optional[int]:
         """The buffer shown; for a model or residual, the image it was made from."""
@@ -1523,7 +1574,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Put one call's model, and the image it was fitted on, into buffers and show the
         model (the iteration table's rows)."""
         image = self.viewer.image
-        n = self._current_number(say=False)
+        n = self._tool_number(self.pair_panel.input, say=False)
         record = self.session.pairs.get(image.key) if image is not None else None
         if record is None or n is None or not 1 <= number <= len(record.result.history):
             return
@@ -1544,7 +1595,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def pair_sky(self) -> None:
-        n = self._current_number()
+        n = self._tool_number(self.pair_panel.input)
         if n is not None:
             self.run_command(self.pair_panel.sky_command(n))
             if self.pair_panel.show_mask.isChecked():
@@ -1561,7 +1612,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """The mask layer 'objects' (role fit, ticked in the Pair panel): every source the
         Source finder detects but those at A's and B's centres; finds the sources first if
         the image has none."""
-        n = self._current_number()
+        n = self._tool_number(self.pair_panel.input)
         if n is None:
             return
         centres = [card.centre() for card in self.pair_panel.cards.values()]
@@ -1633,7 +1684,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.set_mode("pan")
 
     def run_pair(self) -> None:
-        n = self._current_number()
+        n = self._tool_number(self.pair_panel.input)
         if n is None:
             return
         p = self.pair_panel
@@ -1671,6 +1722,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._busy = True
         self._running = line
+        self._start_clock(line)
         QtWidgets.QApplication.setOverrideCursor(Qt.BusyCursor)
         self._enable_runs(False)
         self.pair_panel.set_running(True)
@@ -1888,7 +1940,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return out
 
     def export_pair(self) -> None:
-        n = self._current_number()
+        n = self._tool_number(self.pair_panel.input)
         if n is None:
             return
         if self.session.pairs.get(self.session.buffers[n].key) is None:
@@ -1943,7 +1995,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---- ELLIPROF
     def run_fit(self) -> None:
-        n = self._current_number()
+        n = self._tool_number(self.elliprof.input)
         if n is None:
             return
         s = self.session
@@ -2044,7 +2096,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.skyplane.show_fit(fit, stale)
 
     def estimate_sky(self) -> None:
-        n = self._current_number()
+        n = self._tool_number(self.elliprof.input)
         if n is None:
             return
         layers = self.elliprof.ticked_layers()
@@ -2065,7 +2117,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---- the Source finder
     def run_detection(self) -> None:
-        n = self._current_number()
+        n = self._tool_number(self.finder.input)
         if n is None:
             return
         toseg = None

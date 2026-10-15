@@ -206,6 +206,10 @@ class Settings:
     joe_core_min: float = JOE_CORE_MIN  # JOECOREMIN=: ... at least this many pixels
     joe_core_max: float = JOE_CORE_MAX  # JOECOREMAX=: ... at most this many
     shape_tol: float = SHAPE_TOL  # SHAPETOL=: Joe's mode's outer-shape guard (0: off)
+    resid_rounds: int = 0  # RESIDMASK=: rounds of sources found in the residual, masked, refit
+    resid_thresh: float = 8.0  # RESIDTHRESH=: their detection threshold (local RMS)
+    resid_grow: int = 2  # RESIDGROW=: pixels added around each in the mask
+    resid_core: float = 10.0  # RESIDCORE=: left alone around each galaxy's centre (pixels)
 
 
 @dataclass
@@ -366,6 +370,10 @@ class PairResult:
     pull: Dict[str, dict] = field(default_factory=dict)  # pull_check: each galaxy's verdict
     joe: dict = field(default_factory=dict)  # METHOD=JOE: the order, the radii and the steps
     shape_fixes: List[dict] = field(default_factory=list)  # SHAPETOL: each refit and why
+    # RESIDMASK: each round's sources found in the residual (a source run) and the pixels
+    # they added to the fitting mask
+    resid_runs: List[object] = field(default_factory=list)
+    resid_mask: Optional[np.ndarray] = None
     run_id: int = 0
 
     @property
@@ -475,6 +483,10 @@ SHARED = {
     "JOECOREMIN",
     "JOECOREMAX",
     "SHAPETOL",
+    "RESIDMASK",
+    "RESIDTHRESH",
+    "RESIDGROW",
+    "RESIDCORE",
 }
 OWN = {
     "NAME",
@@ -768,6 +780,10 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         joe_core_min=_num(shared, "JOECOREMIN", "", JOE_CORE_MIN),
         joe_core_max=_num(shared, "JOECOREMAX", "", JOE_CORE_MAX),
         shape_tol=_num(shared, "SHAPETOL", "", SHAPE_TOL),
+        resid_rounds=_num(shared, "RESIDMASK", "", 0, int),
+        resid_thresh=_num(shared, "RESIDTHRESH", "", 8.0),
+        resid_grow=_num(shared, "RESIDGROW", "", 2, int),
+        resid_core=_num(shared, "RESIDCORE", "", 10.0),
     )
     for ok, why in (
         (s.joe_first in JOE_FIRST, "FIRST must be SMALLER (the smaller R1), A or B"),
@@ -782,6 +798,10 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         (1 <= s.pull_run <= 10, "PULLRUN must be 1 to 10 (isophotes in a row)"),
         (0 <= s.pull_r0 <= 200, "PULLR0 must be 0 to 200 (pixels; 0: the galaxy's own R0)"),
         (0 <= s.shape_tol <= 1, "SHAPETOL must be 0 to 1 (0: no outer-shape guard)"),
+        (0 <= s.resid_rounds <= 5, "RESIDMASK must be 0 to 5 (rounds)"),
+        (1 <= s.resid_thresh <= 100, "RESIDTHRESH must be 1 to 100 (times the local RMS)"),
+        (0 <= s.resid_grow <= 20, "RESIDGROW must be 0 to 20 (pixels)"),
+        (0 <= s.resid_core <= 500, "RESIDCORE must be 0 to 500 (pixels)"),
     ):
         if not ok:
             raise PairError(why)
@@ -2760,12 +2780,79 @@ def run_search(
         result = run_joe(snap, progress, cancelled, fitter)
     else:
         result = _search(snap, support, progress, cancelled, fitter)
+    if snap.settings.resid_rounds and result.complete and not stopped():
+        result = _residual_rounds(result, snap, support, progress, cancelled, fitter)
+    if snap.settings.method != "joe":
         if averaged(snap.settings) > 1 and result.complete and not stopped():
             result = _repeat(result, support, progress, cancelled, fitter)
     if snap.settings.pull_check and result.complete and not stopped():
         result.pull = pull_check(result, result.snapshot or snap, fitter, progress)
     result.wall = time.perf_counter() - t0
     return result
+
+
+def _residual_rounds(result, snap, support, progress, cancelled, fitter) -> PairResult:
+    """RESIDMASK=n: n times, the sources in the residual of the fit kept (detection's
+    residual_sources: what the first source finding could not separate from the galaxies'
+    light) are added to the fitting mask and the fit kept is fitted again (Joe's mode:
+    with Joe's method).  The last complete fit is the result; each round's sources and the
+    pixels added are kept with it."""
+    from astropy.io import fits
+
+    from . import detection
+    from .images import Image
+
+    s = snap.settings
+    runs, added = [], np.zeros(snap.image.shape, bool)
+    kept = result
+    for k in range(1, s.resid_rounds + 1):
+        if cancelled is not None and cancelled():
+            break
+        base = kept.snapshot or snap
+        centres = [(c.x0, c.y0) for c in base.components.values()]
+        image = Image(base.image_name, base.image, base.header or fits.Header())
+        run, add = detection.residual_sources(
+            image,
+            kept.residual,
+            base.fit_mask,
+            centres,
+            number=k,
+            thresh=s.resid_thresh,
+            grow=s.resid_grow,
+            core=s.resid_core,
+        )
+        runs.append(run)
+        if not add.any():
+            break
+        added |= add
+        note = (
+            f"RESIDMASK round {k}: {len(run)} sources in the residual "
+            f"({s.resid_thresh:g} x the local RMS), {int(add.sum())} px added to the mask"
+        )
+        refit = replace(
+            base,
+            fit_mask=base.fit_mask | add,
+            eval=base.eval & ~add,
+            fit_mask_label=(base.fit_mask_label + " + residual sources").strip(" +"),
+            notes=base.notes + [note],
+        )
+        again = (
+            run_joe(refit, progress, cancelled, fitter)
+            if s.method == "joe"
+            else run_sky(refit, support, progress, cancelled, fitter)
+        )
+        if not again.complete:
+            kept.notes_extra.append(note + "; the refit was incomplete: not used")
+            break
+        again.snapshot = again.snapshot or refit
+        again.quality = quality(again, again.snapshot)
+        for keep in ("search", "search_choice", "r0_raised"):
+            if not getattr(again, keep):
+                setattr(again, keep, getattr(kept, keep))
+        kept = again
+    kept.resid_runs = runs
+    kept.resid_mask = added if added.any() else None
+    return kept
 
 
 def averaged(s: Settings) -> int:

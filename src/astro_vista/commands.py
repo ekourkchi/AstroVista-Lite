@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import dataclasses
 import re
 import shlex
 import shutil
@@ -66,7 +67,9 @@ HELP = {
     "[MASK=a,b] [MASKBUF=M,...] [TOMODEL=M] [TORESID=M] [RAW] [MINUS=M,...] [MODE=3,4] "
     "[COS3X=] [COS4X=] [FIXCTR=0|1|2] [RLAW=] [GAIN=] [TIE=]  -  fit elliptical isophotes to "
     "buffer N; MASK= names mask layers, MASKBUF= buffers used as masks (0 or NaN masked); "
-    "MINUS= subtracts buffers first; RAW keeps every pixel of the residual",
+    "MINUS= subtracts buffers first; RAW keeps every pixel of the residual; RESIDMASK=n "
+    "[RESIDTHRESH=8] [RESIDGROW=2] [RESIDCORE=10]: n times, the faint sources the residual shows "
+    "are found, masked (layer residsources) and the galaxy fitted again",
     "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [STEPS=0] [MASK=a,b] [CYCLES=4] "
     "[NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= "
     "Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
@@ -658,8 +661,33 @@ class Session(ImageCommands):
         )
         if s.mask_file is not None and not s.mask_file.exists():
             raise CommandError(f"no mask file {s.mask_file}")
+        resid = self._resid_keys(keys)
         try:
             result = fit(image, s)
+            # RESIDMASK: the sources in the residual, masked, and the galaxy fitted again
+            runs, added = [], np.zeros(image.shape, bool)
+            for k in range(1, resid["rounds"] + 1):
+                full = image.data.astype(np.float64) - (s.sky or 0.0) - result.model
+                run, add = detection.residual_sources(
+                    image,
+                    full,
+                    result.masked,
+                    [(s.x0, s.y0)],
+                    number=k,
+                    thresh=resid["thresh"],
+                    grow=resid["grow"],
+                    core=resid["core"],
+                )
+                runs.append(run)
+                if not add.any():
+                    break
+                added |= add
+                s = dataclasses.replace(
+                    s,
+                    extra_mask=(s.extra_mask if s.extra_mask is not None else added) | added,
+                    extra_mask_label=(s.extra_mask_label + ", residual sources").strip(", "),
+                )
+                result = fit(image, s)
         except (RuntimeError, ValueError) as e:
             raise CommandError(str(e))
         self.fits[image.key] = result
@@ -674,6 +702,11 @@ class Session(ImageCommands):
             residual = (image.data - (s.sky or 0.0) - result.model).astype(np.float32)
         if minus:
             reply.text += f"\n(fitted buffer {n} minus {', '.join(minus)})"
+        if resid["rounds"]:
+            reply.text += self._residual_outputs(
+                self.buffer(n), runs, added if added.any() else None, "elliprof " + " ".join(words)
+            )
+            reply.changed |= {"sources", "masks"}
         for kind, key, data in (
             ("model", "TOMODEL", result.model),
             ("residual", "TORESID", residual),
@@ -686,6 +719,47 @@ class Session(ImageCommands):
                 reply.text += f"\n{kind} in buffer {m}"
                 reply.changed |= {"buffers", "data"}
         return reply
+
+    def _residual_outputs(self, image: Image, runs, added, line: str) -> str:
+        """RESIDMASK: each round's sources in the residual as source runs, and the pixels
+        they added to the fitting mask as the layer residsources (role fit), for later
+        fits; what to say about them."""
+        found = []
+        for run in runs:
+            run.number = max((r.number for r in self.runs), default=0) + 1
+            run.image_key = image.key
+            run.image_name = f"{image.name} residual"
+            self.runs.append(run)
+            found.append(f"run {run.number}: {len(run)}")
+        text = "\nsources in the residual: " + "; ".join(found)
+        if added is not None and added.any():
+            name = "residsources"
+            self._remember(name)
+            self.masks[name] = Mask(
+                name,
+                added.copy(),
+                self._colour(name),
+                visible=False,
+                source=f"sources in the residual of: {line}",
+                role="fit",
+            )
+            text += f"\nmask layer {name}: {int(added.sum())} px (role fit)"
+        return text
+
+    @staticmethod
+    def _resid_keys(keys) -> dict:
+        """RESIDMASK= and its settings, checked."""
+        out = {
+            "rounds": integer(keys.get("RESIDMASK", 0), "RESIDMASK"),
+            "thresh": number(keys.get("RESIDTHRESH", 8), "RESIDTHRESH"),
+            "grow": integer(keys.get("RESIDGROW", 2), "RESIDGROW"),
+            "core": number(keys.get("RESIDCORE", 10), "RESIDCORE"),
+        }
+        if not 0 <= out["rounds"] <= 5:
+            raise CommandError("RESIDMASK must be 0 to 5 (rounds)")
+        if not 1 <= out["thresh"] <= 100:
+            raise CommandError("RESIDTHRESH must be 1 to 100 (times the local RMS)")
+        return out
 
     @staticmethod
     def _native_keys(keys) -> dict:
@@ -1207,6 +1281,11 @@ class Session(ImageCommands):
                     made.append(f"{m} {kind.split('pair ', 1)[1]}")
             reply.text += "\nbuffers: " + "; ".join(made)
             reply.changed |= {"buffers", "data"}
+            if result.resid_runs:
+                reply.text += self._residual_outputs(
+                    image, result.resid_runs, result.resid_mask, job.line
+                )
+                reply.changed |= {"sources", "masks"}
         return reply
 
     def _pair_line(self, text: str) -> Reply:
@@ -1770,13 +1849,14 @@ class Session(ImageCommands):
 # keywords offered by Tab completion after each command
 KEYWORDS = {
     "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
-    "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE=",
+    "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE= RESIDMASK= RESIDTHRESH= "
+    "RESIDGROW= RESIDCORE=",
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
     "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X= RUNS= JITTER= SEED= "
     "HARMONICS= WINGS= METHOD= PULLCHECK= PULLPX= PULLFRAC= PULLRUN= PULLR0= FIRST= JOEGROW= "
-    "JOECORE= JOECOREMIN= JOECOREMAX= SHAPETOL=",
+    "JOECORE= JOECOREMIN= JOECOREMAX= SHAPETOL= RESIDMASK= RESIDTHRESH= RESIDGROW= RESIDCORE=",
     "window": "BOX= OUT= MASKS=",
     "sources": "TOSEG= MASK= " + " ".join(f"{k}=" for k in detection.DEFAULTS),
     "centre": "RUN= SOURCE=",
@@ -2015,6 +2095,11 @@ Shared (before A:)
   SHAPETOL=0.12  Joe's mode, at the end: an outermost ellipse off the trend by more than
                 this (or a model anomalous beyond R1) refitted with coarser isophotes or a
                 smaller R1, the largest clean fit kept (0: off)
+  RESIDMASK=n   n times: the faint sources in the residual of the fit kept (globular
+                clusters, stars and galaxies on the galaxies, which the first source finding
+                cannot separate) found [RESIDTHRESH=8 x the local RMS], grown [RESIDGROW=2 px]
+                and masked, not within RESIDCORE=10 px of a centre; the fit kept fitted again.
+                The layer residsources and a source run per round are made
   PULLCHECK=0   no pull check (by default each galaxy of a complete fit is fitted once more
                 with free centres and the report says whether its ellipses move towards
                 the other, and from which radius)

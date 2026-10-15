@@ -5,6 +5,19 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Sources in the residual.** ELLIPROF and the Pair fit can find the faint sources a fit's
+  residual shows (globular clusters, stars and small galaxies on the galaxies, which the
+  first source finding cannot separate from their light), mask them and fit again:
+  Residual sources in both panels (`RESIDMASK=n`, `RESIDTHRESH=8`, `RESIDGROW=2`,
+  `RESIDCORE=10`). Each round's catalogue is a source run, and the pixels the layer
+  `residsources` (role fit). On 18 simulated pairs the first source finding masked none of
+  the clusters and faint stars on the galaxies; at 8 sigma every source found in the
+  residual was real, at 3 sigma over half were peaks of the SBF and masking them made the
+  models worse.
+- **Each tool's image.** The Source finder, ELLIPROF and the Pair fit each have an Image box:
+  the image shown (the default) or any buffer, used whatever is shown.
+- **A clock.** The status bar shows how long the command running has taken, then how long it
+  took; the terminal says it too.
 - **Cancel.** The Pair fit tool's Cancel stops a fit as soon as the elliprof calls running
   then end and keeps nothing of it: no models, residuals, means or views; the buffers and
   the last pair result stay as they were. (Stop still keeps the last cycle that passed.)

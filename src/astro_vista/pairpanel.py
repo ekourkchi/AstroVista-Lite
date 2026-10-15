@@ -33,7 +33,18 @@ from .pair import (
     PULL_RUN,
     SHAPE_TOL,
 )
-from .panels import heading, note, number, plain_table, tip, title_row, whole
+from .panels import (
+    InputChoice,
+    heading,
+    note,
+    number,
+    plain_table,
+    residual_keywords,
+    residual_sources_row,
+    tip,
+    title_row,
+    whole,
+)
 
 COLOURS = {"A": "#ff4dff", "B": "#ff9f1c"}
 COS3X_SHOWN = [
@@ -613,6 +624,8 @@ class PairPanel(QtWidgets.QWidget):
             "far as its outer ellipses are not pulled towards the other. Fast, no search."
         )
         form.addRow("Settings", tip(self.mode, "pair_auto"))
+        self.input = InputChoice("pair fit")
+        form.addRow("Image", tip(self.input, "tool_input"))
         self.parallel = whole(1, MAX_PARALLEL, DEFAULT_PARALLEL)
         self.parallel.setToolTip(
             "PARALLEL: N fits, all averaged: the fit kept and N - 1 repeats with each galaxy's "
@@ -654,6 +667,8 @@ class PairPanel(QtWidgets.QWidget):
             "ellipses move towards the other galaxy and from which radius (PULLCHECK=0: off)"
         )
         form.addRow(tip(self.pull_check, "pair_pull"))
+        self.resid_rounds, self.resid_thresh, row = residual_sources_row()
+        form.addRow("Residual sources", tip(row, "resid_sources"))
 
         # ---- the sky
         form.addRow(heading("1. Sky"))
@@ -1508,6 +1523,7 @@ class PairPanel(QtWidgets.QWidget):
         parts += self.run_keywords()
         if not self.pull_check.isChecked():
             parts.append("PULLCHECK=0")
+        parts += residual_keywords(self.resid_rounds, self.resid_thresh)
         if self.views.isChecked():
             parts.append("VIEWS")
         parts.append("A: " + self.cards["A"].auto_keywords())
@@ -1525,6 +1541,7 @@ class PairPanel(QtWidgets.QWidget):
         parts += self.joe_keywords()
         if not self.pull_check.isChecked():
             parts.append("PULLCHECK=0")
+        parts += residual_keywords(self.resid_rounds, self.resid_thresh)
         if self.views.isChecked():
             parts.append("VIEWS")
         for cid in ("A", "B"):
@@ -1590,6 +1607,7 @@ class PairPanel(QtWidgets.QWidget):
         parts += self.run_keywords()
         if not self.pull_check.isChecked():
             parts.append("PULLCHECK=0")
+        parts += residual_keywords(self.resid_rounds, self.resid_thresh)
         parts.append("A: " + self.cards["A"].keywords())
         parts.append("B: " + self.cards["B"].keywords())
         return " ".join(parts)
