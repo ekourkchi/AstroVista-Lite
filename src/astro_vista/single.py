@@ -101,6 +101,8 @@ class SingleResult:
     resid_runs: List[object] = field(default_factory=list)
     resid_mask: Optional[np.ndarray] = None
     mask: Optional[np.ndarray] = None  # the fitting mask used
+    harmonics: List[dict] = field(default_factory=list)  # the harmonic analysis, every try
+    harmonic_choice: Tuple[int, int] = (2, 2)  # COS3X, COS4X of the fit kept
 
     @property
     def complete(self) -> bool:
@@ -109,6 +111,9 @@ class SingleResult:
 
 Progress = Optional[Callable[[dict], None]]
 Cancelled = Optional[Callable[[], bool]]
+
+
+HARMONIC_ROUNDS = 3  # the harmonics and the search, alternated at most this many times
 
 
 class _Stop(Exception):
@@ -401,40 +406,114 @@ def fit_single(
         with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
             return list(pool.map(one, items))
 
-    # the search: every combination of TRYFIX and TRYFACTOR
-    variants = []
-    for fix in s.try_fix or [None]:
-        for factor in s.try_factor or [None]:
-            label = []
-            v = s
-            if fix is not None:
-                v = replace(v, fixctr=fix)
-                label.append("centres " + {0: "free", 1: "fixed", 2: "median"}[fix])
-            if factor is not None and s.start:
-                v = replace(v, factor=factor)
-                label.append(f"growth x{factor:g}")
-            variants.append((", ".join(label) or "as asked", v))
-    results = each([v for _l, v in variants], s.parallel)
-    rows = [
-        {"variant": lbl, "status": r.status, "score": r.score, "r1": r.r1}
-        for (lbl, _v), r in zip(variants, results)
-    ]
-    done = [(r.score, i) for i, r in enumerate(results) if r.complete and r.score is not None]
-    if not done:
-        out = results[0]
-        out.seconds = time.perf_counter() - t0
-        return out
-    best_i = min(done)[1]
-    # fixed centres unless free ones lower the residual by more than FREE_GAIN
-    fixed = [(sc, i) for sc, i in done if (variants[i][1].fixctr or 0) != 0]
-    if fixed and (variants[best_i][1].fixctr or 0) == 0:
-        f_sc, f_i = min(fixed)
-        if results[best_i].score > f_sc - pair.FREE_GAIN:
-            best_i = f_i
-    kept, kept_s = results[best_i], variants[best_i][1]
-    if len(rows) > 1:
-        rows[best_i]["chosen"] = True
+    def search(base: SingleSettings, tag: str = ""):
+        """Every combination of TRYFIX and TRYFACTOR on ``base``: the fit kept (fixed centres
+        unless free ones lower the residual by more than FREE_GAIN), its settings, the rows."""
+        variants = []
+        for fix in base.try_fix or [None]:
+            for factor in base.try_factor or [None]:
+                label = []
+                v = base
+                if fix is not None:
+                    v = replace(v, fixctr=fix)
+                    label.append("centres " + {0: "free", 1: "fixed", 2: "median"}[fix])
+                if factor is not None and base.start:
+                    v = replace(v, factor=factor)
+                    label.append(f"growth x{factor:g}")
+                variants.append(((", ".join(label) or "as asked") + tag, v))
+        results = each([v for _l, v in variants], s.parallel)
+        rows_ = [
+            {"variant": lbl, "status": r.status, "score": r.score, "r1": r.r1}
+            for (lbl, _v), r in zip(variants, results)
+        ]
+        done = [(r.score, i) for i, r in enumerate(results) if r.complete and r.score is not None]
+        if not done:
+            return results[0], variants[0][1], rows_
+        best_i = min(done)[1]
+        fixed = [(sc, i) for sc, i in done if (variants[i][1].fixctr or 0) != 0]
+        if fixed and (variants[best_i][1].fixctr or 0) == 0:
+            f_sc, f_i = min(fixed)
+            if results[best_i].score > f_sc - pair.FREE_GAIN:
+                best_i = f_i
+        if len(rows_) > 1:
+            rows_[best_i]["chosen"] = True
+        return results[best_i], variants[best_i][1], rows_
+
+    kept, kept_s, rows = search(s)
+    if not kept.complete:
+        kept.seconds = time.perf_counter() - t0
+        kept.calls = counter["n"]
+        return kept
     steps = list(kept.steps)
+    harmonic_rows: List[dict] = []
+    # the harmonics, iteratively: every COS3X and COS4X asked (all with HARMONICS=AUTO) on
+    # the fit kept, its sky kept; when another combination lowers the residual, the search
+    # is made again with it, until the harmonics stay (at most HARMONIC_ROUNDS times).  A
+    # combination whose ellipses cross is fitted only out to where they do not (the checks).
+    c3s = s.try_cos3x or (list(pair.COS3X_VALUES) if s.harmonic_search else [])
+    c4s = s.try_cos4x or (list(pair.COS4X_VALUES) if s.harmonic_search else [])
+    for rnd in range(1, HARMONIC_ROUNDS + 1):
+        if not (c3s or c4s) or stopped():
+            break
+        own = (
+            kept_s.cos3x if kept_s.cos3x is not None else 2,
+            kept_s.cos4x if kept_s.cos4x is not None else 2,
+        )
+        combos = [(a, b) for a in (c3s or [own[0]]) for b in (c4s or [own[1]]) if (a, b) != own]
+        fixed_sky = replace(
+            kept_s, sky=kept.settings.sky, sky_factor=kept.settings.sky_factor, sky_iter=0
+        )
+        tried = each([replace(fixed_sky, cos3x=a, cos4x=b) for a, b in combos], s.parallel)
+        harmonic_rows.append(
+            {
+                "round": rnd,
+                "cos3x": own[0],
+                "cos4x": own[1],
+                "score": kept.score,
+                "r1": kept.r1,
+                "status": kept.status,
+                "kept": True,
+            }
+        )
+        for (a, b), r in zip(combos, tried):
+            harmonic_rows.append(
+                {
+                    "round": rnd,
+                    "cos3x": a,
+                    "cos4x": b,
+                    "score": r.score,
+                    "r1": r.r1,
+                    "status": r.status,
+                    "short": r.r1 < s.r1 - 0.5,
+                    "kept": False,
+                }
+            )
+        # the smallest residual; on a tie, the combination closest to the one it has
+        good = [
+            (r.score, abs(combos[i][0] - own[0]) + abs(combos[i][1] - own[1]), i)
+            for i, r in enumerate(tried)
+            if r.complete and r.score is not None
+        ]
+        if not good or min(good)[0] >= kept.score - pair.HARMONIC_GAIN:
+            steps.append(
+                f"harmonics (round {rnd}): COS3X={own[0]} COS4X={own[1]} kept; no other of "
+                f"{len(combos)} lowered the residual by more than {pair.HARMONIC_GAIN:g}"
+            )
+            break
+        i = min(good)[2]
+        a, b = combos[i]
+        for row in harmonic_rows[-len(combos) - 1 :]:
+            row["kept"] = row["cos3x"] == a and row["cos4x"] == b
+        steps.append(
+            f"harmonics (round {rnd}): COS3X={a} COS4X={b} lowered the residual "
+            f"({kept.score:.3f} -> {tried[i].score:.3f}); the search again with them"
+        )
+        again, again_s, again_rows = search(replace(s, cos3x=a, cos4x=b), f" (COS3X={a} COS4X={b})")
+        rows += again_rows
+        if again.complete and again.score is not None and again.score <= tried[i].score:
+            kept, kept_s = again, again_s
+        else:
+            kept, kept_s = tried[i], replace(kept_s, cos3x=a, cos4x=b)
     # SKYPLANE: a tilt of the sky in the residual, taken out, and the fit again (kept if
     # the residual is lower)
     sky_map = None
@@ -449,41 +528,6 @@ def fit_single(
                 steps.append(words + ": taken out of the image; the fit on it kept")
             else:
                 steps.append(words + ": the fit without it kept")
-    # the harmonics: TRYCOS3X / TRYCOS4X (or every value), on the fit kept
-    c3s = s.try_cos3x or (list(pair.COS3X_VALUES) if s.harmonic_search else [])
-    c4s = s.try_cos4x or (list(pair.COS4X_VALUES) if s.harmonic_search else [])
-    if (c3s or c4s) and kept.complete and not stopped():
-        own = (
-            kept_s.cos3x if kept_s.cos3x is not None else 2,
-            kept_s.cos4x if kept_s.cos4x is not None else 2,
-        )
-        combos = [(a, b) for a in (c3s or [own[0]]) for b in (c4s or [own[1]]) if (a, b) != own]
-        tried = each([replace(kept_s, cos3x=a, cos4x=b) for a, b in combos], s.parallel)
-        for (a, b), r in zip(combos, tried):
-            rows.append(
-                {
-                    "variant": f"COS3X={a} COS4X={b}",
-                    "status": r.status,
-                    "score": r.score,
-                    "r1": r.r1,
-                    "harmonics": True,
-                }
-            )
-        good = [(r.score, i) for i, r in enumerate(tried) if r.complete and r.score is not None]
-        if good and min(good)[0] < kept.score - pair.HARMONIC_GAIN:
-            i = min(good)[1]
-            for row in rows:
-                row.pop("chosen", None)
-            rows[len(rows) - len(tried) + i]["chosen"] = True
-            kept, kept_s = tried[i], replace(kept_s, cos3x=combos[i][0], cos4x=combos[i][1])
-            steps.append(
-                f"harmonics: COS3X={combos[i][0]} COS4X={combos[i][1]} lowered the residual"
-            )
-        elif good:
-            steps.append(
-                "harmonics: the others did not lower the residual by more than "
-                f"{pair.HARMONIC_GAIN:g}; its own kept"
-            )
     # RESIDMASK: the faint sources of the residual, masked, and the fit kept again
     if s.resid_rounds and kept.complete and image_obj is not None:
         from . import detection
@@ -536,6 +580,11 @@ def fit_single(
         if len(members) > 1:
             kept.ensemble = _mean(members, image, mask, kept_s, jittered, more)
     kept.search = rows if len(rows) > 1 else []
+    kept.harmonics = harmonic_rows
+    kept.harmonic_choice = (
+        kept_s.cos3x if kept_s.cos3x is not None else 2,
+        kept_s.cos4x if kept_s.cos4x is not None else 2,
+    )
     kept.steps = steps
     kept.sky_map = sky_map
     kept.calls = counter["n"]
@@ -598,6 +647,14 @@ def _mean(members, image, mask, kept_s, jittered, more) -> dict:
     }
 
 
+def largest_crossing(profile) -> Optional[float]:
+    """How far, at most, an ellipse reaches out of the next one (1: touching)."""
+    ell = pair.profile_ellipses(profile)
+    if len(ell) < 2:
+        return None
+    return max(pair.crossing(ell[k], ell[k + 1]) for k in range(len(ell) - 1))
+
+
 def summary(result: SingleResult) -> str:
     s = result.settings
     lines = [
@@ -623,6 +680,28 @@ def summary(result: SingleResult) -> str:
             + (f"; {e['note']}" if e.get("note") else "")
         )
     lines += [f"  {x}" for x in result.steps]
+    if result.harmonics:
+        lines.append(
+            "harmonic analysis (residual score; R1 reached; * its ellipses crossed or "
+            "failed further out):"
+        )
+        for h in result.harmonics:
+            sc = "-" if h["score"] is None else f"{h['score']:.3f}"
+            lines.append(
+                f"  round {h['round']}: COS3X={h['cos3x']:+d} COS4X={h['cos4x']}: score {sc}, "
+                f"R1 {h['r1']:.1f}{' *' if h.get('short') else ''}"
+                + ("  <- kept" if h.get("kept") else "")
+            )
+        lines.append(
+            f"harmonics kept: COS3X={result.harmonic_choice[0]} COS4X={result.harmonic_choice[1]}"
+        )
+    if result.profile is not None:
+        worst = largest_crossing(result.profile)
+        if worst is not None:
+            lines.append(
+                f"ellipses: none cross (an inner one reaches at most {worst:.3f} of the next, "
+                f"{pair.CROSSING:g} allowed)"
+            )
     e = result.ensemble
     if e:
         lines.append(

@@ -928,6 +928,7 @@ class MainWindow(QtWidgets.QMainWindow):
         e.source_centre_requested.connect(self.centre_from_selected)
         e.sky_requested.connect(self.estimate_sky)
         e.sky_segment_requested.connect(self.elliprof_sky_segment)
+        e.sky_mask_toggled.connect(self.pair_sky_mask)
         e.cancel_requested.connect(self.cancel_elliprof)
         e.mask_sources_requested.connect(self.mask_sources)
         e.x0.valueChanged.connect(lambda _v: self._overlays())
@@ -1150,6 +1151,7 @@ class MainWindow(QtWidgets.QMainWindow):
             verb = verb_of(line)
             if verb == "elliprof":
                 self.elliprof.cancel.setEnabled(False)
+                self._refresh_elliprof_sky()
                 self.elliprof.status.setText(reply.text.splitlines()[0])
                 self.show_result(self.profile)
             elif verb == "sources":
@@ -1182,9 +1184,14 @@ class MainWindow(QtWidgets.QMainWindow):
         s = self.session
         if "x0" in reply.values:
             self.elliprof.set_centre(reply.values["x0"], reply.values["y0"])
-        if "sky" in reply.values:
-            self.elliprof.use_sky.setChecked(True)
-            self.elliprof.sky.setValue(reply.values["sky"])
+        if "sky" in reply.values and True:
+            # a clipped median (Estimate): straight into ELLIPROF's base level; a segmentation
+            # sky is shown in the sky cards, to be taken with Use this sky
+            if reply.values.get("segment") is None:
+                self.elliprof.use_sky.setChecked(True)
+                self.elliprof.set_sky_value(
+                    reply.values["sky"], "estimated: a 3-sigma clipped median"
+                )
         if "buffers" in reply.changed:
             self._refresh_buffers()
         if reply.show is not None:
@@ -1199,6 +1206,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sources.set_runs(s.runs)
         if "sky" in reply.changed or "pairs" in reply.changed or "buffers" in reply.changed:
             self._refresh_pair()
+            self._refresh_elliprof_sky()
             self._refresh_skyplane()
         if "masks" in reply.changed:
             if self.active_mask not in s.masks:
@@ -2035,18 +2043,39 @@ class MainWindow(QtWidgets.QMainWindow):
         n = self._tool_number(self.elliprof.input)
         if n is None:
             return
-        layers = self.elliprof.ticked_layers()
-        self.run_command(f"sky {n} SEGMENT" + (f" MASK={','.join(layers)}" if layers else ""))
+        self.run_command(self.elliprof.sky_command(n))
+        if self.elliprof.show_mask.isChecked():
+            self.run_command("mask show skymask")
+        self.after_commands(self._refresh_elliprof_sky)
 
-        def fill():
-            image = self.session.buffers.get(n)
-            sid = self.session.sky_of.get(image.key) if image else None
-            result = self.session.skies.get(sid) if sid else None
-            if result is not None and np.isfinite(result.level):
-                self.elliprof.use_sky.setChecked(True)
-                self.elliprof.sky.setValue(round(float(result.level), 3))
-
-        self.after_commands(fill)
+    def _refresh_elliprof_sky(self) -> None:
+        """ELLIPROF's sky card (the measurement of its image) and, after a fit, the
+        residual on the sky pixels."""
+        e = self.elliprof
+        n = self._tool_number(e.input, say=False)
+        image = self.session.buffers.get(n) if n is not None else None
+        if image is None:
+            e.show_sky(None, None)
+            return
+        sid = self.session.sky_of.get(image.key)
+        result = self.session.skies.get(sid) if sid else None
+        stale = self.session.sky_stale(sid) if result else None
+        values = None
+        if result is not None and sid in self.session.sky_buffer:
+            measured = self.session.sky_buffer[sid][1]
+            if measured.data.shape == result.support.shape:
+                values = measured.data[result.support]
+        e.show_sky(result, stale, values)
+        if result is not None and not stale:
+            e.sky_id = result.id
+        fit = self.session.fits.get(image.key)
+        if fit is None or result is None or stale or not e.use_sky.isChecked():
+            e.show_residual_sky(None)
+            return
+        use = result.support & ~fit.masked & np.isfinite(fit.residual)
+        level = skies.residual_level(fit.residual, use, e.sky.value(), e.factor.value())
+        check = {f"clipped_{k}": v for k, v in level.items()}
+        e.show_residual_sky(check, fit.residual[use])
 
     def _centre_picked(self, x: float, y: float) -> None:
         if str(self._pick_target).startswith("pair:"):
@@ -2501,6 +2530,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.elliprof.set_mask_layers([m.name for m in fitting], buffers)
         self.pair_panel.set_mask_layers(fitting)
         self._refresh_pair()
+        self._refresh_elliprof_sky()
         self._refresh_skyplane()
         self.viewer.show_masks([m for m in fitting if m.visible])
 

@@ -894,7 +894,16 @@ TIPS = {
     "Then N fits, the fit kept and N - 1 with R0 and R1 varied, are averaged: buffers get "
     "the mean model, the mean residual (image - mean sky - mean model) and each fit's own. "
     "Automatic uses the pair fit's automatic values; Iterative shows each to set. Cancel "
-    "stops an iterative fit and keeps nothing.",
+    "stops an iterative fit and keeps nothing. <b>Harmonics</b>: Automatic (or Search every "
+    "harmonic) fits every COS3X and COS4X on the fit kept, its sky kept; when another lowers "
+    "the residual by more than 0.01 of the noise, the search over centres and growth is made "
+    "again with it, up to 3 rounds; a tie goes to the combination nearest the one used. The "
+    "report lists every combination with its residual and the R1 it reached (a combination "
+    "whose ellipses cross is fitted only out to where they do not). Every fit's ellipses are "
+    "checked: none may reach more than 2 % out of the next. <b>Sky</b>: the same sky analyser "
+    "as the pair fit's (Measure: the sky by segmentation, its verdict, histogram and cells; "
+    "Use this sky; the factor and its refinement; after a fit, the residual on the sky "
+    "pixels and the next factor).",
     "resid_sources": "<b>Residual sources</b> (RESIDMASK=n, RESIDTHRESH=8): the source finder "
     "cannot separate globular clusters, faint stars and small galaxies that sit on a bright "
     "galaxy from its light, so they stay in the fit. Once a fit is made, they stand out in "

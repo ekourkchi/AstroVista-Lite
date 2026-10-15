@@ -11,7 +11,7 @@ from typing import Optional
 
 from PySide6 import QtCore, QtWidgets
 
-from .pairpanel import STATE_COLOURS, SkyMap
+from .skysection import STATE_COLOURS, SkyMap
 from .panels import BufferChoice, heading, note, number, output_row, tip, title_row, whole
 from .sky import DEFAULTS, PLANE_DEFAULTS
 

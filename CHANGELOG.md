@@ -14,6 +14,14 @@ newest is at the top.
   residual and each fit's own; residual sources masked. Measure (sky by segmentation) and
   Cancel in the panel. The plain `elliprof` command is unchanged unless one of these
   keywords is given.
+- **ELLIPROF: the sky analyser and the harmonic analysis.** The pair fit's sky section
+  (segmentation settings, Measure, the verdict, histogram and cell map, Use this sky, the
+  factor and its refinement, and after a fit the residual on the sky pixels with the next
+  factor) is ELLIPROF's too. Automatic fits every COS3X and COS4X on the fit kept and
+  alternates with the search over centres and growth until the harmonics stay (3 rounds
+  at most); the report lists every combination's residual and R1, and says how close the
+  ellipses come to crossing (none may reach more than 2 % out of the next). Profile plots
+  of the cos 3θ amplitude and of both angles.
 - **Sources in the residual.** ELLIPROF and the Pair fit can find the faint sources a fit's
   residual shows (globular clusters, stars and small galaxies on the galaxies, which the
   first source finding cannot separate from their light), mask them and fit again:

@@ -1037,7 +1037,8 @@ class Session(ImageCommands):
         reply.text += f"\nsky-exclusion layer {target} (shown on request; never used in a fit)"
         reply.values = {"sky_id": 0.0}
         if result.state == "usable_support":
-            reply.values = {"sky": result.level, "sigma": result.sigma}
+            # "segment": a segmentation sky (the panels show it; Use this sky takes it)
+            reply.values = {"sky": result.level, "sigma": result.sigma, "segment": 1.0}
         if "TOMAP" in outputs:
             m = np.full(image.shape, np.nan, np.float32)
             for c in result.cells:

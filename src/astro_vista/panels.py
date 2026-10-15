@@ -210,7 +210,7 @@ def residual_sources_row(rounds: int = 0, thresh: float = 8.0):
     t.setToolTip("RESIDTHRESH: their detection threshold, in units of the residual's local RMS")
     row = QtWidgets.QHBoxLayout()
     row.addWidget(r)
-    row.addWidget(QtWidgets.QLabel("rounds, found above"))
+    row.addWidget(QtWidgets.QLabel("rounds, above"))
     row.addWidget(t)
     row.addStretch(1)
     return r, t, row
@@ -245,7 +245,10 @@ def scrolled(widget: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
     return area
 
 
-class ElliprofPanel(QtWidgets.QWidget):
+from .skysection import SkySection  # noqa: E402  (it uses the helpers above)
+
+
+class ElliprofPanel(SkySection, QtWidgets.QWidget):
     """The settings of an ELLIPROF fit; ``command`` turns them into a command line."""
 
     run_requested = QtCore.Signal()
@@ -255,6 +258,7 @@ class ElliprofPanel(QtWidgets.QWidget):
     mask_sources_requested = QtCore.Signal()
     radius_pick_requested = QtCore.Signal(str)  # "r0" or "r1"
     sky_segment_requested = QtCore.Signal()  # measure the sky by segmentation
+    sky_mask_toggled = QtCore.Signal(bool)
     cancel_requested = QtCore.Signal()
 
     FIT_MODES = ["One elliprof call", "Automatic (as the pair fit)", "Iterative, my settings"]
@@ -271,6 +275,7 @@ class ElliprofPanel(QtWidgets.QWidget):
         "TRYFIX=1,0",
         "TRYFACTOR=1.2,1.35",
         "SHAPETOL=0.12",
+        "HARMONICS=AUTO",
     ]
 
     def __init__(self, parent=None):
@@ -320,8 +325,8 @@ class ElliprofPanel(QtWidgets.QWidget):
             "Automatic: the pair fit's recipe for one galaxy: R1 where the light fades into "
             "the noise, grown from a third of it by 1.2, the search over centres and growth, "
             "smoothing over 3 isophotes, RMSTAR, the light beyond R1 measured, the sky tilt, "
-            "the outer-isophote check, the fits averaged and, with a measured sky, the sky "
-            "refined 3 times.\nIterative, my settings: every one of those, to set"
+            "the outer-isophote check, every harmonic tried (the best kept, alternated with the "
+            "search), the fits averaged and, with a measured sky, the sky refined 3 times.\nIterative, my settings: every one of those, to set"
         )
         form.addRow("Fit", tip(self.fit_mode, "elliprof_iterative"))
         self.r0 = number(0.1, 1e5, 5, tip="R0: semi-major axis of the first isophote, pixels")
@@ -361,28 +366,29 @@ class ElliprofPanel(QtWidgets.QWidget):
         self.iterative = self._iterative_box()
         form.addRow(self.iterative)
 
-        form.addRow(heading("Sky"))
-        self.use_sky = QtWidgets.QCheckBox("Subtract a constant sky")
-        self.sky = number(-1e9, 1e9, 0, decimals=3, tip="the sky level, in the image's units")
-        self.sky.setEnabled(False)
-        self.use_sky.toggled.connect(self.sky.setEnabled)
+        # the sky: as the pair fit's (skysection.SkySection), and a clipped median
+        self.build_sky(
+            form,
+            form.addRow,
+            self.sky_segment_requested,
+            self.sky_mask_toggled,
+            "Sky",
+            "Fit isophotes",
+        )
+        self.sky.setReadOnly(False)
+        self.use_sky = QtWidgets.QCheckBox("Subtract the sky (base level × factor)")
+        self.use_sky.setToolTip("Unticked: no sky is subtracted (elliprof's own way)")
         estimate = QtWidgets.QToolButton(text="Estimate")
         estimate.setToolTip(
             "A 3-sigma clipped median of the pixels the ticked mask layers leave (sky command)"
         )
         estimate.clicked.connect(self.sky_requested)
-        segment = QtWidgets.QToolButton(text="Measure")
-        segment.setToolTip(
-            "The sky by segmentation (sky N SEGMENT): every source down to half the noise left "
-            "out, the median of the rest; it gives the sky support the sky refinement needs"
-        )
-        segment.clicked.connect(self.sky_segment_requested)
         row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.sky, 1)
+        row.addWidget(self.use_sky, 1)
         row.addWidget(estimate)
-        row.addWidget(segment)
-        form.addRow(tip(self.use_sky, "sky"))
-        form.addRow("Sky", row)
+        form.addRow(tip(row, "sky"))
+        self.use_sky_button.clicked.connect(lambda: self.use_sky.setChecked(True))
+        self.enter_sky_button.clicked.connect(lambda: self.use_sky.setChecked(True))
 
         form.addRow(heading("Masks"))
         self.mask_file = QtWidgets.QLineEdit()
@@ -437,6 +443,7 @@ class ElliprofPanel(QtWidgets.QWidget):
         row.addWidget(self.run, 3)
         row.addWidget(self.cancel, 1)
         form.addRow(row)
+        self.build_residual_sky(form, "Residual sky", "Fit isophotes")
         self.status = note()
         form.addRow(self.status)
 
@@ -505,21 +512,10 @@ class ElliprofPanel(QtWidgets.QWidget):
         self.try_factor.setToolTip("TRYFACTOR: growth factors searched (empty: none)")
         f.addRow(self.search_fix)
         f.addRow("Growth factors searched", self.try_factor)
-        self.sky_iter = whole(0, 10, 3)
-        self.sky_iter.setSpecialValueText("off")
-        self.sky_iter.setToolTip(
-            "SKYITER: the sky factor refined from the residual sky this many times (needs the "
-            "sky measured by segmentation: Measure)"
-        )
         self.sky_plane = QtWidgets.QCheckBox("Take out a sky tilt")
         self.sky_plane.setChecked(True)
         self.sky_plane.setToolTip("SKYPLANE=1: a plane fitted to the residual, kept if it helps")
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.sky_iter)
-        row.addWidget(QtWidgets.QLabel("refinements"))
-        row.addWidget(self.sky_plane)
-        row.addStretch(1)
-        f.addRow("Sky", row)
+        f.addRow(self.sky_plane)
         self.tail = QtWidgets.QComboBox()
         for label, key in (
             ("measured in rings", "measured"),
@@ -692,7 +688,8 @@ class ElliprofPanel(QtWidgets.QWidget):
             self.rmstar.setChecked(bool(values["rmstar"]))
         if "sky" in values:
             self.use_sky.setChecked(values["sky"] is not None)
-            self.sky.setValue(float(values["sky"] or 0.0))
+            if values["sky"] is not None:
+                self.set_sky_value(float(values["sky"]), "from the fit's settings")
         if "mask_file" in values:
             self.mask_file.setText(str(values["mask_file"] or ""))
 
@@ -709,7 +706,9 @@ class ElliprofPanel(QtWidgets.QWidget):
         parts += [f"R0={self.r0.value():g}", f"R1={r1}"]
         parts += [f"NR={nr}", f"NITER={self.niter.value()}"]
         if self.use_sky.isChecked():
-            parts.append(f"SKY={self.sky.value():g}")
+            parts.append(f"SKY={self.sky.value():.10g}")
+            if abs(self.factor.value() - 1.0) > 1e-9:
+                parts.append(f"SKYFACTOR={self.factor.value():.6g}")
         if iterative:
             parts += [
                 w for w in self.iterative_keywords(measured_sky) if w not in ("R1=AUTO", "NR=AUTO")
@@ -917,7 +916,10 @@ PLOTS = {
     "Position angle": ("alpha", False),
     "Centre x0": ("x0", False),
     "Centre y0": ("y0", False),
+    "cos 3θ amplitude I3": ("I3", False),
+    "cos 3θ angle A3": ("A3", False),
     "cos 4θ amplitude I4": ("I4", False),
+    "cos 4θ angle A4": ("A4", False),
     "Slope": ("slope", False),
 }
 

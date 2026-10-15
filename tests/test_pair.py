@@ -2059,3 +2059,71 @@ def test_the_elliprof_panel_writes_the_iterative_fit():
     assert "FACTOR=1.3" in words and "COS4X=1" in words and "R1=120" in words
     assert not any(w.startswith("TRYFIX") or w.startswith("PARALLEL") for w in words)
     app.processEvents()
+
+
+def test_the_single_fit_analyses_every_harmonic_and_reports_crossings():
+    from astro_vista import single
+
+    snap = harmonic_snapshot()  # A's light: all of it is fitted with COS4X=1 only
+    image, mask = snap.image, np.zeros(snap.image.shape, bool)
+    # COS4X=1 makes the residual smaller in this fake: it is found and kept, then searched;
+    # COS3X does not matter here, so it stays at its own value (a tie goes to the nearest)
+    f = PureFitter(share={1: 1.0, 0: 0.0, 2: 0.5, None: 0.5})
+    s = single.SingleSettings(
+        x0=30.5, y0=30.5, r0=2, r1=20, sky=100.0, harmonic_search=True, try_fix=[1, 0]
+    )
+    r = single.fit_single(image, mask, s, fitter=f)
+    combos = {(h["cos3x"], h["cos4x"]) for h in r.harmonics if h["round"] == 1}
+    assert len(combos) == len(pair.COS3X_VALUES) * len(pair.COS4X_VALUES)
+    assert r.harmonic_choice[1] == 1
+    text = single.summary(r)
+    assert "harmonic analysis" in text and "harmonics kept: COS3X=2 COS4X=1" in text
+    assert "ellipses: none cross" in text
+    assert any("the search again" in x for x in r.steps)
+
+
+def test_the_elliprof_panel_has_the_sky_analyser():
+    from PySide6 import QtCore, QtWidgets
+
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    window.show()
+
+    def settle(seconds=120):
+        deadline = QtCore.QDeadlineTimer(int(seconds * 1000))
+        while (
+            window.busy() or getattr(window, "_pair_worker", None)
+        ) and not deadline.hasExpired():
+            app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        app.processEvents()
+
+    window.open_pair_example()
+    settle()
+    e = window.elliprof
+    for w in (
+        "thresh",
+        "minarea",
+        "sky_card",
+        "sky_hist",
+        "sky_map",
+        "use_sky_button",
+        "factor",
+        "sky_iter",
+        "resid_card",
+    ):
+        assert hasattr(e, w), w
+    e.thresh.setValue(1.0)
+    assert "THRESH=1" in e.sky_command(1)
+    e.sky_segment_requested.emit()
+    settle()
+    assert "median" in e.sky_card.text() and e.use_sky_button.isEnabled()
+    e.use_sky_button.click()
+    assert e.use_sky.isChecked() and e.sky.value() > 900
+    e.set_values({"x0": 294.3, "y0": 263.8, "r0": 3, "r1": 100, "nr": 15})
+    e.tick("stars")
+    window.run_fit()
+    settle()
+    assert "median" in e.resid_card.text()  # the residual on the sky pixels, after the fit
+    window.close()
