@@ -1669,3 +1669,51 @@ def test_the_panel_writes_joes_settings():
     panel.set_mode(0)
     assert not panel.joe_box.isVisibleTo(panel)
     app.processEvents()
+
+
+def test_joes_mode_uses_each_galaxys_r0_nr_first_r1_and_harmonics():
+    from dataclasses import replace
+
+    snap = iterative_snapshot()
+    comps = {
+        "A": replace(snap.components["A"], r0=4.0, r1=30.0, nr=8, cos4x=1, start=14.0),
+        "B": replace(snap.components["B"], cos3x=0),
+    }
+    snap = replace(snap, components=comps, settings=replace(snap.settings, method="joe"))
+    f = SteadyFitter()
+    pair.run_joe(snap, fitter=f)
+    a_calls = [c for c in f.calls if c["component"] == "A"]
+    model_calls = [c for c in a_calls if c["kw"]["fixctr"] == 1]
+    assert model_calls and all(c["kw"]["cos4x"] == 1 for c in a_calls)
+    assert min(c["r1"] for c in a_calls) == pytest.approx(14.0)  # START: its first R1
+    assert all(c["kw"]["cos3x"] == 0 for c in f.calls if c["component"] == "B")
+    # NR=8 (not automatic) and R0=4 reach elliprof
+    assert all(pair.nr_for(comps["A"], c["r1"]) == 8 for c in a_calls)
+
+
+def test_the_panel_shows_and_writes_each_galaxys_settings_in_joes_mode():
+    from PySide6 import QtWidgets
+
+    from astro_vista.pairpanel import JOE, PairPanel
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    panel = PairPanel()
+    panel.set_mode(JOE)
+    card = panel.cards["A"]
+    for key in ("r0", "start", "nr", "harmonics"):
+        assert card.form.isRowVisible(card._row_of[key]), key
+    assert not card.try_cos3x.isVisibleTo(card)  # no search in Joe's mode
+    card.r0.setValue(5)
+    card.r1_auto.setChecked(False)
+    card.r1.setValue(150)
+    card.start_auto.setChecked(False)
+    card.start.setValue(40)
+    card.nr_auto.setChecked(False)
+    card.nr.setValue(18)
+    card.cos4x.setCurrentIndex(card.cos4x.findData(0))
+    a = panel.command(1).split(" A: ")[1].split(" B: ")[0].split()
+    for w in ("R0=5", "R1=150", "START=40", "NR=18", "COS4X=0", "FIXCTR=1"):
+        assert w in a, w
+    panel.set_mode(0)  # Automatic: those rows hidden again, the values to try back
+    assert not card.form.isRowVisible(card._row_of["nr"]) and not card.try_cos3x.isHidden()
+    app.processEvents()

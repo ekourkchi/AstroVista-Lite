@@ -886,7 +886,8 @@ TIPS = {
     "cycle, the centre left out, what counts as a pull (pixels, share of the radius, "
     "isophotes in a row, where the free-centre fit starts), the centres of the model kept, "
     "the cycles, the smoothing and the model beyond R1; <i>Joe's defaults</i> puts them "
-    "back.",
+    "back. Each galaxy's card sets its R0, its R1 (or automatic), its first R1 (or "
+    "automatic), its NR (or automatic) and its harmonics (COS3X, COS4X).",
     "pair_pull": "<b>Pull check</b> (every complete pair fit; PULLCHECK=0 turns it off): each "
     "galaxy is fitted once more, with free centres, on the image minus the other's model and "
     "out to its R1. If its outer ellipses' centres move towards the other galaxy (by more "

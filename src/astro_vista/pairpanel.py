@@ -176,12 +176,16 @@ class GalaxyCard(QtWidgets.QGroupBox):
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
         self.form = form
         self._manual_rows = []  # rows hidden with the automatic settings
+        self._row_of = {}  # the rows Joe's mode shows: key -> row
 
-        def manual(*args):
+        def manual(*args, key=None):
             form.addRow(*args)
             self._manual_rows.append(form.rowCount() - 1)
+            if key:
+                self._row_of[key] = form.rowCount() - 1
 
         self.automatic = False
+        self.joe = False
         self.name = QtWidgets.QLineEdit()
         self.name.setPlaceholderText(f"a name for {cid} (optional)")
         form.addRow("Name", self.name)
@@ -242,7 +246,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
                 row.addWidget(self.r1_auto)
                 form.addRow(label, tip(row, "pair_r1auto"))
             else:
-                manual(label, tip(row, "pair_grow" if key == "start" else key))
+                manual(label, tip(row, "pair_grow" if key == "start" else key), key=key)
         self.start.setEnabled(False)
         self.start_pick.setEnabled(False)
         self.growth = QtWidgets.QComboBox()
@@ -277,7 +281,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
         row.addWidget(self.nr)
         row.addWidget(self.nr_auto)
         row.addWidget(self.coarse, 1)
-        manual("NR", tip(row, "nr"))
+        manual("NR", tip(row, "nr"), key="nr")
         self.cos3x = QtWidgets.QComboBox()
         for value, text in COS3X_SHOWN:
             self.cos3x.addItem(text, value)
@@ -311,7 +315,7 @@ class GalaxyCard(QtWidgets.QGroupBox):
         grid.addWidget(self.cos4x, 1, 1)
         grid.addWidget(self.try_cos4x, 1, 2)
         grid.setColumnStretch(2, 1)
-        manual("Harmonics", tip(grid, "pair_mode"))
+        manual("Harmonics", tip(grid, "pair_mode"), key="harmonics")
         self.fixctr = QtWidgets.QComboBox()
         self.fixctr.addItems(["Free", "Fixed at X0, Y0", "Median of the fitted centres"])
         self.fixctr.setCurrentIndex(1)  # fixed centres: the more stable decomposition
@@ -356,12 +360,38 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.r1_pick.setEnabled(not on)
         self.changed.emit()
 
-    def set_automatic(self, on: bool) -> None:
+    def set_automatic(self, on: bool, joe: bool = False) -> None:
         """Show only the centre, R1 (automatic or typed) and the name (automatic settings),
-        or every setting."""
-        self.automatic = on
+        or every setting.  Joe's mode (``joe``) also shows R0, the first R1, NR and the
+        harmonics (not the values to try: it has no search)."""
+        self.automatic, self.joe = on, joe
         for row in self._manual_rows:
             self.form.setRowVisible(row, not on)
+        if joe:
+            for key in ("r0", "start", "nr", "harmonics"):
+                self.form.setRowVisible(self._row_of[key], True)
+        for box in (self.try_cos3x, self.try_cos4x):
+            box.setVisible(not joe)
+
+    def joe_keywords(self, fixctr: int = 1) -> str:
+        """The keywords of Joe's mode: the centre, R0, R1 (or AUTO), the first R1 (or AUTO),
+        NR (or AUTO), the harmonics and the centres of the model."""
+        parts = []
+        name = self.name.text().strip()
+        if name:
+            parts.append("NAME=" + shlex.quote(name))
+        parts += [f"X0={self.x0.value():g}", f"Y0={self.y0.value():g}", f"R0={self.r0.value():g}"]
+        parts.append("R1=AUTO" if self.r1_auto.isChecked() else f"R1={self.r1.value():g}")
+        if self.start_auto.isChecked() or not self.start.value():
+            parts.append("START=AUTO")
+        else:
+            parts.append(f"START={self.start.value():g}")
+        parts.append("NR=AUTO" if self.nr_auto.isChecked() else f"NR={self.nr.value()}")
+        for key, box in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
+            if box.currentData() != 2:
+                parts.append(f"{key}={box.currentData()}")
+        parts.append(f"FIXCTR={fixctr}")
+        return " ".join(parts)
 
     def auto_keywords(self) -> str:
         """The keywords of the automatic settings: the centre, R1 (or R1=AUTO), and START,
@@ -1392,6 +1422,8 @@ class PairPanel(QtWidgets.QWidget):
             self.mode.setCurrentIndex(index)  # comes back here
             return
         self.set_automatic(index in (AUTOMATIC, JOE))
+        for card in self.cards.values():
+            card.set_automatic(index in (AUTOMATIC, JOE), joe=index == JOE)
         self.auto_note.setVisible(index == AUTOMATIC)
         self.joe_note.setVisible(index == JOE)
         self.joe_box.setVisible(index == JOE)
@@ -1485,9 +1517,8 @@ class PairPanel(QtWidgets.QWidget):
             parts.append("PULLCHECK=0")
         if self.views.isChecked():
             parts.append("VIEWS")
-        fix = f"FIXCTR={self.joe_fixctr.currentData()}"
         for cid in ("A", "B"):
-            parts.append(f"{cid}: " + self.cards[cid].auto_keywords().replace("FIXCTR=1", fix))
+            parts.append(f"{cid}: " + self.cards[cid].joe_keywords(self.joe_fixctr.currentData()))
         return " ".join(parts)
 
     def command(self, n: int) -> str:

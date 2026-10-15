@@ -237,7 +237,9 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
   <code>JOECOREMAX=</code> 30 px), what counts as a pull (<code>PULLPX=</code> 0.5 px or
   <code>PULLFRAC=</code> 2 % of the radius, <code>PULLRUN=</code> 2 isophotes in a row,
   judged by a free-centre fit from <code>PULLR0=</code> 8 px), the centres of the model
-  kept, the cycles, the smoothing and the model beyond R1.</p>
+  kept, the cycles, the smoothing and the model beyond R1. Each galaxy's card sets its R0,
+  R1, first R1 (<code>START=</code>), NR and harmonics (<code>COS3X=</code>,
+  <code>COS4X=</code>); each can stay automatic.</p>
   <pre><code>pair 1 SKY=1000 MASK=stars METHOD=JOE CYCLES=12 TIE=-3 RMSTAR TAIL=measured \
        FIRST=B JOEGROW=1.25 PULLPX=1 \
        A: X0=294.3 Y0=263.8 R0=3 R1=120 FIXCTR=1 \

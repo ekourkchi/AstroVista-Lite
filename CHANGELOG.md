@@ -16,7 +16,7 @@ newest is at the top.
   tried each cycle (`JOEGROW=`), the centre left out (`JOECORE=`, `JOECOREMIN=`,
   `JOECOREMAX=`), what counts as a pull (`PULLPX=`, `PULLFRAC=`, `PULLRUN=`, `PULLR0=`, also
   used by the pull check), the centres of the model kept, the cycles, the smoothing and the
-  model beyond R1.
+  model beyond R1. Each galaxy's card sets its R0, R1, first R1, NR and harmonics.
 - **The pull check.** Every complete pair fit ends with Joe's test: each galaxy fitted once
   more with free centres on the image minus the other's model, and the report says whether
   its outer ellipses move towards the other galaxy and from which radius (`PULLCHECK=0`:
