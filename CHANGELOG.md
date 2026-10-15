@@ -3,7 +3,7 @@
 Every release of AstroVista Lite (PyPI: `AstroVista`). Releases are tagged on GitHub; the
 newest is at the top.
 
-## Unreleased
+## 1.1.0rc1 (not released yet)
 
 - **Repeat runs, averaged.** `RUNS=n` (Pair fit ▸ Runs to average) fits the fit kept
   again n − 1 times, each with every galaxy's R0 and R1 changed at random by 10–15 %
