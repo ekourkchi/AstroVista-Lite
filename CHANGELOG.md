@@ -5,6 +5,13 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Your work is kept for next time.** The buffers (with their names, tags and model
+  parameters) and the mask layers are saved to a session folder (`.temp` beside the
+  settings, or one chosen in File ▸ Session folder…) when buffers are closed, when the
+  window closes, and every 2 minutes when something changed. At the start, AstroVista Lite
+  offers to continue; File ▸ Restore the last session and the `session` command
+  (`session save`, `session restore [FOLDER]`) do it at any time. The save before the last
+  is kept as `.temp.previous`.
 - **Every model buffer has its parameters.** Each buffer an iterative ELLIPROF or pair fit
   makes (the fit kept, the mean, each fit averaged, the spread, a pair call's input and
   model) has Model parameters… on its right-click menu.

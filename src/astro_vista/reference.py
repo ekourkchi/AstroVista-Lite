@@ -85,9 +85,28 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
             _c(
                 "close",
                 "close N | ALL",
-                "Remove buffer N, or every buffer with ALL.",
+                "Remove buffer N, or every buffer with ALL. In the window, the buffers and "
+                "mask layers are saved to the session folder first: session restore brings "
+                "them back.",
                 (),
                 "close 5",
+            ),
+            _c(
+                "session",
+                "session [save|restore] [FOLDER]",
+                "The buffers (with their names, tags and model parameters) and the mask layers "
+                "kept for next time. The window saves them to the session folder (.temp beside "
+                "the settings, or the one chosen in File ▸ Session folder…) when buffers are "
+                "closed, when it closes, and every 2 minutes when something changed; at the "
+                "start it offers to continue. The save before the last is kept as "
+                "FOLDER.previous.",
+                (
+                    ("(no word)", "where the session folder is and what it holds"),
+                    ("save", "save them now"),
+                    ("restore", "read them back (taken buffer numbers and names: new ones)"),
+                    ("FOLDER", "another folder than the session folder"),
+                ),
+                "session\nsession save kept\nsession restore kept",
             ),
             _c(
                 "buffers buf",

@@ -23,7 +23,7 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
-from . import __version__, detection, guide, icons
+from . import __version__, detection, guide, icons, sessionstore
 from . import pair as pairs
 from . import sky as skies
 from .docks import FoldableDock
@@ -49,6 +49,7 @@ from .skyplanepanel import SkyPlanePanel
 from .viewer import Viewer, app_icon
 
 TITLE = "AstroVista Lite"
+AUTOSAVE_MS = 120_000  # how often changed buffers and masks are kept for next time
 LAYOUT_VERSION = 6  # saved window layouts of another version are not restored
 
 # The example, shipped with the package: an HST WFC3/IR image of UGC 12517 and its mask,
@@ -197,6 +198,15 @@ def settings() -> QtCore.QSettings:
     return QtCore.QSettings(
         QtCore.QSettings.IniFormat, QtCore.QSettings.UserScope, "AstroVista", "astro-vista"
     )
+
+
+def session_folder() -> Path:
+    """Where the buffers and mask layers are kept for next time: the folder chosen (File ▸
+    Session folder…), or .temp beside the settings file."""
+    chosen = settings().value("session/folder", "")
+    if chosen:
+        return Path(str(chosen)).expanduser()
+    return Path(settings().fileName()).parent / ".temp"
 
 
 def file_stem(name: str) -> str:
@@ -379,6 +389,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowIcon(app_icon())
         self.setAcceptDrops(True)
         self.session = Session()
+        self.session.store_folder = session_folder()
+        self._session_dirty = False
+        self._autosave = QtCore.QTimer(self)
+        self._autosave.setInterval(AUTOSAVE_MS)
+        self._autosave.timeout.connect(self._autosave_session)
+        self._autosave.start()
         self.shown: Optional[int] = None  # the buffer in the viewer
         self.active_mask: Optional[str] = None  # the mask the mask tools draw on
         self._queue: List[str] = []
@@ -590,6 +606,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_sources = a("Export the &sources (CSV)…", self.export_sources)
         self.a_profile_png = a("Export the profile plot (PNG)…", self.export_profile_png)
         self.a_plot_png = a("Export the sources plot (PNG)…", self.export_plot_png)
+        self.a_restore = a("Restore the last session", self.restore_session)
+        self.a_session_folder = a("Session folder…", self.choose_session_folder)
         self.a_quit = a("&Quit", self.close, shortcut=QtGui.QKeySequence.Quit)
         self.a_undo = a("&Undo mask edit", lambda: self.run_command("undo"), "↶", "Ctrl+Z")
         self.a_redo = a("&Redo mask edit", lambda: self.run_command("redo"), "↷", "Ctrl+Shift+Z")
@@ -750,6 +768,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.a_sources,
                 self.a_profile_png,
                 self.a_plot_png,
+                None,
+                self.a_restore,
+                self.a_session_folder,
                 None,
                 self.a_quit,
             ),
@@ -1209,6 +1230,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.elliprof.set_sky_value(
                     reply.values["sky"], "estimated: a 3-sigma clipped median"
                 )
+        if reply.changed & {"buffers", "data", "masks"}:
+            self._session_dirty = True
         if "buffers" in reply.changed:
             self._refresh_buffers()
         if reply.show is not None:
@@ -1360,7 +1383,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if not count:
             return
         answer = QtWidgets.QMessageBox.question(
-            self, "Close all", f"Close all {count} buffers? Unsaved images are lost."
+            self,
+            "Close all",
+            f"Close all {count} buffers?\n\nThey are kept in the session folder first: "
+            "File ▸ Restore the last session brings them back.",
         )
         if answer == QtWidgets.QMessageBox.Yes:
             self.run_command("close all")
@@ -2778,6 +2804,55 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
         self._default_sizes()
 
+    def _autosave_session(self) -> None:
+        """Every few minutes: the buffers and mask layers to the session folder, when they
+        have changed (a crash then loses little)."""
+        if self._session_dirty and not self.busy():
+            self._session_dirty = False
+            done = self.session.keep_session()
+            if done.startswith("could not"):
+                self.statusBar().showMessage(done)
+
+    def restore_session(self) -> None:
+        folder = self.session.store_folder
+        if sessionstore.describe(folder) is None:
+            QtWidgets.QMessageBox.information(self, TITLE, f"No saved session in {folder}.")
+            return
+        self.run_command("session restore")
+
+    def offer_session(self) -> None:
+        """At the start: offer to continue with the buffers and mask layers saved last time."""
+        info = sessionstore.describe(self.session.store_folder)
+        if info is None or not (info["buffers"] or info["masks"]):
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            TITLE,
+            f"Continue where you left off?\n\n{info['buffers']} buffers and {info['masks']} "
+            f"mask layers were saved {info['saved']}.\n\nNo: start afresh (they stay saved "
+            "until you close AstroVista Lite with other work; File ▸ Restore the last session "
+            "reads them back).",
+        )
+        if answer == QtWidgets.QMessageBox.Yes:
+            self.run_command("session restore")
+
+    def choose_session_folder(self) -> None:
+        current = self.session.store_folder
+        chosen = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "The folder where buffers and mask layers are kept for next time",
+            str(current.parent if current else Path.home()),
+        )
+        if not chosen:
+            return
+        folder = Path(chosen)
+        if not (folder / sessionstore.MANIFEST).exists() and any(folder.iterdir()):
+            folder = folder / ".temp"  # never mix the session with other files
+        settings().setValue("session/folder", str(folder))
+        self.session.store_folder = folder
+        done = self.session.keep_session()
+        self.statusBar().showMessage(f"Session folder: {folder}" + (f" ({done})" if done else ""))
+
     def closeEvent(self, event):
         """Closing the main window ends the program: the layout is saved, then the
         documentation, the popped-out panels and any other window close with it."""
@@ -2785,6 +2860,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if dock.isFloating():
                 dock.setFloating(False)  # back in place (and so saved there next time)
         self._save_layout()
+        self._autosave.stop()
+        self.session.keep_session()  # the buffers and masks, for next time
         guide.close_window()
         for widget in QtWidgets.QApplication.topLevelWidgets():
             if widget is not self and widget.isWindow() and widget.isVisible():
@@ -3275,6 +3352,8 @@ def main(argv=None) -> int:
     window.show()
     window.viewer.canvas.setFocus()  # the image has the keyboard at the start
     QtCore.QTimer.singleShot(300, remove_mac_services)  # once macOS has built its menu
+    if not (args.images or args.more_images or args.example or args.pair or args.run):
+        QtCore.QTimer.singleShot(400, window.offer_session)
     open_arguments(window, args)
     code = app.exec()
     # delete the window (and its Qt objects) before Python exits, in the right order

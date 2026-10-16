@@ -76,7 +76,13 @@ Legacy <code>.dmask</code> bitmaps open as mask layers.</p>
 <p><b>Buffers:</b> every image lives in a numbered buffer, listed on the left with a small
 picture. Results (a model, a residual, arithmetic) go to new buffers, so nothing is
 overwritten unless you ask. Right-click a buffer to save it, see its statistics, use it as
-a mask, copy or close it.</p>
+a mask, copy or close it (or close them all).</p>
+<p><b>Your work is kept:</b> the buffers and mask layers are saved to a session folder
+when buffers are closed, when the window closes (even by accident) and every 2 minutes
+while something changes. The next start offers to continue; File ▸ Restore the last
+session does it at any time. The folder is <code>.temp</code> beside the settings unless
+you choose another in File ▸ Session folder…; the save before the last is kept as
+<code>.temp.previous</code>.</p>
 <p><b>Coordinates:</b> x and y run along the image's columns and rows, with the first
 pixel spanning 0 to 1 (its centre at 0.5). FITS and DS9 count from 1 instead: the status
 bar shows both, and the pixel's value and sky position (RA, Dec) when the image has a

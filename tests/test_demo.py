@@ -2037,3 +2037,72 @@ def test_masking_the_sources_before_a_fit_keeps_the_galaxy(tmp_path):
     s.execute("mask clear found")
     s.execute("mask sources found KEEP=none")  # unless asked to mask everything
     assert s.masks["found"].masked[140, 150]
+
+
+def test_the_session_is_kept_when_buffers_close_and_comes_back(tmp_path):
+    s = session_with_galaxy(tmp_path)
+    s.execute("copy 1 2 tag=mine")
+    s.buffers[2].about = "model #3: its parameters"
+    s.execute("mask new stars 1")
+    s.execute("mask circle stars 40 50 6")
+    s.execute("mask role stars fit")
+    folder = tmp_path / ".temp"
+    s.store_folder = folder
+    before = {n: b.data.copy() for n, b in s.buffers.items()}
+    reply = s.execute("close all")
+    assert "saved 2 buffers and 1 mask layers" in reply.text and not s.buffers
+    assert "2 buffers and 1 mask layers" in s.execute("session").text
+    # closing with nothing left never replaces the saved session with an empty one
+    s.execute("mask delete stars")
+    assert s.keep_session() == ""
+    text = s.execute("session restore").text
+    assert text.startswith("restored the session") and sorted(s.buffers) == [1, 2]
+    for n, data in before.items():
+        assert np.array_equal(s.buffers[n].data, data)
+    b = s.buffers[2]
+    assert b.tag == "mine" and b.about == "model #3: its parameters" and b.note
+    m = s.masks["stars"]
+    assert m.role == "fit" and m.masked[50, 40] and m.count() > 50
+    # a second save keeps the first beside it; restoring into taken numbers uses free ones
+    s.execute("session save")
+    assert (tmp_path / ".temp.previous" / "session.json").exists()
+    s.execute("session restore")
+    assert len(s.buffers) == 4 and "stars_restored" in s.masks
+    with pytest.raises(CommandError, match="no saved session"):
+        s.execute(f"session restore {tmp_path / 'nothing'}")
+
+
+def test_the_window_keeps_the_session_and_offers_it_at_the_start(tmp_path, monkeypatch):
+    from PySide6 import QtCore, QtWidgets
+
+    from astro_vista import app as app_module
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app_module.settings().setValue("session/folder", str(tmp_path / "kept"))
+    try:
+        window = MainWindow()
+
+        def wait(w):
+            deadline = QtCore.QDeadlineTimer(60000)
+            while w.busy() and not deadline.hasExpired():
+                app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+
+        assert window.session.store_folder == tmp_path / "kept"
+        window.open_path(write_fits(galaxy(), tmp_path / "galaxy.fits"))
+        window.run_command("mask new edge 1")
+        window.run_command("mask box edge 0 0 20 20")
+        wait(window)
+        window.close()  # by accident: the work is kept
+        assert (tmp_path / "kept" / "session.json").exists()
+        again = MainWindow()
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox, "question", lambda *a, **k: QtWidgets.QMessageBox.Yes
+        )
+        again.offer_session()
+        wait(again)
+        assert sorted(again.session.buffers) == [1] and "edge" in again.session.masks
+        assert again.viewer.image is not None and again.buffer_list.count() == 1
+        again.close()
+    finally:
+        app_module.settings().remove("session/folder")

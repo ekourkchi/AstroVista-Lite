@@ -42,7 +42,11 @@ HELP = {
     "wd": "wd N file.fits  -  write buffer N as a FITS file",
     "tv": "tv N  -  show buffer N",
     "buffers": "buffers  -  list the buffers",
-    "close": "close N  -  remove buffer N;  close ALL  -  remove every buffer",
+    "close": "close N  -  remove buffer N;  close ALL  -  remove every buffer (the session is "
+    "saved first: session restore brings them back)",
+    "session": "session [save|restore] [FOLDER]  -  the buffers and mask layers kept for next "
+    "time: where and what (no word), save them now, or read them back (the session folder, "
+    "or FOLDER)",
     "copy": "copy N M  -  copy buffer N into buffer M",
     "=": "[M] = expression  -  arithmetic on buffers: [3] = [1] - [2],  "
     "[4] = median([1], [2], [3]),  [5] = [1] - median([1]),  [6] = div([1], [2], 0),  "
@@ -193,6 +197,9 @@ class Session(ImageCommands):
         self._pair_runs = 0
         self.stop_flag = False  # set by the window's Cancel for an iterative elliprof
         self._continued = ""  # the start of a line continued with \\
+        # the session folder: the buffers and mask layers kept for next time (the window sets
+        # it; None: not kept)
+        self.store_folder: Optional[Path] = None
 
     # ---- helpers
     def buffer(self, text) -> Image:
@@ -545,16 +552,65 @@ class Session(ImageCommands):
         ]
         return Reply("\n".join(lines))
 
+    def keep_session(self) -> str:
+        """Save the buffers and mask layers to the session folder (when there is one);
+        what was done, or ""."""
+        from . import sessionstore
+
+        if self.store_folder is None:
+            return ""
+        try:
+            return sessionstore.save(self, self.store_folder) or ""
+        except OSError as e:
+            return f"could not save the session to {self.store_folder}: {e}"
+
     def c_close(self, words, keys) -> Reply:
         if not words:
             raise CommandError(HELP["close"])
+        if words[0].upper() != "ALL":
+            image = self.buffer(words[0])
+        kept = self.keep_session()  # first: what is closed can be restored
+        kept = f"\n({kept}; session restore brings them back)" if kept else ""
         if words[0].upper() == "ALL":
             count = len(self.buffers)
             self.buffers.clear()
-            return Reply(f"closed {count} buffer{'s' if count != 1 else ''}", {"buffers"})
-        image = self.buffer(words[0])
+            return Reply(f"closed {count} buffer{'s' if count != 1 else ''}{kept}", {"buffers"})
         del self.buffers[integer(words[0], "the buffer")]
-        return Reply(f"closed {image.name}", {"buffers"})
+        return Reply(f"closed {image.name}{kept}", {"buffers"})
+
+    def c_session(self, words, keys) -> Reply:
+        """session [save|restore] [FOLDER]: the buffers and mask layers kept for next time."""
+        from . import sessionstore
+
+        action = words[0].lower() if words else ""
+        if action not in ("", "save", "restore"):
+            raise CommandError(HELP["session"])
+        folder = self.path(words[1]) if len(words) > 1 else self.store_folder
+        if folder is None:
+            if not action:
+                return Reply("no session folder (the window keeps one; or give FOLDER)")
+            raise CommandError(f"no session folder: give one (session {action} FOLDER)")
+        if action == "save":
+            try:
+                done = sessionstore.save(self, folder)
+            except OSError as e:
+                raise CommandError(f"cannot write {folder}: {e}")
+            return Reply(done or "nothing to save: no buffers and no mask layers")
+        if action == "restore":
+            if sessionstore.describe(folder) is None:
+                raise CommandError(f"no saved session in {folder}")
+            try:
+                text = sessionstore.restore(self, folder)
+            except (OSError, ValueError, KeyError) as e:
+                raise CommandError(f"cannot read the session in {folder}: {e}")
+            return Reply(text, {"buffers", "data", "masks"})
+        info = sessionstore.describe(folder)
+        if info is None:
+            return Reply(f"session folder {folder}: nothing saved yet")
+        return Reply(
+            f"session folder {folder}: {info['buffers']} buffers and {info['masks']} mask "
+            f"layers, saved {info['saved']}"
+        )
 
     def c_copy(self, words, keys) -> Reply:
         if len(words) < 2:
