@@ -5,6 +5,14 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **The companion's core, seen and chosen.** Pair fit ▸ 3. Fitting masks has *Companion's
+  core* in every mode: *Off* (nothing left out around the other galaxy's centre, the
+  automatic settings' choice), *Auto size, capped at* (CORECAP, or JOECOREMAX in Joe's
+  mode) or *Fixed radius* (the new CORERADIUS=). The cores the settings shown would leave
+  out are drawn on the image as you change them (dashed and filled, magenta; Layers: *Pair
+  fit: cores left out*), with the isophotes, and a note gives their size and what set it.
+  After a fit, the cores drawn are those the fit used (in Joe's mode the cores drawn were the
+  other method's).
 - **The pair fit's mean and spread: only the fits averaged.** A repeat (PARALLEL, RUNS) is
   left out of the mean, the spread and the per-fit buffers when it kept a model after a
   failed fit (and the fit kept did not), a galaxy was fitted short of 0.8 x its R1 in the fit kept, or its residual is

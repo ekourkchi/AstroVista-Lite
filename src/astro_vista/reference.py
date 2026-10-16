@@ -708,6 +708,11 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "A then B this many times (4); iterations in each call (10)",
                     ),
                     ("CORECAP=", "the largest core left out around the other galaxy (50 px)"),
+                    (
+                        "CORERADIUS=",
+                        "every core a circle of this radius (px), in every mode; CORES=0 "
+                        "(Joe's mode: JOECORE=0) leaves none out",
+                    ),
                     ("TOMODELA=, TOMODELB=, TOMODEL=, TORESID=", "the result buffers (free ones)"),
                     (
                         "TOSKY=",

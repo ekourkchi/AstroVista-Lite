@@ -2451,3 +2451,119 @@ def test_only_the_repeats_averaged_make_the_mean_and_the_spread():
     rows = [{"variant": f"fit {k}"} for k in range(4)]
     e = pair.ensemble(fits, rows, float("inf"), True)
     assert e["members"] == 3 and "left_out" not in rows[2]
+
+
+# ---------------------------------------------------------------- the companion's core
+def test_a_fixed_core_radius_and_the_cap_set_each_core():
+    image = np.ones((60, 120))
+    comps = {
+        "A": pair.Component("A", 30.5, 30.5, 1, 10, 4),
+        "B": pair.Component("B", 90.5, 30.5, 1, 10, 4),
+    }
+    s = pair.settings_from({"SKY": "0", "CORERADIUS": "8"})
+    snap = pair.prepare(image, "x", None, comps, s)
+    for cid in ("A", "B"):
+        core = snap.cores[cid]
+        assert core.shape == "circle" and core.a == pytest.approx(8.0)
+        assert "CORERADIUS=8" in core.reason
+    assert snap.cores["B"].masked[30, 90] and not snap.cores["B"].masked[30, 80]
+    # the cap, and a fixed radius in Joe's mode too
+    snap = pair.prepare(image, "x", None, comps, pair.settings_from({"SKY": "0", "CORECAP": "12"}))
+    assert snap.cores["A"].a == pytest.approx(12.0)
+    joe = pair.settings_from({"SKY": "0", "METHOD": "JOE", "CORERADIUS": "5"})
+    snap = pair.joe_snapshot(pair.prepare(image, "x", None, comps, joe))
+    assert snap.cores["A"].a == pytest.approx(5.0)
+    joe = pair.settings_from({"SKY": "0", "METHOD": "JOE", "JOECOREMAX": "9"})
+    assert pair.joe_snapshot(pair.prepare(image, "x", None, comps, joe)).cores["A"].a == 9
+    # a fixed radius never covers the other centre; CORES=0: none
+    s = pair.settings_from({"SKY": "0", "CORERADIUS": "200"})
+    snap = pair.prepare(image, "x", None, comps, s)
+    assert not snap.cores["A"].masked[30, 90] and "reduced" in snap.cores["A"].reason
+    snap = pair.prepare(image, "x", None, comps, pair.settings_from({"SKY": "0", "CORES": "0"}))
+    assert snap.cores["A"].shape == "none"
+    assert "nothing is left out" in pair.cores_note(snap.cores)
+    with pytest.raises(pair.PairError):
+        pair.settings_from({"SKY": "0", "CORERADIUS": "-1"})
+
+
+def test_the_panel_writes_the_companion_core_in_every_mode():
+    from PySide6 import QtWidgets
+
+    from astro_vista.pairpanel import ADJUSTABLE, AUTOMATIC, JOE, PairPanel
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    panel = PairPanel()
+    words = panel.command(1).split()
+    assert "CORES=0" in words  # automatic: no core
+    panel.set_core_rule("fixed")
+    panel.core_radius.setValue(7)
+    words = panel.command(1).split()
+    assert "CORERADIUS=7" in words and "CORES=0" not in words
+    panel.set_core_rule("auto")
+    panel.corecap.setValue(20)
+    words = panel.command(1).split()
+    assert "CORECAP=20" in words and "CORES=0" not in words
+    assert panel.corecap.isVisibleTo(panel) and not panel.core_radius.isVisibleTo(panel)
+    panel.set_mode(JOE)  # Joe's own core, with its cap
+    assert panel.core_rule.currentData() == "auto"
+    assert panel.joe_core_max.isVisibleTo(panel) and not panel.corecap.isVisibleTo(panel)
+    panel.joe_core_max.setValue(18)
+    words = panel.command(1).split()
+    assert "JOECOREMAX=18" in words and "CORES=0" not in words
+    panel.set_core_rule("off")
+    assert "JOECORE=0" in panel.command(1).split()
+    panel.set_mode(ADJUSTABLE)
+    assert "CORES=0" in panel.command(1).split()
+    panel.set_mode(AUTOMATIC)
+    app.processEvents()
+
+
+def test_the_session_tells_the_cores_without_fitting(tmp_path):
+    from astropy.io import fits
+
+    path = tmp_path / "two.fits"
+    fits.PrimaryHDU(np.ones((60, 120), np.float32)).writeto(path)
+    ses = Session()
+    ses.execute(f"rd 1 {path}")
+    cores = ses.pair_cores("1 SKY=0 CORERADIUS=6 A: X0=30.5 Y0=30.5 R1=AUTO B: X0=90.5 Y0=30.5")
+    assert cores["A"].a == pytest.approx(6.0) and cores["B"].x == pytest.approx(90.5)
+    cores = ses.pair_cores("1 SKY=0 METHOD=JOE A: X0=30.5 Y0=30.5 B: X0=90.5 Y0=30.5")
+    assert cores["A"].a == pytest.approx(12.0)  # 0.2 of 60 px
+    cores = ses.pair_cores("1 SKY=0 A: X0=30.5 Y0=30.5 CORE=4 B: X0=90.5 Y0=30.5")
+    assert cores["A"].a == pytest.approx(4.0) and cores["B"].a == pytest.approx(min(39, 50))
+
+
+def test_the_window_draws_the_cores_the_settings_would_leave_out():
+    from PySide6 import QtCore, QtWidgets
+
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    window.show()
+
+    def settle(seconds=60):
+        deadline = QtCore.QDeadlineTimer(int(seconds * 1000))
+        while window.busy() and not deadline.hasExpired():
+            app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        app.processEvents()
+
+    window.open_pair_example()
+    settle()
+    window.show_pair_tool()
+    panel = window.pair_panel
+    core = window.viewer.pair_items[("B", "core")]
+    window._overlays()
+    assert core.boundingRect().width() < 10  # automatic: no core
+    assert "No core" in panel.core_note.text()
+    panel.set_core_rule("fixed")
+    panel.core_radius.setValue(15)
+    app.processEvents()
+    box = core.boundingRect()
+    assert 28 < box.width() < 36  # a circle of 15 px around B
+    assert "radius 15.0 px" in panel.core_note.text()
+    window.layers.set_checked("paircores", False)  # hidden from the Layers
+    app.processEvents()
+    window._overlays()
+    assert core.boundingRect().width() < 10
+    window.close()

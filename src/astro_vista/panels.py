@@ -1780,6 +1780,7 @@ OVERLAYS = (
     ("centre", "ELLIPROF centre, R0 and R1", "#ff4d4d", True),
     ("pairA", "Pair fit: galaxy A (centre, guides, isophotes)", "#00e5ff", True),
     ("pairB", "Pair fit: galaxy B (centre, guides, isophotes)", "#ff9f1c", True),
+    ("paircores", "Pair fit: cores left out (around each centre)", "#ff4dd2", True),
     ("contours", "Contours", "#ffd84a", False),
     ("crosshair", "Crosshair", "#ff9f40", False),
 )

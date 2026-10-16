@@ -21,6 +21,7 @@ from . import guide
 from .fitting import MODES
 from .flow import FlowLayout
 from .pair import (
+    CORECAP,
     JOE_CORE,
     JOE_CORE_MAX,
     JOE_CORE_MIN,
@@ -32,7 +33,6 @@ from .pair import (
     PULL_RUN,
     SHAPE_TOL,
 )
-from .skysection import SkyHistogram, SkySection
 from .panels import (
     InputChoice,
     heading,
@@ -45,6 +45,7 @@ from .panels import (
     title_row,
     whole,
 )
+from .skysection import SkyHistogram, SkySection  # after panels, which it uses
 
 COLOURS = {"A": "#00e5ff", "B": "#ff9f1c"}  # cyan and orange (Layers: click to change)
 COS3X_SHOWN = [
@@ -611,6 +612,43 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         row.addWidget(self.objects_grow)
         row.addStretch(1)
         form.addRow(tip(_box(row), "pair_objects"))
+        # the core: the region around the companion's centre left out of each galaxy's fit
+        self.core_rule = QtWidgets.QComboBox()
+        for label, key in (
+            ("Off", "off"),
+            ("Auto size, capped at", "auto"),
+            ("Fixed radius", "fixed"),
+        ):
+            self.core_rule.addItem(label, key)
+        self.core_rule.setToolTip(
+            "The core: while A is fitted, the pixels around B's centre are left out (and "
+            "around A's while B is fitted), where the subtracted model of the other is least "
+            "certain.\nOff (CORES=0): nothing is left out; the other's model is subtracted "
+            "(the automatic settings: best on simulated pairs).\nAuto: Joe's mode: a circle "
+            "of a share of the separation (below), at most the cap (JOECOREMAX); the other "
+            "modes: an ellipse shaped as the galaxy's source, its Kron radius, at most 0.65 x "
+            "the distance and the cap (CORECAP).\nFixed radius (CORERADIUS): a circle of this "
+            "radius around each centre.\nNever over the fitted galaxy's own centre pixel."
+        )
+        self.corecap = number(0, 1e4, CORECAP, decimals=1, tip="CORECAP: the largest core, px")
+        self.joe_core_max = number(0.0, 500.0, JOE_CORE_MAX, decimals=1, step=5)
+        self.joe_core_max.setToolTip("JOECOREMAX: the largest core in Joe's mode, px")
+        self.core_radius = number(0, 1e4, 10, decimals=1, tip="CORERADIUS: the core's radius, px")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.core_rule)
+        for b in (self.corecap, self.joe_core_max, self.core_radius):
+            b.setSuffix(" px")
+            row.addWidget(b)
+            b.valueChanged.connect(lambda _v: self.changed.emit())
+        row.addStretch(1)
+        form.addRow("Companion's core", tip(_box(row), "pair_cores"))
+        self.core_note = note()
+        self.core_note.setToolTip(
+            "Drawn on the image (dashed, filled): Layers, 'Pair fit: cores left out'"
+        )
+        form.addRow(self.core_note)
+        self.core_rule.currentIndexChanged.connect(self._core_fields)
+        self.core_rule.currentIndexChanged.connect(lambda _i: self.changed.emit())
 
         # ---- the fit
         form.addRow(heading("4. Fitting"))
@@ -784,9 +822,6 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         )
         manual(tip(self.search, "pair_search"))
         manual("NITER (each call)", tip(self.niter, "niter"))
-        self.masking = QtWidgets.QCheckBox("Also mask a core around the companion (older method)")
-        self.masking.setToolTip("CORES: by default nothing is masked around the companion")
-        manual(self.masking)
         self.calls = note()
         manual(self.calls)
         self.cycles.valueChanged.connect(self._summary_line)
@@ -800,7 +835,6 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         self.rlaw.addItems(["0: linear", "1: logarithmic", "2: r^¼ (default)"])
         self.rlaw.setCurrentIndex(2)
         self.gain = number(0.01, 10, 1.0, decimals=2, step=0.1, tip="GAIN: 1 by default")
-        self.corecap = number(0, 1e4, 50, decimals=1, tip="the largest core, pixels")
         self.timeout = number(1, 36000, 300, decimals=0, tip="seconds per elliprof call")
         self.bootstrap = QtWidgets.QCheckBox("Partial bootstrap start if a first fit fails")
         self.bootstrap.setChecked(True)
@@ -809,7 +843,6 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         for label, w in (
             ("RLAW", self.rlaw),
             ("GAIN", self.gain),
-            ("Core cap (px)", self.corecap),
             ("Timeout (s)", self.timeout),
             ("", self.bootstrap),
             ("", self.views),
@@ -940,25 +973,20 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         f.addRow("R1 tried each cycle", self.joe_grow)
         self.joe_core = number(0.0, 1.0, JOE_CORE, decimals=2, step=0.05)
         self.joe_core_min = number(0.0, 200.0, JOE_CORE_MIN, decimals=1, step=1)
-        self.joe_core_max = number(0.0, 500.0, JOE_CORE_MAX, decimals=1, step=5)
         for b, key in (
             (self.joe_core, "JOECORE: a share of the distance between the centres (0: none)"),
             (self.joe_core_min, "JOECOREMIN: at least this many pixels"),
-            (self.joe_core_max, "JOECOREMAX: at most this many pixels"),
         ):
             b.setToolTip(key)
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.joe_core)
-        row.addWidget(QtWidgets.QLabel("of the separation"))
-        row.addStretch(1)
-        f.addRow("Centre left out", row)
-        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("of the separation, at least"))
         row.addWidget(self.joe_core_min)
-        row.addWidget(QtWidgets.QLabel("to"))
-        row.addWidget(self.joe_core_max)
         row.addWidget(QtWidgets.QLabel("px"))
         row.addStretch(1)
-        f.addRow("… within", row)
+        f.addRow("Core (Auto)", row)
+        for b in (self.joe_core, self.joe_core_min):
+            b.valueChanged.connect(lambda _v: self.changed.emit())
         self.pull_px = number(0.05, 50.0, PULL_PX, decimals=2, step=0.1)
         self.pull_frac = number(0.0, 50.0, 100 * PULL_FRAC, decimals=1, step=0.5)
         self.pull_frac.setSuffix(" %")
@@ -1050,6 +1078,7 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         self.joe_core.setValue(JOE_CORE)
         self.joe_core_min.setValue(JOE_CORE_MIN)
         self.joe_core_max.setValue(JOE_CORE_MAX)
+        self.set_core_rule("auto")
         self.pull_px.setValue(PULL_PX)
         self.pull_frac.setValue(100 * PULL_FRAC)
         self.pull_run.setValue(PULL_RUN)
@@ -1078,9 +1107,7 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             out.append(f"FIRST={self.joe_first.currentData().upper()}")
         for key, box, default, scale in (
             ("JOEGROW", self.joe_grow, JOE_GROW, 1),
-            ("JOECORE", self.joe_core, JOE_CORE, 1),
             ("JOECOREMIN", self.joe_core_min, JOE_CORE_MIN, 1),
-            ("JOECOREMAX", self.joe_core_max, JOE_CORE_MAX, 1),
             ("PULLPX", self.pull_px, PULL_PX, 1),
             ("PULLFRAC", self.pull_frac, PULL_FRAC, 100),
             ("PULLR0", self.pull_r0, PULL_R0, 1),
@@ -1146,6 +1173,9 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         self.auto_note.setVisible(index == AUTOMATIC)
         self.joe_note.setVisible(index == JOE)
         self.joe_box.setVisible(index == JOE)
+        # each mode's own core (Joe's mode: a circle around each centre; the others: none)
+        self.set_core_rule("auto" if index == JOE else "off")
+        self._core_fields()
         if index == ADJUSTABLE:
             self.recommended()
         elif index == MANUAL:
@@ -1170,7 +1200,8 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         self.tail.setCurrentIndex(self.tail.findData("measured"))
         self.sky_plane.setChecked(True)
         self.sky_iter.setValue(3)
-        self.masking.setChecked(False)
+        self.set_core_rule("off")
+        self.corecap.setValue(CORECAP)
         for card in self.cards.values():
             card.r0.setValue(3)
             card.fixctr.setCurrentIndex(1)
@@ -1188,6 +1219,39 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             if on:
                 card.r1_auto.setChecked(True)
         self._summary_line()
+
+    def set_core_rule(self, key: str) -> None:
+        self.core_rule.setCurrentIndex(self.core_rule.findData(key))
+
+    def _core_fields(self, *_args) -> None:
+        """The core's number: the cap (Joe's or the others'), or the fixed radius."""
+        rule, joe = self.core_rule.currentData(), self.mode.currentIndex() == JOE
+        self.corecap.setVisible(rule == "auto" and not joe)
+        self.joe_core_max.setVisible(rule == "auto" and joe)
+        self.core_radius.setVisible(rule == "fixed")
+
+    def core_keywords(self) -> List[str]:
+        """CORES=0, CORERADIUS=, or the cap of the automatic core (when not the default)."""
+        rule = self.core_rule.currentData()
+        if rule == "off":
+            return ["JOECORE=0"] if self.mode.currentIndex() == JOE else ["CORES=0"]
+        if rule == "fixed":
+            return [f"CORERADIUS={self.core_radius.value():g}"]
+        if self.mode.currentIndex() == JOE:
+            out = []
+            for key, box, default in (
+                ("JOECORE", self.joe_core, JOE_CORE),
+                ("JOECOREMAX", self.joe_core_max, JOE_CORE_MAX),
+            ):
+                if abs(box.value() - default) > 1e-9:
+                    out.append(f"{key}={box.value():g}")
+            return out
+        v = self.corecap.value()
+        return [f"CORECAP={v:g}"] if abs(v - CORECAP) > 1e-9 else []
+
+    def set_core_note(self, text: str) -> None:
+        self.core_note.setText(text)
+        self.core_note.setVisible(bool(text))
 
     def run_keywords(self) -> List[str]:
         """PARALLEL (the fits averaged), JITTER, HARMONICS and WINGS: shown in every mode."""
@@ -1211,7 +1275,12 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         if layers:
             parts.append("MASK=" + ",".join(layers))
         # the sky iterations need a measured sky (its support); a typed sky goes as typed
-        parts += [p for p in AUTO_RUN if self.sky_id or not p.startswith("SKYITER")]
+        parts += [
+            p
+            for p in AUTO_RUN
+            if (self.sky_id or not p.startswith("SKYITER")) and p != "CORES=0"
+        ]
+        parts += self.core_keywords()
         parts += self.run_keywords()
         if not self.pull_check.isChecked():
             parts.append("PULLCHECK=0")
@@ -1231,6 +1300,7 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         if layers:
             parts.append("MASK=" + ",".join(layers))
         parts += self.joe_keywords()
+        parts += self.core_keywords()
         if not self.pull_check.isChecked():
             parts.append("PULLCHECK=0")
         parts += residual_keywords(self.resid_rounds, self.resid_thresh)
@@ -1253,8 +1323,7 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         layers = self.ticked_layers()
         if layers:
             parts.append("MASK=" + ",".join(layers))
-        if not self.masking.isChecked():
-            parts.append("CORES=0")
+        parts += self.core_keywords()
         parts.append(f"CYCLES={self.cycles.value()}")
         if self.consecutive.value():
             parts.append(f"CONVERGE={self.converge.value() / 100:g}")
@@ -1288,8 +1357,6 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             parts.append("SKYPLANE=1")
         if self.polish.value() != 2:
             parts.append(f"POLISH={self.polish.value()}")
-        if self.corecap.value() != 50:
-            parts.append(f"CORECAP={self.corecap.value():g}")
         if self.timeout.value() != 300:
             parts.append(f"TIMEOUT={self.timeout.value():g}")
         if not self.bootstrap.isChecked():

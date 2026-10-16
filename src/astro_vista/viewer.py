@@ -62,16 +62,26 @@ def remove(item) -> None:
         item.scene().removeItem(item)
 
 
+CORE_COLOUR = "#ff4dd2"  # the pair fit's cores (magenta): a region left out, not a fit
+
+
 class Ellipses(pg.GraphicsObject):
     """Many ellipses (or any path) drawn as one path, with a pen of constant screen width."""
 
-    def __init__(self, colour: str, width: float = 1.3, style=Qt.SolidLine):
+    def __init__(self, colour: str, width: float = 1.3, style=Qt.SolidLine, fill: int = 0):
         super().__init__()
         self._pen = cosmetic_pen(colour, width, style)
+        self._fill = fill  # the opacity (0 to 255) of a fill in the same colour; 0: none
+        self._brush = QtGui.QBrush(Qt.NoBrush)
         self._path = QtGui.QPainterPath()
+        self.set_colour(colour)
 
     def set_colour(self, colour: str) -> None:
         self._pen.setColor(QtGui.QColor(colour))
+        if self._fill:
+            c = QtGui.QColor(colour)
+            c.setAlpha(self._fill)
+            self._brush = QtGui.QBrush(c)
         self.update()
 
     def set_ellipses(self, ellipses: Sequence) -> None:
@@ -95,6 +105,7 @@ class Ellipses(pg.GraphicsObject):
 
     def paint(self, painter, *_args):
         painter.setPen(self._pen)
+        painter.setBrush(self._brush)
         painter.drawPath(self._path)
 
 
@@ -275,7 +286,6 @@ class Viewer(QtWidgets.QWidget):
         for cid, colour in (("A", "#00e5ff"), ("B", "#ff9f1c")):
             for kind, width, style, z in (
                 ("guide", 1.2, Qt.DashLine, 38),
-                ("core", 1.2, Qt.DotLine, 38),
                 ("fit", 1.2, Qt.SolidLine, 37),
                 ("failed", 1.6, Qt.SolidLine, 37),
                 ("track", 1.6, Qt.SolidLine, 39),
@@ -284,6 +294,11 @@ class Viewer(QtWidgets.QWidget):
                 item.setZValue(z)
                 item.setParentItem(self.group)
                 self.pair_items[(cid, kind)] = item
+            # the core centred on this galaxy, left out while the other is fitted: a mask
+            core = Ellipses(CORE_COLOUR, 1.4, Qt.DashLine, fill=60)
+            core.setZValue(36)
+            core.setParentItem(self.group)
+            self.pair_items[(cid, "core")] = core
             mark = pg.ScatterPlotItem(
                 size=11, symbol="+", pen=pg.mkPen(colour, width=1.8), brush=None
             )
@@ -844,10 +859,13 @@ class Viewer(QtWidgets.QWidget):
             self.sources.set_colour(colour)
         elif key == "srccentres":
             self.source_centres.setPen(pg.mkPen(colour, width=1))
+        elif key == "paircores":
+            for cid in ("A", "B"):
+                self.pair_items[(cid, "core")].set_colour(colour)
         elif key in ("pairA", "pairB"):
             cid = key[-1]
             for (c, kind), item in self.pair_items.items():
-                if c != cid or kind == "failed":
+                if c != cid or kind in ("failed", "core"):
                     continue
                 if kind == "centre":
                     item.setPen(pg.mkPen(colour, width=1.8))

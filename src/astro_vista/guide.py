@@ -1007,8 +1007,21 @@ TIPS = {
     "pair_core": "<b>The core of this galaxy</b> is left out while the <i>other</i> galaxy is "
     "fitted, where this galaxy's model is least reliable. <i>Auto</i>: an ellipse of the "
     "source found here (its Kron ellipse, at most 0.65 of the distance to the other centre "
-    "and 50 pixels), or a circle when no source matches. It never covers the other centre, "
-    "and it is fixed for the whole run.",
+    "and the cap), or a circle when no source matches. <i>This radius</i> sets it by hand "
+    "(CORE=), over the Companion's core setting. It never covers the other centre, and it "
+    "is fixed for the whole run.",
+    "pair_cores": "<b>The companion's core</b>: while A is fitted, the pixels around B's "
+    "centre can be left out (and around A's while B is fitted), where the subtracted model "
+    "of the other galaxy is least certain. <i>Off</i> (CORES=0): nothing is left out, only "
+    "the other's model is subtracted; this is the automatic settings' choice, the best on "
+    "simulated pairs. <i>Auto size</i>: in Joe's mode a circle of a share of the separation "
+    "(JOECORE, at least JOECOREMIN), at most the cap (JOECOREMAX, 30 px); in the other modes "
+    "an ellipse shaped as the galaxy's source (its Kron radius), at most 0.65 of the "
+    "distance and the cap (CORECAP, 50 px), or a circle with no clean source. <i>Fixed "
+    "radius</i> (CORERADIUS): a circle of the radius typed around each centre. A core never "
+    "covers the fitted galaxy's own centre pixel, and it stays the same for the whole run. "
+    "The cores are drawn on the image as they would be for the settings shown (dashed and "
+    "filled; Layers: <i>Pair fit: cores left out</i>), with the isophotes.",
     "pair_adaptive": "<b>Adaptive outer radius</b>: when the outer ellipses fail their checks "
     "(crossing, a jump, an impossible value) beyond 0.65 R1, the galaxy is fitted again to a "
     "smaller R1 (at most 3 times, never below half the R1 asked for). The radius asked for, "

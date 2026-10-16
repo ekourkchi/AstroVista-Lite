@@ -178,6 +178,7 @@ class Settings:
     sky_iter: int = 0  # SKYITER=: refit with the factor updated from the residual sky
     steps: int = 0  # STEPS=: growth steps from each galaxy's START to its R1
     cores: bool = True  # CORES=0: nothing is left out around the companion
+    core_radius: Optional[float] = None  # CORERADIUS=: every core a circle of this radius (px)
     converge: float = STABILITY  # CONVERGE=: the relative change below which it is stable
     consecutive: int = 0  # CONSECUTIVE=: stop after this many stable cycles at the targets
     on_fail: str = "reduce"  # ONFAIL=reduce|hold|retry|stop
@@ -443,6 +444,7 @@ SHARED = {
     "TIE",
     "RMSTAR",
     "CORECAP",
+    "CORERADIUS",
     "STOP",
     "TIMEOUT",
     "TOMODEL",
@@ -762,6 +764,7 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         tie=_num(shared, "TIE", "", -1, int),
         rmstar="RMSTAR" in shared,
         corecap=_num(shared, "CORECAP", "", CORECAP),
+        core_radius=_num(shared, "CORERADIUS", "", None) if "CORERADIUS" in shared else None,
         early_stop="STOP" in shared,
         timeout=_num(shared, "TIMEOUT", "", 300.0),
         bootstrap=_num(shared, "BOOTSTRAP", "", 1, int) != 0,
@@ -794,6 +797,11 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         (s.joe_first in JOE_FIRST, "FIRST must be SMALLER (the smaller R1), A or B"),
         (1.02 <= s.joe_grow <= 3, "JOEGROW must be 1.02 to 3 (the R1 tried each cycle, x)"),
         (0 <= s.joe_core <= 1, "JOECORE must be 0 to 1 (a share of the separation; 0: none)"),
+        (s.corecap >= 0, "CORECAP must be 0 or more (pixels)"),
+        (
+            s.core_radius is None or 0 <= s.core_radius <= 1e4,
+            "CORERADIUS must be 0 to 10000 (pixels; 0: no core)",
+        ),
         (
             0 <= s.joe_core_min <= s.joe_core_max,
             "JOECOREMIN and JOECOREMAX: 0 <= min <= max (pixels)",
@@ -894,6 +902,16 @@ def match_source(run, comp: Component) -> Match:
     )
 
 
+def match_pair(run, galaxies) -> Tuple[Dict[str, Match], str]:
+    """Each galaxy's source (match_source), and a note when one source covers both centres
+    (a blend: then neither has a match)."""
+    matches = {cid: match_source(run, c) for cid, c in galaxies.items()}
+    if matches["A"].ok and matches["B"].ok and matches["A"].number == matches["B"].number:
+        note = f"one source covers both centres (blend): source {matches['A'].number}"
+        return {cid: Match(False, note) for cid in matches}, note
+    return matches, ""
+
+
 def _elliptical_distance(dx, dy, q, theta):
     t = math.radians(theta)
     u = dx * math.cos(t) + dy * math.sin(t)
@@ -927,7 +945,12 @@ def make_core(
             a = min(owner.core, 0.65 * d)
             reason = f"circle, CORE={owner.core:g} (at most 0.65 x {d:.1f})"
         q, angle, kind = 1.0, 0.0, "circle"
-    # the core must not newly cover the target's centre pixel when that pixel is usable
+    return _finish_core(owner, target, a, q, angle, kind, reason, shape, fit_mask, invalid)
+
+
+def _finish_core(owner, target, a, q, angle, kind, reason, shape, fit_mask, invalid) -> Core:
+    """The core of semi-major axis ``a``, made smaller when it would newly cover the
+    target's centre pixel (when that pixel is usable)."""
     ny, nx = shape
     i, j = int(math.floor(target.x0)), int(math.floor(target.y0))
     if 0 <= i < nx and 0 <= j < ny and not fit_mask[j, i] and not invalid[j, i]:
@@ -942,6 +965,95 @@ def make_core(
     else:
         maskops.ellipse(masked, owner.x0, owner.y0, a, a * q, angle, True)
     return Core(owner.id, kind, owner.x0, owner.y0, a, a * q, angle, reason, masked)
+
+
+@dataclass
+class Spot:
+    """What a core needs of a galaxy: its name, centre and CORE= (a Component will do)."""
+
+    id: str
+    x0: float
+    y0: float
+    core: Optional[float] = None
+
+
+def _no_core(owner, reason: str, shape) -> Core:
+    return Core(owner.id, "none", owner.x0, owner.y0, 0.0, 0.0, 0.0, reason, np.zeros(shape, bool))
+
+
+def companion_cores(
+    galaxies, settings: Settings, matches: Dict[str, Match], shape, fit_mask, invalid
+) -> Dict[str, Core]:
+    """The core centred on each galaxy (keyed by it), left out while the other is fitted.
+
+    CORES=0: none (Joe's mode: JOECORE=0).  CORERADIUS=r: a circle of radius r (smaller when it would cover the
+    other's centre pixel).  Otherwise Joe's mode: a circle of JOECORE x the separation,
+    JOECOREMIN to JOECOREMAX px; the other methods: an ellipse shaped as the galaxy's source,
+    min(Kron, 0.65 x the distance, CORECAP), or a circle of min(0.65 x the distance,
+    CORECAP) with no clean source match (make_core).  A galaxy's CORE= sets its own core
+    in the other methods."""
+    a, b = galaxies["A"], galaxies["B"]
+    cores = {}
+    for owner, target in ((a, b), (b, a)):
+        joe = settings.method == "joe"
+        if not settings.cores and not joe:  # not masked: the companion's model is subtracted
+            cores[owner.id] = _no_core(owner, "CORES=0: no core", shape)
+        elif joe and settings.core_radius is None:
+            cores[owner.id] = joe_core(owner, target, settings, shape, invalid)
+        elif owner.core is not None and not joe:
+            cores[owner.id] = make_core(
+                owner, target, matches[owner.id], shape, fit_mask, invalid, settings.corecap
+            )
+        elif settings.core_radius is not None:
+            r = settings.core_radius
+            cores[owner.id] = _finish_core(
+                owner, target, r, 1.0, 0.0, "circle", f"circle, CORERADIUS={r:g}",
+                shape, fit_mask, invalid,
+            )
+        else:
+            cores[owner.id] = make_core(
+                owner, target, matches[owner.id], shape, fit_mask, invalid, settings.corecap
+            )
+    return cores
+
+
+def cores_note(cores: Optional[Dict[str, Core]]) -> str:
+    """What the cores leave out, in a line or two ("" when unknown)."""
+    if not cores:
+        return ""
+    if all(c.shape == "none" for c in cores.values()):
+        return "No core: nothing is left out around either centre; the other's model is subtracted."
+    lines = []
+    for owner in ("A", "B"):
+        c = cores.get(owner)
+        if c is None:
+            continue
+        other = "B" if owner == "A" else "A"
+        if c.shape == "none":
+            size = "nothing"
+        elif c.shape == "circle":
+            size = f"a circle of radius {c.a:.1f} px"
+        else:
+            size = f"an ellipse {c.a:.1f} x {c.b:.1f} px"
+        lines.append(f"Around {owner} (left out fitting {other}): {size}. {c.reason}")
+    return "\n".join(lines)
+
+
+def joe_core(owner, target, s: Settings, shape, invalid) -> Core:
+    """Joe's core centred on ``owner``: a circle of JOECORE x the separation, JOECOREMIN to
+    JOECOREMAX px (JOECORE=0: none)."""
+    sep = math.hypot(owner.x0 - target.x0, owner.y0 - target.y0)
+    radius = min(max(s.joe_core * sep, s.joe_core_min), s.joe_core_max) if s.joe_core > 0 else 0.0
+    reason = (
+        f"Joe's mode: {s.joe_core:g} of the separation ({sep:.1f} px), "
+        f"{s.joe_core_min:g} to {s.joe_core_max:g} px"
+    )
+    if radius <= 0:
+        return _no_core(owner, reason + "; no core", shape)
+    ny, nx = shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    masked = (np.hypot(xx + 0.5 - owner.x0, yy + 0.5 - owner.y0) <= radius) & ~invalid
+    return Core(owner.id, "circle", owner.x0, owner.y0, radius, radius, 0.0, reason, masked)
 
 
 def make_block(
@@ -1009,23 +1121,10 @@ def prepare(
         if not (0 <= c.x0 < nx and 0 <= c.y0 < ny):
             raise PairError(f"{c.id}'s centre {c.x0:g}, {c.y0:g} is outside the image")
     notes = []
-    matches = {cid: match_source(run, c) for cid, c in components.items()}
-    if matches["A"].ok and matches["B"].ok and matches["A"].number == matches["B"].number:
-        note = f"one source covers both centres (blend): source {matches['A'].number}"
-        matches = {cid: Match(False, note) for cid in matches}
-        notes.append(note)
-    if settings.cores:
-        cores = {
-            "A": make_core(a, b, matches["A"], shape, m0, invalid, settings.corecap),
-            "B": make_core(b, a, matches["B"], shape, m0, invalid, settings.corecap),
-        }
-    else:  # the companion is not masked: its current model is subtracted instead
-        cores = {
-            c.id: Core(
-                c.id, "none", c.x0, c.y0, 0.0, 0.0, 0.0, "CORES=0: no core", np.zeros(shape, bool)
-            )
-            for c in (a, b)
-        }
+    matches, blend = match_pair(run, components)
+    if blend:
+        notes.append(blend)
+    cores = companion_cores(components, settings, matches, shape, m0, invalid)
     blocks = {}
     for owner, target in ((a, b), (b, a)):
         block = make_block(owner, target, matches[owner.id], shape, m0, invalid)
@@ -2381,28 +2480,11 @@ def model_anomaly(model, profile, light, usable) -> Optional[str]:
 
 
 def joe_snapshot(snap: Snapshot) -> Snapshot:
-    """The snapshot with Joe's cores: a circle around each centre."""
-    a, b = snap.components["A"], snap.components["B"]
-    sep = math.hypot(a.x0 - b.x0, a.y0 - b.y0)
-    s = snap.settings
-    radius = min(max(s.joe_core * sep, s.joe_core_min), s.joe_core_max) if s.joe_core > 0 else 0.0
-    ny, nx = snap.image.shape
-    yy, xx = np.mgrid[0:ny, 0:nx]
-    cores = {}
-    for c in (a, b):
-        masked = np.hypot(xx + 0.5 - c.x0, yy + 0.5 - c.y0) <= radius
-        cores[c.id] = Core(
-            c.id,
-            "circle" if radius > 0 else "none",
-            c.x0,
-            c.y0,
-            radius,
-            radius,
-            0.0,
-            f"Joe's mode: {s.joe_core:g} of the separation ({sep:.1f} px), "
-            f"{s.joe_core_min:g} to {s.joe_core_max:g} px",
-            (masked if radius > 0 else np.zeros_like(masked)) & ~snap.invalid,
-        )
+    """The snapshot with Joe's cores (companion_cores, for METHOD=JOE)."""
+    s = replace(snap.settings, method="joe")
+    cores = companion_cores(
+        snap.components, s, snap.matches, snap.image.shape, snap.fit_mask, snap.invalid
+    )
     return replace(snap, cores=cores)
 
 

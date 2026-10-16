@@ -90,7 +90,7 @@ HELP = {
     "buffers; AVERAGE= the mean of the models listed: mean model, residual = image - mean "
     "sky - mean model, and its residual; TOSKY=1 adds each one's sky (with its tilt, if any)",
     "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [STEPS=0] [MASK=a,b] [CYCLES=4] "
-    "[NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M] [TOSKY=M]  A: X0= "
+    "[NITER=10] [CORECAP=50] [CORERADIUS=] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M] [TOSKY=M]  A: X0= "
     "Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
     "[FIXCTR=0] [CORE=] [ADAPTIVE] [START=] [BLOCK=]  B: X0= Y0= R0= R1= ...  -  fit two overlapping galaxies: "
     "ELLIPROF on A and on B in turn, each with the other's model taken out (help pair)",
@@ -1443,6 +1443,46 @@ class Session(ImageCommands):
         return reply
 
     # ---- pairs of galaxies
+    def _finder_run(self, image):
+        """The last source-finder run on this image with its segmentation (or None)."""
+        return next(
+            (
+                r
+                for r in reversed(self.runs)
+                if r.image_key == image.key
+                and r.segmentation is not None
+                and r.segmentation.shape == image.shape
+            ),
+            None,
+        )
+
+    def pair_cores(self, text: str) -> Dict[str, "pairs.Core"]:
+        """The cores a pair command would leave out (without fitting): what the window
+        draws while the settings are changed.  Raises CommandError when it cannot tell."""
+        try:
+            words, shared, own = pairs.parse(text)
+            shared = self._with_variables("pair", shared)
+            own = {c: self._with_variables("pair", k) for c, k in own.items()}
+            settings = pairs.settings_from(shared)
+            spots = {}
+            for cid in ("A", "B"):
+                k = own.get(cid, {})
+                core = pairs._num(k, "CORE", "", None) if "CORE" in k else None
+                spots[cid] = pairs.Spot(
+                    cid, pairs._num(k, "X0", f" ({cid})"), pairs._num(k, "Y0", f" ({cid})"), core
+                )
+        except pairs.PairError as e:
+            raise CommandError(str(e))
+        if len(words) != 1:
+            raise CommandError("give one buffer: pair N ...")
+        image = self.buffer(integer(words[0], "the buffer"))
+        masked = maskops.union(self.mask_list(shared.get("MASK"), image.shape, fitting=True))
+        invalid = ~np.isfinite(image.data)
+        m0 = invalid if masked is None else (invalid | masked)
+        run = self._finder_run(image)
+        matches, _blend = pairs.match_pair(run, spots)
+        return pairs.companion_cores(spots, settings, matches, image.shape, m0, invalid)
+
     def pair_prepare(self, text: str) -> "PairJob":
         """Read a pair command and fix everything its run uses (in the window's thread)."""
         try:
@@ -1515,16 +1555,7 @@ class Session(ImageCommands):
                     m = self.free_buffer(m)
                 outputs[key] = m
                 taken.add(m)
-        run = next(
-            (
-                r
-                for r in reversed(self.runs)
-                if r.image_key == image.key
-                and r.segmentation is not None
-                and r.segmentation.shape == image.shape
-            ),
-            None,
-        )
+        run = self._finder_run(image)
         sky_id, sigma = "", None
         candidate = self.skies.get(self.sky_of.get(image.key, ""))
         if candidate is not None and self.sky_stale(candidate.id, image) is not None:
@@ -2341,7 +2372,7 @@ KEYWORDS = {
     "TORESID= TOSKY= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE= RESIDMASK= RESIDTHRESH= "
     "RESIDGROW= RESIDCORE= START= FACTOR= SKYITER= SKYPLANE= SKYFACTOR= TRYFIX= TRYFACTOR= "
     "TRYCOS3X= TRYCOS4X= HARMONICS= PARALLEL= RUNS= JITTER= SEED= TAIL= SHAPETOL= SEARCH=",
-    "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= TOSKY= "
+    "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= CORERADIUS= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= TOSKY= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
     "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X= RUNS= JITTER= SEED= "
@@ -2556,6 +2587,7 @@ Shared (before A:)
   CYCLES=4      A then B, this many times after the initialisation (2 + 2 x CYCLES calls)
   NITER=10      iterations inside each elliprof call
   CORECAP=50    the largest core (pixels) left out around the other galaxy
+  CORERADIUS=r  every core a circle of r pixels (never over the fitted galaxy's centre)
   RLAW= GAIN= TIE= RMSTAR TIMEOUT=300   passed to every call
   TAIL=elliprof the model beyond each galaxy's last isophote, which is subtracted from the
                 other's image: elliprof (its r^1/4 extrapolation), sersic (a Sersic law

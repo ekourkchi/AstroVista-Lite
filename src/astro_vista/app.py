@@ -2003,11 +2003,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.side.currentWidget() is self.tools and self.tools.currentWidget().widget() is p
         )
         shown = self.layers.checked
+        # the cores: those the tool's settings would leave out (while the tool is shown),
+        # else those the last fit left out
+        cores = self._pair_preview_cores() if shown_tool else None
+        if cores is None and record is not None:
+            cores = record.result.snapshot.cores if record.result.snapshot else record.job.snap.cores
         for cid, card in p.cards.items():
             d = {}
             if not card.visible.isChecked() or not shown(f"pair{cid}"):
                 out[cid] = d
                 continue
+            core = (cores or {}).get(cid)
+            if core is not None and core.shape != "none" and shown("paircores"):
+                d["core"] = [(core.x, core.y, core.a, core.b, core.angle)]
             x, y = card.centre()
             if (x or y) and (shown_tool or record is None):
                 d["centre"] = (x, y)
@@ -2019,9 +2027,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 d["track"] = [(e[0], e[1]) for e in live]
             elif record is not None:
                 snap, result = record.job.snap, record.result
-                core = snap.cores.get(cid)
-                if core is not None and core.shape != "none" and shown_tool:
-                    d["core"] = [(core.x, core.y, core.a, core.b, core.angle)]
                 commit = result.commits.get(cid)
                 if commit is not None and shown("isophotes"):
                     d["fit"] = commit.ellipses
@@ -2030,6 +2035,31 @@ class MainWindow(QtWidgets.QMainWindow):
                         d["centre"] = (snap.components[cid].x0, snap.components[cid].y0)
             out[cid] = d
         return out
+
+    def _pair_preview_cores(self) -> Optional[dict]:
+        """The cores the pair tool's settings would leave out, on the image shown (None
+        when there is nothing to tell: no image, no centres, or a setting it cannot read);
+        the tool's note says what they are."""
+        p = self.pair_panel
+        image = self.viewer.image
+        n = self._tool_number(p.input, say=False)
+        cards = [card.centre() for card in p.cards.values()]
+        if n is None or image is None or not all(x or y for x, y in cards):
+            p.set_core_note("")
+            return None
+        if self.session.buffers[n].shape != image.shape:
+            return None
+        line = p.command(n)
+        layers = tuple((m.name, int(m.masked.sum())) for m in self.session.masks.values())
+        key = (line, n, self.session.buffers[n].key, layers)
+        if key != getattr(self, "_core_key", None):
+            self._core_key = key
+            try:
+                self._core_cache = self.session.pair_cores(line.split(None, 1)[1])
+            except CommandError:
+                self._core_cache = None
+            p.set_core_note(pairs.cores_note(self._core_cache))
+        return self._core_cache
 
     def export_pair(self) -> None:
         n = self._tool_number(self.pair_panel.input)
