@@ -2141,6 +2141,17 @@ def test_the_elliprof_panel_writes_the_iterative_fit():
         assert w in words, w
     assert not any(w.startswith(("START", "FACTOR", "TRYFACTOR")) for w in words)
     assert "SKYITER=3" not in p.command(1, 3, 4, measured_sky=False).split()
+    # Fits to average and the harmonics: shown in Automatic (as in the pair fit) and followed
+    assert p.parallel_row.isVisibleTo(p) and p.all_harmonics.isVisibleTo(p)
+    assert "HARMONICS=AUTO" in words
+    p.all_harmonics.setChecked(False)
+    p.parallel.setValue(3)
+    p.jitter.setValue(20)
+    words = p.command(1, 3, 4).split()
+    assert "HARMONICS=AUTO" not in words and {"PARALLEL=3", "JITTER=0.2"} <= set(words)
+    p.all_harmonics.setChecked(True)
+    p.fit_mode.setCurrentIndex(0)
+    assert not p.parallel_row.isVisibleTo(p)
     p.fit_mode.setCurrentIndex(2)  # Iterative, my settings
     assert p.iterative.isVisibleTo(p)
     p.cos4x.setCurrentIndex(p.cos4x.findData(1))
@@ -2293,6 +2304,15 @@ def test_the_elliprof_panel_has_the_sky_analyser():
     e.sky_segment_requested.emit()
     settle()
     assert "median" in e.sky_card.text() and e.use_sky_button.isEnabled()
+    # the measurement is the sky at once, in both panels (no Use this sky)
+    level = window.session.skies[e.sky_id].level
+    assert e.use_sky.isChecked() and e.sky.value() == pytest.approx(level, abs=1e-3)
+    p = window.pair_panel
+    assert p.sky_id == e.sky_id and p.sky.value() == pytest.approx(level, abs=1e-3)
+    # a value typed afterwards stays through a refresh; Use this sky takes the measurement back
+    e.set_sky_value(5.0, "typed")
+    window._refresh_elliprof_sky()
+    assert e.sky.value() == 5.0
     e.use_sky_button.click()
     assert e.use_sky.isChecked() and e.sky.value() > 900
     e.set_values({"x0": 294.3, "y0": 263.8, "r0": 3, "r1": 100, "nr": 15})

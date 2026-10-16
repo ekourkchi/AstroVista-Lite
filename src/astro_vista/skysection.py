@@ -205,8 +205,9 @@ class SkySection:
         self.use_sky_button = QtWidgets.QPushButton("Use this sky")
         self.use_sky_button.setEnabled(False)
         self.use_sky_button.setToolTip(
-            "The median of the sky pixels as the base level: your decision; the verdict is "
-            "advice and is kept with the fit"
+            "The median of the sky pixels as the base level (a new measurement is used at "
+            "once; this takes it back after a typed value); the verdict is advice and is "
+            "kept with the fit"
         )
         self.use_sky_button.clicked.connect(self._use_measured)
         enter = self.enter_sky_button = QtWidgets.QPushButton("Enter a value…")
@@ -244,6 +245,7 @@ class SkySection:
         self._sky_used_line()
         self.sky_id = ""  # the measurement the sky comes from ("" = typed)
         self._measurement = None
+        self._taken = set()  # the measurements already taken as the sky
 
     def build_residual_sky(
         self, form, title: str = "Residual sky", fit_word: str = "fit again", what: str = ""
@@ -345,6 +347,10 @@ class SkySection:
         )
         self.sky_card.setText("<br>".join(lines))
         self.use_sky_button.setEnabled(bool(np.isfinite(result.level)) and not stale)
+        # a new measurement is the sky used, until another is typed or measured
+        if result.id not in self._taken and not stale and np.isfinite(result.level):
+            self._taken.add(result.id)
+            self._use_measured()
 
     def _use_measured(self) -> None:
         r = self._measurement
@@ -353,6 +359,8 @@ class SkySection:
         self.sky.setValue(r.level)
         self.factor.setValue(1.0)
         self.sky_id = r.id
+        if hasattr(self, "use_sky"):  # ELLIPROF: subtract it
+            self.use_sky.setChecked(True)
         s = r.settings
         self.sky_source.setText(
             f"measured: median of the sky pixels, {s['THRESH']:g}σ segmentation; {r.id} "

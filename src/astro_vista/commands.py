@@ -98,12 +98,13 @@ HELP = {
     "window": "window N BOX=x0,y0,x1,y1 [OUT=M] [MASKS=a,b|all]  -  cut out the pixels "
     "data[y0:y1, x0:x1] (whole-pixel edges, ELLIPROF's coordinates) into buffer OUT (the next "
     "free one); the WCS follows, and the mask layers named are cut too",
-    "sources": "sources N [KEYWORD=value ...] [MASK=a,b] [TOSEG=M]  -  find the sources "
+    "sources": "sources N [KEYWORD=value ...] [MASK=a,b] [TOSEG=M [SEGMASK=0]]  -  find the sources "
     "(stars and galaxies) in buffer N.  Keywords (SExtractor's names): THRESH_TYPE, "
     "DETECT_THRESH, DETECT_MINAREA, FILTER, FILTER_FWHM, FILTER_TYPE, DEBLEND_NTHRESH, "
     "DEBLEND_MINCONT, CLEAN, CLEAN_PARAM, BACK_TYPE, BACK_VALUE, BACK_SIZE, BACK_FILTERSIZE, "
     "BACK_FILTTHRESH, PHOT_APERTURES, PHOT_AUTOPARAMS, PHOT_FLUXFRAC, MAG_ZEROPOINT, GAIN; "
-    "MASK= leaves the pixels of mask layers out",
+    "MASK= leaves the pixels of mask layers out; TOSEG=M puts the segmentation image in "
+    "buffer M and makes the mask layer segK of every source's pixels (SEGMASK=0: not)",
     "runs": "runs  -  list the runs of the Source finder",
     "centre": "centre N SOURCE=number [RUN=k]  -  take ELLIPROF's centre from a found source",
     "mask": "mask ACTION NAME ...  -  make, draw, combine, change and remove mask layers "
@@ -1715,7 +1716,7 @@ class Session(ImageCommands):
         # the panel's defaults, then the settings given (numbers stay numbers)
         settings = dict(detection.DEFAULTS)
         for k, v in keys.items():
-            if k in ("TOSEG", "MASK"):
+            if k in ("TOSEG", "MASK", "SEGMASK"):
                 continue
             try:
                 settings[k] = float(v) if "." in v or "e" in v.lower() else int(v)
@@ -1738,6 +1739,20 @@ class Session(ImageCommands):
             )
             reply.text += f"\nsegmentation in buffer {m}"
             reply.changed |= {"buffers", "data"}
+            if str(keys.get("SEGMASK", "1")) != "0":
+                # the inverse of the segmentation as a mask layer: every source masked
+                name = f"seg{run.number}"
+                self._remember(name)
+                self.masks[name] = Mask(
+                    name,
+                    run.segmentation > 0,
+                    self._colour(name),
+                    source=f"segmentation {run.number} (buffer {m}), inverted",
+                )
+                reply.text += (
+                    f"\nmask {name}: its {int((run.segmentation > 0).sum())} source pixels"
+                )
+                reply.changed.add("masks")
         return reply
 
     def c_runs(self, words, keys) -> Reply:

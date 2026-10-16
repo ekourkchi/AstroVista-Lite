@@ -500,8 +500,11 @@ or <i>Selected source</i>.</p>
 between them; <i>Pick</i> sets a radius by clicking at that distance from the centre.
 <b>NITER:</b> iterations of the fit. <b>RMSTAR:</b> leave out star-like bright samples
 along each ellipse.</p>
-<p><b>Sky:</b> a constant subtracted first; <i>Estimate</i> takes a clipped median of the
-pixels the ticked masks leave.</p>
+<p>The panel is in the pair fit's order: the image and the kind of fit, then 1. Sky,
+2. The galaxy, 3. Fitting masks, 4. Fitting, 5. Run and 6. Residual sky.</p>
+<p><b>Sky:</b> a constant subtracted first. <i>Measure sky</i> (by segmentation) makes its
+median the sky at once, in this panel and the pair fit's; <i>Estimate</i> takes a clipped
+median of the pixels the ticked masks leave; <i>Enter a value…</i> types one.</p>
 <p><b>Masks:</b> the <i>Mask with</i> list offers the mask layers and the buffers of the
 image's size (a buffer masks where it is 0 or NaN); what is ticked (and a mask file) is
 left out of the fit.
@@ -528,6 +531,10 @@ factor and minimum radius, the light fraction of FLUX_RADIUS, the zero point and
 it in the Sources table; plot any two columns in Plots; make masks of them in the Masks
 menu (all, the selected one, those matching a condition such as
 <code>FWHM_IMAGE &lt; 3</code>, or their segmentation).</p>
+<p><b>The segmentation image</b> (<i>Add the segmentation image</i>) goes into a buffer:
+each source's pixels hold its number, the sky 0. Its inverse is made with it as the mask
+layer <code>segK</code> (K: the run), every source's pixels masked, for measuring the sky
+on what is left; untick <i>… and its inverse as a mask layer</i> not to make it.</p>
 <p>The Source finder is built on SEP, which implements the algorithms of SExtractor; see
 <i>Credits</i> for where they come from and what to cite. The settings keep SExtractor's
 names, so its documentation explains them too.</p>""",
@@ -999,7 +1006,7 @@ TIPS = {
     "pair_masks": "<b>Fitting masks</b>: the layers left out of every fit of A and of B. Only "
     "layers of role <i>fit</i>, or without a role, are listed: a sky layer covers the "
     "galaxies themselves and is never used in a fit.",
-    "pair_auto": "<b>Settings</b>. <i>Automatic</i> (the default): you choose the sky, the "
+    "pair_auto": "<b>Fit</b>. <i>Automatic</i> (the default): you choose the sky, the "
     "masks and the two centres. <i>Automatic, adjustable</i>: every setting shown at the "
     "same values, to change any of them; the radii and the isophotes stay automatic until "
     "their auto boxes are unticked. <i>Manual</i>: every setting, the radii typed or "

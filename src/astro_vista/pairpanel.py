@@ -549,53 +549,9 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             "fitted; the smaller first, not far out; then the two in turn, each grown only as "
             "far as its outer ellipses are not pulled towards the other. Fast, no search."
         )
-        form.addRow("Settings", tip(self.mode, "pair_auto"))
         self.input = InputChoice("pair fit")
         form.addRow("Image", tip(self.input, "tool_input"))
-        self.parallel = whole(1, MAX_PARALLEL, DEFAULT_PARALLEL)
-        self.parallel.setToolTip(
-            "PARALLEL: N fits, all averaged: the fit kept and N - 1 repeats with each galaxy's "
-            "R0 and R1 changed at random, run N at a time (each ELLIPROF call is a process of "
-            "its own). Each refines its own sky. Buffers get the mean A, B and A + B models, "
-            "the mean residual (image - mean sky - mean A + B), the models' spread and every "
-            "fit's own model and residual. 1: one fit, no mean"
-        )
-        self.jitter = whole(1, 50, 15)
-        self.jitter.setSuffix(" %")
-        self.jitter.setToolTip(
-            "JITTER: each repeat changes R0 and R1 by two thirds of this to this, up or down "
-            "(15 %: 10 to 15 %)"
-        )
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.parallel)
-        row.addWidget(QtWidgets.QLabel("R0, R1 varied by"))
-        row.addWidget(self.jitter)
-        row.addStretch(1)
-        form.addRow("Fits to average", tip(row, "pair_parallel"))
-        self.parallel_note = note(f"this computer has {os.cpu_count() or 1} cores; 1: a single fit")
-        form.addRow(self.parallel_note)
-        self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic (COS3X, COS4X)")
-        self.all_harmonics.setToolTip(
-            "HARMONICS=AUTO: on the fit kept, try every COS3X and COS4X for A, then for B, and "
-            "keep the stable fit with the smallest residual"
-        )
-        self.wings = QtWidgets.QCheckBox("Mask star wings and spikes the first pass shows")
-        self.wings.setToolTip(
-            "WINGS=1: light beyond the masks of bright sources (a star's wings, its diffraction "
-            "spikes) found in the residual of a first pass is added to the mask"
-        )
-        form.addRow(tip(self.all_harmonics, "pair_mode"))
-        form.addRow(tip(self.wings, "pair_wings"))
-        self.pull_check = QtWidgets.QCheckBox("Check the pull of the outer ellipses after the fit")
-        self.pull_check.setChecked(True)
-        self.pull_check.setToolTip(
-            "Each galaxy fitted once more with free centres; the report says whether its outer "
-            "ellipses move towards the other galaxy and from which radius (PULLCHECK=0: off)"
-        )
-        form.addRow(tip(self.pull_check, "pair_pull"))
-        self.resid_rounds, self.resid_thresh, row = residual_sources_row()
-        form.addRow("Residual sources", tip(row, "resid_sources"))
-
+        form.addRow("Fit", tip(self.mode, "pair_auto"))
         # ---- the sky
         self.build_sky(
             form, manual, self.sky_requested, self.sky_mask_toggled, "1. Sky", "Fit pair"
@@ -645,8 +601,52 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         row.addStretch(1)
         form.addRow(tip(_box(row), "pair_objects"))
 
-        # ---- the run
-        form.addRow(heading("4. Run"))
+        # ---- the fit
+        form.addRow(heading("4. Fitting"))
+        self.parallel = whole(1, MAX_PARALLEL, DEFAULT_PARALLEL)
+        self.parallel.setToolTip(
+            "PARALLEL: N fits, all averaged: the fit kept and N - 1 repeats with each galaxy's "
+            "R0 and R1 changed at random, run N at a time (each ELLIPROF call is a process of "
+            "its own). Each refines its own sky. Buffers get the mean A, B and A + B models, "
+            "the mean residual (image - mean sky - mean A + B), the models' spread and every "
+            "fit's own model and residual. 1: one fit, no mean"
+        )
+        self.jitter = whole(1, 50, 15)
+        self.jitter.setSuffix(" %")
+        self.jitter.setToolTip(
+            "JITTER: each repeat changes R0 and R1 by two thirds of this to this, up or down "
+            "(15 %: 10 to 15 %)"
+        )
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.parallel)
+        row.addWidget(QtWidgets.QLabel("R0, R1 varied by"))
+        row.addWidget(self.jitter)
+        row.addStretch(1)
+        form.addRow("Fits to average", tip(row, "pair_parallel"))
+        self.parallel_note = note(f"this computer has {os.cpu_count() or 1} cores; 1: a single fit")
+        form.addRow(self.parallel_note)
+        self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic (COS3X, COS4X)")
+        self.all_harmonics.setToolTip(
+            "HARMONICS=AUTO: on the fit kept, try every COS3X and COS4X for A, then for B, and "
+            "keep the stable fit with the smallest residual"
+        )
+        self.wings = QtWidgets.QCheckBox("Mask star wings and spikes the first pass shows")
+        self.wings.setToolTip(
+            "WINGS=1: light beyond the masks of bright sources (a star's wings, its diffraction "
+            "spikes) found in the residual of a first pass is added to the mask"
+        )
+        form.addRow(tip(self.all_harmonics, "pair_mode"))
+        form.addRow(tip(self.wings, "pair_wings"))
+        self.pull_check = QtWidgets.QCheckBox("Check the pull of the outer ellipses after the fit")
+        self.pull_check.setChecked(True)
+        self.pull_check.setToolTip(
+            "Each galaxy fitted once more with free centres; the report says whether its outer "
+            "ellipses move towards the other galaxy and from which radius (PULLCHECK=0: off)"
+        )
+        form.addRow(tip(self.pull_check, "pair_pull"))
+        self.resid_rounds, self.resid_thresh, row = residual_sources_row()
+        form.addRow("Residual sources", tip(row, "resid_sources"))
+
         self.joe_note = note(
             "Joe's mode: each galaxy's centre left out while the other is fitted; the smaller "
             "galaxy first, not far out; then the two in turn, each trying a 20 % larger R1 and "
@@ -807,6 +807,8 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         self.advanced.toggled.connect(self._fold_advanced)
         self._fold_advanced(False)
         manual(self.advanced)
+        # ---- the run
+        form.addRow(heading("5. Run"))
         buttons = QtWidgets.QHBoxLayout()
         self.run = QtWidgets.QPushButton("Fit pair")
         self.run.setDefault(True)
@@ -856,7 +858,7 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         # ---- the residual sky
         self.build_residual_sky(
             form,
-            "5. Residual sky",
+            "6. Residual sky",
             "Fit pair",
             "image − sky − A − B on the sky pixels: its median in red, zero dashed. The "
             "models extend beyond R1, so their outer light counts.",

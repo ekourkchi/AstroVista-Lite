@@ -1203,7 +1203,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.elliprof.set_centre(reply.values["x0"], reply.values["y0"])
         if "sky" in reply.values and True:
             # a clipped median (Estimate): straight into ELLIPROF's base level; a segmentation
-            # sky is shown in the sky cards, to be taken with Use this sky
+            # sky goes into both panels' base level when their sky cards show it
             if reply.values.get("segment") is None:
                 self.elliprof.use_sky.setChecked(True)
                 self.elliprof.set_sky_value(
@@ -1542,8 +1542,8 @@ class MainWindow(QtWidgets.QMainWindow):
         p.set_sky_value(1000.0, "typed: the synthetic image's true sky (FITS header SKY)")
         self.after_commands(self.show_pair_tool)
         self.statusBar().showMessage(
-            "The synthetic pair is loaded with its true sky: press Measure sky to compare, "
-            "then Fit pair"
+            "The synthetic pair is loaded with its true sky: Measure sky replaces it with the "
+            "measured one; then Fit pair"
         )
 
     def open_pair_folder(self, folder: Optional[Path] = None) -> None:
@@ -1739,7 +1739,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(
                 self,
                 TITLE,
-                "Choose the sky first: Measure sky, then Use this sky, or Enter a value.",
+                "Choose the sky first: Measure sky (its median is used), or Enter a value.",
             )
             return
         if p.sky_id:

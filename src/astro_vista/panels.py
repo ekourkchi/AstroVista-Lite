@@ -291,8 +291,43 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         )
         self.input = InputChoice("fit")
         form.addRow("Image", tip(self.input, "tool_input"))
+        self.fit_mode = QtWidgets.QComboBox()
+        self.fit_mode.addItems(self.FIT_MODES)
+        self.fit_mode.setToolTip(
+            "One elliprof call: the fit as elliprof makes it.\n"
+            "Automatic: the pair fit's recipe for one galaxy: R1 where the light fades into "
+            "the noise (fitted out to it at once: one galaxy has no growth), the search over centres, "
+            "smoothing over 3 isophotes, RMSTAR, the light beyond R1 measured, the sky tilt, "
+            "the outer-isophote check, every harmonic tried (the best kept, alternated with the "
+            "search), the fits averaged and, with a measured sky, the sky refined 3 times.\nIterative, my settings: every one of those, to set"
+        )
+        form.addRow("Fit", tip(self.fit_mode, "elliprof_iterative"))
 
-        form.addRow(heading("Centre"))
+        # the sky: as the pair fit's (skysection.SkySection), and a clipped median
+        self.build_sky(
+            form,
+            form.addRow,
+            self.sky_segment_requested,
+            self.sky_mask_toggled,
+            "1. Sky",
+            "Fit isophotes",
+        )
+        self.sky.setReadOnly(False)
+        self.use_sky = QtWidgets.QCheckBox("Subtract the sky (base level × factor)")
+        self.use_sky.setToolTip("Unticked: no sky is subtracted (elliprof's own way)")
+        estimate = QtWidgets.QToolButton(text="Estimate")
+        estimate.setToolTip(
+            "A 3-sigma clipped median of the pixels the ticked mask layers leave (sky command)"
+        )
+        estimate.clicked.connect(self.sky_requested)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.use_sky, 1)
+        row.addWidget(estimate)
+        form.addRow(tip(row, "sky"))
+        self.use_sky_button.clicked.connect(lambda: self.use_sky.setChecked(True))
+        self.enter_sky_button.clicked.connect(lambda: self.use_sky.setChecked(True))
+
+        form.addRow(heading("2. The galaxy"))
         self.x0 = number(0, 1e6, 0, tip="X0: in pixels; the first pixel spans 0 to 1")
         self.y0 = number(0, 1e6, 0, tip="Y0: in pixels; the first pixel spans 0 to 1")
         form.addRow("X0", tip(self.x0, "x0"))
@@ -317,18 +352,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         grid.addWidget(self.snap, 1, 1)
         form.addRow(grid)
 
-        form.addRow(heading("Isophotes"))
-        self.fit_mode = QtWidgets.QComboBox()
-        self.fit_mode.addItems(self.FIT_MODES)
-        self.fit_mode.setToolTip(
-            "One elliprof call: the fit as elliprof makes it.\n"
-            "Automatic: the pair fit's recipe for one galaxy: R1 where the light fades into "
-            "the noise (fitted out to it at once: one galaxy has no growth), the search over centres, "
-            "smoothing over 3 isophotes, RMSTAR, the light beyond R1 measured, the sky tilt, "
-            "the outer-isophote check, every harmonic tried (the best kept, alternated with the "
-            "search), the fits averaged and, with a measured sky, the sky refined 3 times.\nIterative, my settings: every one of those, to set"
-        )
-        form.addRow("Fit", tip(self.fit_mode, "elliprof_iterative"))
         self.r0 = number(0.1, 1e5, 5, tip="R0: semi-major axis of the first isophote, pixels")
         self.r1 = number(0.2, 1e5, 100, tip="R1: semi-major axis of the last isophote, pixels")
         self.nr = whole(2, 500, 20, tip="NR: number of isophotes from R0 to R1")
@@ -359,38 +382,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         row.addWidget(self.nr, 1)
         row.addWidget(self.nr_auto)
         form.addRow("NR", tip(row, "nr"))
-        form.addRow("NITER", tip(self.niter, "niter"))
-        form.addRow(tip(self.rmstar, "rmstar"))
-        self.resid_rounds, self.resid_thresh, row = residual_sources_row()
-        form.addRow("Residual sources", tip(row, "resid_sources"))
-        self.iterative = self._iterative_box()
-        form.addRow(self.iterative)
-
-        # the sky: as the pair fit's (skysection.SkySection), and a clipped median
-        self.build_sky(
-            form,
-            form.addRow,
-            self.sky_segment_requested,
-            self.sky_mask_toggled,
-            "Sky",
-            "Fit isophotes",
-        )
-        self.sky.setReadOnly(False)
-        self.use_sky = QtWidgets.QCheckBox("Subtract the sky (base level × factor)")
-        self.use_sky.setToolTip("Unticked: no sky is subtracted (elliprof's own way)")
-        estimate = QtWidgets.QToolButton(text="Estimate")
-        estimate.setToolTip(
-            "A 3-sigma clipped median of the pixels the ticked mask layers leave (sky command)"
-        )
-        estimate.clicked.connect(self.sky_requested)
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.use_sky, 1)
-        row.addWidget(estimate)
-        form.addRow(tip(row, "sky"))
-        self.use_sky_button.clicked.connect(lambda: self.use_sky.setChecked(True))
-        self.enter_sky_button.clicked.connect(lambda: self.use_sky.setChecked(True))
-
-        form.addRow(heading("Masks"))
+        form.addRow(heading("3. Fitting masks"))
         self.mask_file = QtWidgets.QLineEdit()
         self.mask_file.setPlaceholderText("no mask file")
         self.mask_file.setToolTip("A mask elliprof reads (.dmask or FITS): 0 = masked, 1 = good")
@@ -420,7 +412,36 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         form.addRow(sources)
         form.addRow("Size", tip(self.mask_scale, "masksize"))
 
-        form.addRow(heading("Results"))
+        form.addRow(heading("4. Fitting"))
+        self.parallel = whole(1, 16, max(1, min(5, (os.cpu_count() or 1) - 1)))
+        self.parallel.setToolTip(
+            "PARALLEL: N fits, all averaged (the fit kept and N - 1 with R0 and R1 varied), "
+            "N at a time; buffers get the mean model and residual and each fit's own"
+        )
+        self.jitter = whole(1, 50, 15)
+        self.jitter.setSuffix(" %")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.parallel)
+        row.addWidget(QtWidgets.QLabel("R0, R1 varied by"))
+        row.addWidget(self.jitter)
+        row.addStretch(1)
+        self.parallel_row = tip(row, "pair_parallel")
+        form.addRow("Fits to average", self.parallel_row)
+        self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic (COS3X, COS4X)")
+        self.all_harmonics.setChecked(True)
+        self.all_harmonics.setToolTip("HARMONICS=AUTO: every COS3X and COS4X tried on the fit kept")
+        form.addRow(self.all_harmonics)
+        self.resid_rounds, self.resid_thresh, row = residual_sources_row()
+        form.addRow("Residual sources", tip(row, "resid_sources"))
+        form.addRow(tip(self.rmstar, "rmstar"))
+        form.addRow("NITER", tip(self.niter, "niter"))
+        for w in (self.parallel_row, self.all_harmonics):
+            self.fit_mode.currentIndexChanged.connect(lambda i, w=w: form.setRowVisible(w, i > 0))
+            form.setRowVisible(w, False)
+        self.iterative = self._iterative_box()
+        form.addRow(self.iterative)
+
+        form.addRow(heading("5. Run"))
         self.make_model = QtWidgets.QCheckBox("Add the model image")
         self.make_residual = QtWidgets.QCheckBox("Add the residual image")
         self.make_model.setChecked(True)
@@ -522,7 +543,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         for w in (self.calls, self.models_heading, self.model_tabs, self.models_bar, self.models):
             self.fit_mode.currentIndexChanged.connect(lambda i, w=w: w.setVisible(i > 0))
             w.setVisible(False)
-        self.build_residual_sky(form, "Residual sky", "Fit isophotes")
+        self.build_residual_sky(form, "6. Residual sky", "Fit isophotes")
 
     def _iterative_box(self) -> QtWidgets.QGroupBox:
         """The iterative fit's settings (Iterative, my settings), at the automatic values."""
@@ -560,9 +581,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         row.addWidget(QtWidgets.QLabel("COS4X"))
         row.addWidget(self.cos4x)
         f.addRow("Harmonics", row)
-        self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic")
-        self.all_harmonics.setToolTip("HARMONICS=AUTO: every COS3X and COS4X tried on the fit kept")
-        f.addRow(self.all_harmonics)
         self.search_fix = QtWidgets.QCheckBox("Search fixed and free centres")
         self.search_fix.setChecked(True)
         self.search_fix.setToolTip("TRYFIX=1,0: both fitted, the lower residual kept")
@@ -597,19 +615,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             "refitted with coarser isophotes or a smaller R1"
         )
         f.addRow("Outer isophotes off by", self.shape_tol)
-        self.parallel = whole(1, 16, max(1, min(5, (os.cpu_count() or 1) - 1)))
-        self.parallel.setToolTip(
-            "PARALLEL: N fits, all averaged (the fit kept and N - 1 with R0 and R1 varied), "
-            "N at a time; buffers get the mean model and residual and each fit's own"
-        )
-        self.jitter = whole(1, 50, 15)
-        self.jitter.setSuffix(" %")
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(self.parallel)
-        row.addWidget(QtWidgets.QLabel("varied by"))
-        row.addWidget(self.jitter)
-        row.addStretch(1)
-        f.addRow("Fits to average", row)
         box.setVisible(False)
         self.fit_mode.currentIndexChanged.connect(lambda i: box.setVisible(i == 2))
         return box
@@ -869,11 +874,13 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
     def iterative_keywords(self, measured_sky: bool) -> list:
         """The keywords of the iterative fit (Automatic, or the box's settings)."""
         if self.fit_mode.currentIndex() == 1:
-            out = list(self.AUTO)
+            out = [w for w in self.AUTO if w != "HARMONICS=AUTO" or self.all_harmonics.isChecked()]
             if measured_sky:
                 out.append("SKYITER=3")
             if self.parallel.value() > 1:
                 out.append(f"PARALLEL={self.parallel.value()}")
+                if self.jitter.value() != 15:
+                    out.append(f"JITTER={self.jitter.value() / 100:g}")
             return out
         out = [f"FIXCTR={self.fixctr.currentData()}", f"TIE={self.tie.value()}"]
         for key, b in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
@@ -1092,6 +1099,15 @@ class SourceFinderPanel(QtWidgets.QWidget):
         self.segmentation_buffer = BufferChoice("segmentation image")
         form.addRow(self.show_sources)
         form.addRow(output_row(self.add_segmentation, self.segmentation_buffer))
+        self.segmentation_mask = QtWidgets.QCheckBox("… and its inverse as a mask layer (segK)")
+        self.segmentation_mask.setChecked(True)
+        self.segmentation_mask.setToolTip(
+            "The mask layer segK (K: the run) masks every source's pixels: the segmentation "
+            "image inverted, which leaves the sky (SEGMASK=0: not made)"
+        )
+        self.add_segmentation.toggled.connect(self.segmentation_mask.setEnabled)
+        self.segmentation_mask.setEnabled(False)
+        form.addRow(self.segmentation_mask)
         self.run = QtWidgets.QPushButton("Find sources")
         self.run.clicked.connect(self.run_requested)
         form.addRow(self.run)
@@ -1140,6 +1156,8 @@ class SourceFinderPanel(QtWidgets.QWidget):
             parts.append(f"MASK={masks}")
         if toseg:
             parts.append(f"TOSEG={toseg}")
+            if not self.segmentation_mask.isChecked():
+                parts.append("SEGMASK=0")
         return " ".join(parts)
 
     def set_values(self, values: dict) -> None:

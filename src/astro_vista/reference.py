@@ -582,7 +582,7 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
             ),
             _c(
                 "sources",
-                "sources N [KEYWORD=value ...] [MASK=a,b] [TOSEG=M]",
+                "sources N [KEYWORD=value ...] [MASK=a,b] [TOSEG=M [SEGMASK=0]]",
                 "Find the sources (stars and galaxies) in buffer N and measure them, with SEP "
                 "(the algorithms of SExtractor). Each run is numbered; the catalogue is in "
                 "Results ▸ Sources. Keywords not given take the values of the Source finder "
@@ -615,7 +615,12 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ),
                     ("MAG_ZEROPOINT=, GAIN=", "the magnitude of one count (0), e-/ADU (0)"),
                     ("MASK=", "mask layers whose pixels are left out"),
-                    ("TOSEG=", "the buffer for the segmentation image"),
+                    (
+                        "TOSEG=",
+                        "the buffer for the segmentation image; the mask layer segK (K the "
+                        "run) masks every source's pixels, its inverse",
+                    ),
+                    ("SEGMASK=0", "no segK mask layer with TOSEG"),
                 ),
                 "sources 1\nsources 1 DETECT_THRESH=2.5 DETECT_MINAREA=8 TOSEG=12",
             ),

@@ -763,6 +763,12 @@ def test_source_finder_finds_the_galaxy_and_the_stars(tmp_path):
         assert np.hypot(run.ellipses()[k][0] - sx, run.ellipses()[k][1] - sy) < 1.0
     assert run.columns["KRON_RADIUS"].min() >= 3.5  # as SExtractor reports it
     assert s.buffers[5].shape == s.buffers[1].shape  # the segmentation
+    # and its inverse as a mask layer: every source's pixels masked, the sky left
+    layer = s.masks[f"seg{run.number}"]
+    assert np.array_equal(layer.masked, s.buffers[5].data > 0)
+    assert layer.masked[140, 150] and not layer.masked[5, 5]
+    s.execute("sources 1 TOSEG=6 SEGMASK=0")
+    assert f"seg{s.runs[-1].number}" not in s.masks
     galaxy_row = run.nearest(150.0, 140.0)
     number = int(run.columns["NUMBER"][galaxy_row])
     values = s.execute(f"centre 1 SOURCE={number}").values

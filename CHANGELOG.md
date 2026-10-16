@@ -5,6 +5,16 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **The segmentation's inverse as a mask layer.** With the segmentation image (TOSEG), the
+  Source finder makes the mask layer `segK` (K: the run): every source's pixels masked
+  (`SEGMASK=0`, or the panel's box unticked: not made).
+- **A measured sky is used at once.** Measure sky (ELLIPROF and Pair fit) makes its median the
+  base level (in ELLIPROF, subtracted) without Use this sky, which takes it back after a typed
+  value.
+- **ELLIPROF and Pair fit in the same order.** Image and Fit at the top, then 1. Sky, 2. The
+  galaxy (the two galaxies), 3. Fitting masks, 4. Fitting (fits to average, harmonics,
+  residual sources, then the rest), 5. Run and 6. Residual sky. ELLIPROF's Fits to average
+  and Search every harmonic are now shown in Automatic too, and Automatic follows them.
 - **Close all buffers.** `close ALL`, and Close all in a buffer's right-click menu (it asks
   first).
 - **The pair fit's options for one galaxy.** ELLIPROF's Fit: One elliprof call (as before),
