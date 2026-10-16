@@ -42,7 +42,7 @@ HELP = {
     "wd": "wd N file.fits  -  write buffer N as a FITS file",
     "tv": "tv N  -  show buffer N",
     "buffers": "buffers  -  list the buffers",
-    "close": "close N  -  remove buffer N",
+    "close": "close N  -  remove buffer N;  close ALL  -  remove every buffer",
     "copy": "copy N M  -  copy buffer N into buffer M",
     "=": "[M] = expression  -  arithmetic on buffers: [3] = [1] - [2],  "
     "[4] = median([1], [2], [3]),  [5] = [1] - median([1]),  [6] = div([1], [2], 0),  "
@@ -545,6 +545,10 @@ class Session(ImageCommands):
     def c_close(self, words, keys) -> Reply:
         if not words:
             raise CommandError(HELP["close"])
+        if words[0].upper() == "ALL":
+            count = len(self.buffers)
+            self.buffers.clear()
+            return Reply(f"closed {count} buffer{'s' if count != 1 else ''}", {"buffers"})
         image = self.buffer(words[0])
         del self.buffers[integer(words[0], "the buffer")]
         return Reply(f"closed {image.name}", {"buffers"})

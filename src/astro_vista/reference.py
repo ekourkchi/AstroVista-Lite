@@ -82,7 +82,13 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 (),
                 "copy 1 5",
             ),
-            _c("close", "close N", "Remove buffer N.", (), "close 5"),
+            _c(
+                "close",
+                "close N | ALL",
+                "Remove buffer N, or every buffer with ALL.",
+                (),
+                "close 5",
+            ),
             _c(
                 "buffers buf",
                 "buffers   (or buf)",

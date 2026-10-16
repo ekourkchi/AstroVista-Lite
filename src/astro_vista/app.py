@@ -1351,7 +1351,18 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         menu.addSeparator()
         menu.addAction("Close", lambda: self.run_command(f"close {n}"))
+        menu.addAction("Close all", self._close_all_buffers)
         menu.exec(self.buffer_list.mapToGlobal(pos))
+
+    def _close_all_buffers(self) -> None:
+        count = len(self.session.buffers)
+        if not count:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self, "Close all", f"Close all {count} buffers? Unsaved images are lost."
+        )
+        if answer == QtWidgets.QMessageBox.Yes:
+            self.run_command("close all")
 
     def _tag_buffer(self, n: int) -> None:
         image = self.session.buffers.get(n)

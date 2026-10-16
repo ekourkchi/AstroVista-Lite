@@ -110,6 +110,8 @@ def test_commands_buffers_and_arithmetic(tmp_path):
     assert "galaxy.fits" in s.execute("buffers").text
     with pytest.raises(CommandError, match="unknown command"):
         s.execute("frobnicate 1")
+    s.execute("close all")
+    assert not s.buffers
 
 
 def test_rd_extension_by_name(tmp_path):

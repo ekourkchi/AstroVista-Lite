@@ -5,6 +5,8 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Close all buffers.** `close ALL`, and Close all in a buffer's right-click menu (it asks
+  first).
 - **The pair fit's options for one galaxy.** ELLIPROF's Fit: One elliprof call (as before),
   Automatic (the pair fit's recipe for one galaxy) or Iterative (each setting shown). With
   no companion there is no R1 growth: the galaxy is fitted out to R1 at once, and to a
