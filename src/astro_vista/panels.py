@@ -1798,6 +1798,7 @@ class LayersPanel(QtWidgets.QWidget):
     show_only = QtCore.Signal(str)  # show this mask layer alone
     from_buffer = QtCore.Signal()  # make a mask layer from a buffer
     tip_folded = QtCore.Signal(bool)  # the tip folded to its bulb (or unfolded)
+    folded_changed = QtCore.Signal(bool)  # the layers folded to their title (or unfolded)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1805,7 +1806,18 @@ class LayersPanel(QtWidgets.QWidget):
         lay.setContentsMargins(4, 4, 4, 4)
         top = title_row("Layers", "layers")
         top.addWidget(guide.button("masks", label="? Masks"))
+        # the fold: the layers folded to this title, the buffers above get the room
+        self.fold = QtWidgets.QToolButton()
+        self.fold.setArrowType(Qt.DownArrow)
+        self.fold.setAutoRaise(True)
+        self.fold.setToolTip("Fold the layers to their title (the buffer list gets the room)")
+        self.fold.clicked.connect(lambda: self.set_folded(not self.body.isHidden()))
+        top.insertWidget(0, self.fold)
         lay.addLayout(top)
+        self.body = QtWidgets.QWidget()
+        body = QtWidgets.QVBoxLayout(self.body)
+        body.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.body, 1)
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(2)  # the colour box, then the tick and the name
@@ -1820,7 +1832,7 @@ class LayersPanel(QtWidgets.QWidget):
         self.tree.viewport().installEventFilter(self)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._menu)
-        lay.addWidget(self.tree, 1)
+        body.addWidget(self.tree, 1)
         self.overlays = {}
         self.overlay_root = QtWidgets.QTreeWidgetItem(["Overlays"])
         self.overlay_root.setFlags(Qt.ItemIsEnabled)
@@ -1845,9 +1857,9 @@ class LayersPanel(QtWidgets.QWidget):
         self.opacity.setToolTip("the opacity of the selected mask layer")
         self.opacity.valueChanged.connect(self._opacity)
         row.addWidget(self.opacity, 1)
-        lay.addLayout(row)
+        body.addLayout(row)
         self.active = note()
-        lay.addWidget(self.active)
+        body.addWidget(self.active)
         # how to unmask, as a tip with a yellow bulb
         from . import icons
 
@@ -1875,9 +1887,22 @@ class LayersPanel(QtWidgets.QWidget):
         )
         self.tip_text.setWordWrap(True)
         tip_row.addWidget(self.tip_text, 1)
-        lay.addWidget(self.tip_box)
+        body.addWidget(self.tip_box)
         self._active: Optional[str] = None
         self._opacities = {}
+
+    def set_folded(self, folded: bool) -> None:
+        """Fold the layers to their title row, or unfold them."""
+        if folded == self.body.isHidden():
+            return
+        self.body.setVisible(not folded)
+        self.fold.setArrowType(Qt.RightArrow if folded else Qt.DownArrow)
+        self.fold.setToolTip(
+            "Unfold the layers"
+            if folded
+            else "Fold the layers to their title (the buffer list gets the room)"
+        )
+        self.folded_changed.emit(folded)
 
     def set_tip_folded(self, folded: bool) -> None:
         """Fold the tip to its bulb (a click on the bulb), or unfold it."""

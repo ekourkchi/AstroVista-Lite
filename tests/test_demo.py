@@ -2049,11 +2049,13 @@ def test_the_session_is_kept_when_buffers_close_and_comes_back(tmp_path):
     folder = tmp_path / ".temp"
     s.store_folder = folder
     before = {n: b.data.copy() for n, b in s.buffers.items()}
+    s.execute("sources 1")
     reply = s.execute("close all")
     assert "saved 2 buffers and 1 mask layers" in reply.text and not s.buffers
+    # the mask layers and what belonged to the images go with them
+    assert "1 mask layer" in reply.text and not s.masks and not s.runs and not s.fits
     assert "2 buffers and 1 mask layers" in s.execute("session").text
     # closing with nothing left never replaces the saved session with an empty one
-    s.execute("mask delete stars")
     assert s.keep_session() == ""
     text = s.execute("session restore").text
     assert text.startswith("restored the session") and sorted(s.buffers) == [1, 2]
@@ -2147,4 +2149,27 @@ def test_a_click_inside_a_source_takes_its_centre_and_the_centres_show_as_crosse
     window.finder.show_centres.setChecked(False)
     wait()
     assert len(marks.data) == 0 and not window.layers.checked("srccentres")
+    window.close()
+
+
+def test_the_layers_fold_and_the_buffers_get_the_room(tmp_path):
+    from PySide6 import QtWidgets
+
+    from astro_vista import app as app_module
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    window.resize(1200, 900)
+    window.show()
+    app.processEvents()
+    before = window.left_split.sizes()
+    window.layers.fold.click()
+    app.processEvents()
+    assert window.layers.body.isHidden()
+    assert window.left_split.sizes()[0] > before[0]  # the buffer list grew
+    assert str(app_module.settings().value("layers/folded")).lower() == "true"
+    window.layers.fold.click()
+    app.processEvents()
+    assert not window.layers.body.isHidden() and window.left_split.sizes() == before
     window.close()

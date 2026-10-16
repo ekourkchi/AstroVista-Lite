@@ -429,6 +429,9 @@ class MainWindow(QtWidgets.QMainWindow):
         left.addWidget(self.buffer_list)
         left.addWidget(self.layers)
         left.setSizes([120, 560])
+        self.left_split = left
+        self._layer_sizes = None  # the split before the layers were folded
+        self.layers.folded_changed.connect(self._layers_folded)
         self.docks = {}
         self._dock("Buffers and layers", left, Qt.LeftDockWidgetArea)
 
@@ -1037,6 +1040,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.layers.mask_command.connect(self._mask_command)
         self.layers.colour_changed.connect(self._layer_colour)
         self._saved_colours()
+        if str(settings().value("layers/folded", "false")).lower() == "true":
+            QtCore.QTimer.singleShot(0, lambda: self.layers.set_folded(True))
         self.layers.opacity_changed.connect(self._mask_opacity)
         self.layers.active_changed.connect(self._set_active_mask)
         self.layers.show_only.connect(self._show_only_mask)
@@ -1246,6 +1251,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if "fits" in reply.changed:
             image = self.viewer.image
             self.profile.set_result(s.fits.get(image.key) if image else None)
+        if not s.buffers and "buffers" in reply.changed:  # all closed: the fit tables too
+            self.elliprof.clear_calls()
+            self.pair_panel.clear_iterations()
         if "sources" in reply.changed:
             self.sources.set_runs(s.runs)
         if "sky" in reply.changed or "pairs" in reply.changed or "buffers" in reply.changed:
@@ -1389,7 +1397,8 @@ class MainWindow(QtWidgets.QMainWindow):
         answer = QtWidgets.QMessageBox.question(
             self,
             "Close all",
-            f"Close all {count} buffers?\n\nThey are kept in the session folder first: "
+            f"Close all {count} buffers and every mask layer?\n\nThey are kept in the "
+            "session folder first: "
             "File ▸ Restore the last session brings them back.",
         )
         if answer == QtWidgets.QMessageBox.Yes:
@@ -2809,6 +2818,22 @@ class MainWindow(QtWidgets.QMainWindow):
                     dock.show()
                 return
         self._default_sizes()
+
+    def _layers_folded(self, folded: bool) -> None:
+        """Folded: the layers shrink to their title and the buffer list takes the room;
+        unfolded: the split as it was.  Remembered."""
+        split = self.left_split
+        if folded:
+            self._layer_sizes = split.sizes()
+            title = self.layers.sizeHint().height()
+            self.layers.setMaximumHeight(title)
+            total = sum(split.sizes())
+            split.setSizes([max(total - title, 0), title])
+        else:
+            self.layers.setMaximumHeight(16777215)
+            if self._layer_sizes:
+                split.setSizes(self._layer_sizes)
+        settings().setValue("layers/folded", folded)
 
     def _autosave_session(self) -> None:
         """Every few minutes: the buffers and mask layers to the session folder, when they

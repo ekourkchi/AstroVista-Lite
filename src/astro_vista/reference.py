@@ -85,9 +85,10 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
             _c(
                 "close",
                 "close N | ALL",
-                "Remove buffer N, or every buffer with ALL. In the window, the buffers and "
-                "mask layers are saved to the session folder first: session restore brings "
-                "them back.",
+                "Remove buffer N, or with ALL every buffer, every mask layer and what "
+                "belonged to them (sources, fits, skies). In the window, the buffers and mask "
+                "layers are saved to the session folder first: session restore brings them "
+                "back.",
                 (),
                 "close 5",
             ),

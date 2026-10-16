@@ -76,7 +76,8 @@ Legacy <code>.dmask</code> bitmaps open as mask layers.</p>
 <p><b>Buffers:</b> every image lives in a numbered buffer, listed on the left with a small
 picture. Results (a model, a residual, arithmetic) go to new buffers, so nothing is
 overwritten unless you ask. Right-click a buffer to save it, see its statistics, use it as
-a mask, copy or close it (or close them all).</p>
+a mask, copy or close it, or close them all (with every mask layer). The ▾ beside
+<i>Layers</i> folds the layers to their title, so the buffer list gets the room.</p>
 <p><b>Your work is kept:</b> the buffers and mask layers are saved to a session folder
 when buffers are closed, when the window closes (even by accident) and every 2 minutes
 while something changes. The next start offers to continue; File ▸ Restore the last

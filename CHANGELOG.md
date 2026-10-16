@@ -5,6 +5,10 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Close all closes the mask layers too**, and what belonged to the images (sources, fits,
+  skies, the fit tables); the session is saved first.
+- **The Layers fold.** The ▾ beside Layers folds them to their title and gives the buffer
+  list the room (remembered).
 - **A in cyan, B in orange, your choice.** The pair fit's A and B each have a row in Layers;
   click its colour box to change the colour (the card, the drawing and the plots follow,
   and the colour is remembered, as are the other overlays' colours).

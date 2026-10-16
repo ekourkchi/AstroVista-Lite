@@ -42,8 +42,9 @@ HELP = {
     "wd": "wd N file.fits  -  write buffer N as a FITS file",
     "tv": "tv N  -  show buffer N",
     "buffers": "buffers  -  list the buffers",
-    "close": "close N  -  remove buffer N;  close ALL  -  remove every buffer (the session is "
-    "saved first: session restore brings them back)",
+    "close": "close N  -  remove buffer N;  close ALL  -  remove every buffer, every mask "
+    "layer and what belonged to them (sources, fits, skies; the session is saved first: "
+    "session restore brings the buffers and mask layers back)",
     "session": "session [save|restore] [FOLDER]  -  the buffers and mask layers kept for next "
     "time: where and what (no word), save them now, or read them back (the session folder, "
     "or FOLDER)",
@@ -572,9 +573,24 @@ class Session(ImageCommands):
         kept = self.keep_session()  # first: what is closed can be restored
         kept = f"\n({kept}; session restore brings them back)" if kept else ""
         if words[0].upper() == "ALL":
-            count = len(self.buffers)
+            count, layers = len(self.buffers), len(self.masks)
             self.buffers.clear()
-            return Reply(f"closed {count} buffer{'s' if count != 1 else ''}{kept}", {"buffers"})
+            # and everything that belonged to them: mask layers, sources, fits, skies
+            self.masks.clear()
+            self.mask_buffers.clear()
+            self._undo.clear()
+            self._redo.clear()
+            self.runs.clear()
+            for store in (self.fits, self.single_models, self.pairs, self.planes):
+                store.clear()
+            self.skies.clear()
+            self.sky_of.clear()
+            self.sky_buffer.clear()
+            return Reply(
+                f"closed {count} buffer{'s' if count != 1 else ''} and {layers} mask "
+                f"layer{'s' if layers != 1 else ''}{kept}",
+                {"buffers", "masks", "sources", "fits", "pairs", "sky", "data"},
+            )
         del self.buffers[integer(words[0], "the buffer")]
         return Reply(f"closed {image.name}{kept}", {"buffers"})
 
