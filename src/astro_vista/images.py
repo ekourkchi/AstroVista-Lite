@@ -30,6 +30,7 @@ class Image:
     tag: str = ""  # a name given by the user (tag="...")
     note: str = ""  # how it was made (the command or the arithmetic)
     display: str = ""  # how to show it first: "" (the display chosen) or "smooth" (min to max)
+    about: str = ""  # for a model or residual of an iterative fit: the model's parameters
 
     @property
     def label(self) -> str:

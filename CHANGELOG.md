@@ -20,12 +20,25 @@ newest is at the top.
   averaging; R0 to R1, NR, passed or why it failed) and every finished fit in bold with its
   score, the best so far in green; the image shows the isophotes of the latest fit.
 - **ELLIPROF's models.** Every model of an iterative fit is listed (report, the Models table,
-  `models N`) with its parameters and its residual: the RMS over the noise between
-  1.15 × R0 (the core is often disturbed) and 1.1 × R1, R0 and R1 as asked, the same for
-  every model compared. The fit kept is the lowest residual of the search, the harmonics
-  and the sky tilt (no margin for fixed centres or the default harmonics). Any model can be
-  put in buffers with its residual, and the selected ones averaged (`models N SHOW=`,
-  `AVERAGE=`; To buffers and Average selected in the panel), filtered by step.
+  `models N`) with its parameters (centre, FIXCTR, COS3X, COS4X, TIE, R0, R1 asked and
+  reached, NR, sky, tilt), its residual and its core's. The residual is measured between
+  1.15 × R0 (the core is often disturbed) and 1.1 × R1, R0 and R1 as asked and the same for
+  every model, in rings 20 % apart: each ring's RMS over its own noise (from the image, the
+  galaxy's photon noise included), every ring counted the same, so a bad middle is not
+  hidden by the faint outskirts. The fit kept is the lowest residual; a model whose core is
+  over twice the cleanest is never kept nor averaged. A tab per step in the panel; any model
+  put in buffers with its residual, the selected ones averaged (`models N SHOW=`,
+  `AVERAGE=`); right-click a model, or a buffer made from one, for its parameters and the
+  elliprof command that makes it.
+- **ELLIPROF tries harder (SEARCH=FULL, the default).** The search also fits with TIE off
+  and with a larger R0 (out of a masked core: isophotes fitted on masked pixels turned the
+  fits wrong), then moves a fixed centre by 1/2, 1/4 and 1/8 px to the lowest residual,
+  and after the harmonics tries fewer and more isophotes. The averaged fits never put R0
+  into a masked core, and a fit with a residual over 1.05 × the kept's or that stopped
+  short of 0.8 × its R1 is left out of the mean. On UGC 12517 (R0=9 inside a masked core of
+  10 px, TIE=-3) the kept fit's residual fell from 3.37 to 1.51 and its core from 5.95 to
+  1.11 (free centres, TIE off, R0 13.5, NR 28), in 6 s. `SEARCH=BASIC` searches only the
+  centres (TRYFIX).
 - **ELLIPROF: the sky analyser and the harmonic analysis.** The pair fit's sky section
   (segmentation settings, Measure, the verdict, histogram and cell map, Use this sky, the
   factor and its refinement, and after a fit the residual on the sky pixels with the next

@@ -2046,6 +2046,14 @@ def test_elliprof_with_the_pair_fits_options():
     assert "search" in ses.execute("models 1 STEP=search").text
     shown = ses.execute(f"models 1 SHOW={done[0]}").text
     assert f"model #{done[0]}" in shown and "residual" in shown
+    # the buffers carry their model's parameters (a right click on the buffer)
+    made = [b for b in ses.buffers.values() if f"model #{done[0]}" in b.name]
+    assert len(made) == 2 and all(b.about.startswith(f"model #{done[0]}") for b in made)
+    assert "the elliprof command for this model" in made[0].about
+    assert ses.buffers[4].about.startswith("model #") and "kept" in ses.buffers[4].about
+    # SEARCH=FULL by default: TIE off and a larger R0 tried as well
+    search = [r for r in rows if r["stage"] == "search"]
+    assert len(search) == 8 and {r["tie"] for r in search} == {-3, None}
     mean = ses.execute(f"models 1 AVERAGE={done[0]},{done[1]}").text
     assert mean.startswith("mean of 2 models") and "each alone" in mean
     names = [b.name for b in ses.buffers.values()]
@@ -2066,6 +2074,56 @@ def test_elliprof_with_the_pair_fits_options():
     for word in ("START=AUTO", "FACTOR=1.2", "TRYFACTOR=1.2,1.35"):
         with pytest.raises(CommandError, match="growth"):
             ses.execute(f"elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=100 SKY=1000 {word}")
+
+
+def test_the_wide_search_finds_the_centre_and_leaves_tie_off_when_it_helps():
+    from astro_vista import single
+
+    rng = np.random.default_rng(3)
+    yy, xx = np.mgrid[0:64, 0:64] + 0.5
+
+    def galaxy(x0, y0):
+        return 2000.0 * np.exp(-((xx - x0) ** 2 + (yy - y0) ** 2) / (2 * 6.0**2))
+
+    truth = (31.0, 30.75)
+    image = 100.0 + galaxy(*truth) + rng.normal(0, 1, (64, 64)) * np.sqrt(1 + galaxy(*truth))
+
+    class CentreFitter(PureFitter):
+        """The galaxy at the centre it is given (fixed centres); free centres miss it by a
+        pixel and TIE costs 3 % of its light."""
+
+        def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+            fit = super().__call__(data, x0, y0, r0, r1, nr, **kw)
+            if kw.get("fixctr") == 1:
+                model = galaxy(x0, y0)
+            else:
+                model = galaxy(truth[0] + 1, truth[1])
+            if kw.get("tie") is not None:
+                model = 0.97 * model
+            fit.model[:] = model
+            return fit
+
+    s = single.SingleSettings(
+        x0=30.5, y0=30.5, r0=2, r1=24, sky=100.0, tie=-3, try_fix=[1, 0], wide=True, parallel=4
+    )
+    seen = []
+    r = single.fit_single(
+        image, np.zeros(image.shape, bool), s, fitter=CentreFitter(), progress=seen.append
+    )
+    kept = next(m for m in r.models if m["kept"])
+    assert kept["fixctr"] == 1 and kept["tie"] is None
+    assert abs(kept["x0"] - truth[0]) <= 0.125 and abs(kept["y0"] - truth[1]) <= 0.125
+    stages = {single.category(m["stage"]) for m in r.models}
+    assert {"search", "centre", "isophotes", "average"} <= stages
+    search = [m for m in r.models if m["stage"] == "search"]
+    assert len(search) == 8  # TRYFIX x TIE as asked/off x R0 as asked/larger
+    assert {m["r0"] for m in search} == {2, 3}
+    assert any(x.startswith("centre: X0=") for x in r.steps)
+    assert kept["score"] == min(m["score"] for m in r.models if m["chooses"] and m["score"])
+    # the high-contrast cores (free centres, a pixel off) flagged, never kept
+    assert any(m["flag"] == "core" for m in r.models if m["fixctr"] == 0)
+    assert "high-contrast core" in "\n".join(single.models_table(r.models))
+    assert seen[-1]["phase"] == "chosen" and seen[-1]["rows"]
 
 
 def test_the_elliprof_panel_writes_the_iterative_fit():
@@ -2126,10 +2184,16 @@ def test_the_elliprof_panel_writes_the_iterative_fit():
     p.add_model(model)
     p.add_model({**model, "n": 2, "cos4x": 1, "score": 1.1})
     assert p.calls.rowCount() == 1 and "FAILED" in p.calls.item(0, 4).text()
-    assert p.models.rowCount() == 2 and p.models.item(1, 11).text() == "1.100"
-    assert p.models.item(1, 4).text() == "1" and p.models.item(0, 7).text() == "96.0"
+    last = len(p.MODEL_COLUMNS) - 1
+    col = {k: i for i, (_l, k) in enumerate(p.MODEL_COLUMNS)}
+    assert p.models.rowCount() == 2 and p.models.item(1, last).text() == "1.100"
+    assert p.models.item(1, col["cos4x"]).text() == "1"
+    assert p.models.item(0, col["r1_reached"]).text() == "96.0"
+    assert (
+        p.models.item(0, col["tie"]).text() == "off" and p.models.item(0, col["x0"]).text() == "-"
+    )
     p.mark_kept_model(2)
-    assert p.models.item(1, 11).font().bold() and not p.models.item(0, 11).font().bold()
+    assert p.models.item(1, last).font().bold() and not p.models.item(0, last).font().bold()
     # a finished fit's models: filtered by step, selected, shown or averaged
     p.fill_models(
         [
@@ -2138,10 +2202,21 @@ def test_the_elliprof_panel_writes_the_iterative_fit():
             {**model, "n": 3, "stage": "average 2/3", "chooses": False},
         ]
     )
-    assert p.models.rowCount() == 3 and p.models.item(0, 11).font().bold()
-    p.model_step.setCurrentIndex(p.model_step.findData("harmonics"))
+    assert p.models.rowCount() == 3 and p.models.item(0, last).font().bold()
+    tabs = {p.model_tabs.tabData(i): i for i in range(p.model_tabs.count())}
+    assert p.model_tabs.tabText(tabs["harmonics"]) == "Harmonics (1)"
+    assert not p.model_tabs.isTabEnabled(tabs["centre"])
+    p.model_tabs.setCurrentIndex(tabs["harmonics"])
     assert [p.models.isRowHidden(r) for r in range(3)] == [True, False, True]
-    p.model_step.setCurrentIndex(0)
+    p.model_tabs.setCurrentIndex(0)
+    # a model's parameters (the right click) and its command
+    text = p.model_text(1)
+    assert text.startswith("model #2: harmonics 1") and "COS4X=1" in text
+    assert "elliprof 1 X0=" not in text  # x0 unknown in this row
+    full = {**model, "x0": 294.3, "y0": 263.8, "tie": -3, "niter": 10, "inner": 3.4, "outer": 132}
+    from astro_vista import single
+
+    assert single.command_for(full, 1).startswith("elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=96.0")
     got = []
     p.models_average_requested.connect(got.append)
     p.models.selectAll()
@@ -2232,14 +2307,31 @@ def test_the_single_fits_score_leaves_out_the_core_and_beyond_r1():
     from astro_vista import single
 
     rng = np.random.default_rng(1)
-    residual = rng.normal(0, 1, (200, 200))
-    r = single.SingleResult("fitted", single.SingleSettings(x0=100, y0=100, r0=10, r1=60))
-    r.residual = residual.copy()
-    mask = np.zeros(residual.shape, bool)
-    base = single.score(r, mask, (100, 100), 11.5, 66)
+    noise = rng.normal(0, 1, (200, 200))
     yy, xx = np.mgrid[0:200, 0:200] + 0.5
     rr = np.hypot(xx - 100, yy - 100)
-    r.residual[rr < 11] += 50  # a disturbed core
-    r.residual[rr > 70] += 50  # light beyond R1
-    assert single.score(r, mask, (100, 100), 11.5, 66) == pytest.approx(base)
-    assert single.score(r, mask, (100, 100), 5, 66) > base + 0.5
+    galaxy = 5000 * np.exp(-rr / 15)
+    image = galaxy + noise * np.sqrt(1 + galaxy)  # photon noise: larger in the middle
+    mask = np.zeros(image.shape, bool)
+    rings = single.Rings(image, mask, (100, 100), 11.5, 66)
+    assert rings.edges[0] == 11.5 and rings.edges[-1] == 66
+    # each ring's noise from the image: the galaxy's light cancelled, its photon noise not
+    assert rings.sigma[0] > 5 * rings.sigma[-1]
+    residual = image - galaxy
+    base = rings.measure(residual, mask)
+    assert base["score"] == pytest.approx(1, abs=0.15) and base["core"] == pytest.approx(1, abs=0.2)
+    off = residual.copy()
+    off[rr < 11] += 500  # a disturbed core
+    off[rr > 70] += 50  # light beyond R1
+    assert rings.measure(off, mask)["score"] == pytest.approx(base["score"])
+    # a residual in the inner rings counts as much as one in the outer: its area does not
+    inner = residual + np.where((rr > 11.5) & (rr < 20), 3 * np.sqrt(1 + galaxy), 0)
+    got = rings.measure(inner, mask)
+    assert got["core"] > 2.5 and got["score"] > base["score"] + 0.5
+    r = single.SingleResult("fitted", single.SingleSettings(x0=100, y0=100, r0=10, r1=60))
+    r.residual = inner
+    assert single.score(r, mask, rings) == pytest.approx(got["score"])
+    # a masked core: how far out it reaches
+    core = rr < 8.3
+    assert single.masked_core(core, (100, 100), 30) == pytest.approx(8, abs=1)
+    assert single.masked_core(mask, (100, 100), 30) == 0

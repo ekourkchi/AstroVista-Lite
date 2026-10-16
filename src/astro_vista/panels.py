@@ -460,15 +460,16 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.models = plain_table()
         self.models.setColumnCount(len(self.MODEL_COLUMNS))
         self.models.setHorizontalHeaderLabels([c for c, _k in self.MODEL_COLUMNS])
-        self.models.setMinimumHeight(200)
+        self.models.setMinimumHeight(240)
         self.models.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         self.models.verticalHeader().setVisible(False)
         self.models.verticalHeader().setDefaultSectionSize(22)
         self.models.setToolTip(
-            "Every model made, with its parameters and its residual: the RMS over the noise "
-            "between 1.15 × R0 and 1.1 × R1 (R0, R1 as asked; 'reached': where its isophotes "
-            "stopped). The lowest residual of those compared is kept (green, bold); grey: "
-            "averaged fits and refits, listed only"
+            "Every model made, with its parameters and its residual: between 1.15 × R0 and "
+            "1.1 × R1 (as asked), in rings 20% apart, each ring's RMS over its own noise and "
+            "every ring counted the same; core: the innermost rings. The lowest residual is "
+            "kept (green, bold); red: a high-contrast core, never kept nor averaged; grey: "
+            "listed only. Right-click a model for its parameters"
         )
         self.models.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.models.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -476,16 +477,23 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             lambda row, _c: self.models_show_requested.emit(self._model_numbers([row]))
         )
         self.models.itemSelectionChanged.connect(self._models_selection)
-        self.model_step = QtWidgets.QComboBox()
-        self.model_step.addItem("All models", "")
-        for key, _prefix, label in single.CATEGORIES:
-            self.model_step.addItem(label[:1].upper() + label[1:], key)
-        self.model_step.setToolTip("Show the models of one step only")
-        self.model_step.currentIndexChanged.connect(self._filter_models)
+        self.models.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.models.customContextMenuRequested.connect(self._models_menu)
+        # the models by step, one tab each (All first)
+        self.model_tabs = QtWidgets.QTabBar()
+        self.model_tabs.setExpanding(False)
+        self.model_tabs.setDrawBase(False)
+        self.model_tabs.setUsesScrollButtons(True)
+        self.model_tabs.setElideMode(Qt.ElideNone)
+        for key, label in [("", "All")] + [(k, lbl) for k, _p, lbl in single.CATEGORIES]:
+            i = self.model_tabs.addTab(label)
+            self.model_tabs.setTabData(i, key)
+        self.model_tabs.setToolTip("The models of one step")
+        self.model_tabs.currentChanged.connect(lambda _i: self._filter_models())
         self.models_show = QtWidgets.QPushButton("To buffers")
         self.models_show.setToolTip(
             "Each selected model and its residual (image − its sky − its model) into buffers "
-            "(or double-click a row)"
+            "(or double-click a row); right-click a buffer for its model's parameters"
         )
         self.models_show.clicked.connect(
             lambda: self.models_show_requested.emit(self._model_numbers())
@@ -493,7 +501,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.models_average = QtWidgets.QPushButton("Average selected")
         self.models_average.setToolTip(
             "The mean of the selected models into buffers: the mean model and the residual "
-            "image − mean sky − mean model, with its residual in the same annulus"
+            "image − mean sky − mean model, with its residual on the same rings"
         )
         self.models_average.clicked.connect(
             lambda: self.models_average_requested.emit(self._model_numbers())
@@ -501,16 +509,17 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.models_bar = QtWidgets.QWidget()
         bar = QtWidgets.QHBoxLayout(self.models_bar)
         bar.setContentsMargins(0, 0, 0, 0)
-        bar.addWidget(self.model_step, 1)
+        bar.addStretch(1)
         bar.addWidget(self.models_show)
         bar.addWidget(self.models_average)
         self.models_heading = heading("Models: the lowest residual is kept")
         form.addRow(self.models_heading)
-        form.addRow(self.models_bar)
+        form.addRow(self.model_tabs)
         form.addRow(self.models)
+        form.addRow(self.models_bar)
         self._models_selection()
         self._best_score = None
-        for w in (self.calls, self.models_heading, self.models_bar, self.models):
+        for w in (self.calls, self.models_heading, self.model_tabs, self.models_bar, self.models):
             self.fit_mode.currentIndexChanged.connect(lambda i, w=w: w.setVisible(i > 0))
             w.setVisible(False)
         self.build_residual_sky(form, "Residual sky", "Fit isophotes")
@@ -556,11 +565,16 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         f.addRow(self.all_harmonics)
         self.search_fix = QtWidgets.QCheckBox("Search fixed and free centres")
         self.search_fix.setChecked(True)
-        self.search_fix.setToolTip(
-            "TRYFIX=1,0: both fitted, the fixed kept unless free ones lower the residual by "
-            "more than 0.01 of the noise"
-        )
+        self.search_fix.setToolTip("TRYFIX=1,0: both fitted, the lower residual kept")
         f.addRow(self.search_fix)
+        self.search_wide = QtWidgets.QCheckBox("Search R0, TIE, the centre and NR too")
+        self.search_wide.setChecked(True)
+        self.search_wide.setToolTip(
+            "SEARCH=FULL: TIE off and a larger R0 (out of a masked core) tried as well, the "
+            "fixed centre moved to 1/8 px and the number of isophotes changed, the lowest "
+            "residual kept (unticked: SEARCH=BASIC)"
+        )
+        f.addRow(self.search_wide)
         self.sky_plane = QtWidgets.QCheckBox("Take out a sky tilt")
         self.sky_plane.setChecked(True)
         self.sky_plane.setToolTip("SKYPLANE=1: a plane fitted to the residual, kept if it helps")
@@ -603,15 +617,19 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
     MODEL_COLUMNS = [
         ("#", "n"),
         ("step", "stage"),
+        ("X0", "x0"),
+        ("Y0", "y0"),
         ("FIXCTR", "fixctr"),
         ("COS3X", "cos3x"),
         ("COS4X", "cos4x"),
+        ("TIE", "tie"),
         ("R0", "r0"),
         ("R1", "r1"),
         ("reached", "r1_reached"),
         ("NR", "nr"),
         ("sky", "sky"),
         ("tilt", "tilt"),
+        ("core", "core"),
         ("residual", "score"),
     ]
 
@@ -646,6 +664,10 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
     def add_model(self, info: dict) -> None:
         """A row of the models table: a finished model's parameters and its residual
         (green: the lowest so far of those compared)."""
+        for row in range(self.models.rowCount()):  # a model already listed
+            item = self.models.item(row, 0)
+            if item is not None and item.data(Qt.UserRole) == info.get("n"):
+                return
         row = self.models.rowCount()
         self.models.insertRow(row)
         sc = info.get("score")
@@ -663,8 +685,14 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
                     if info.get("status") == "fitted" and v is not None
                     else str(info.get("status", ""))
                 )
+            elif key == "core":
+                text = "-" if v is None else f"{v:.2f}"
             elif key == "tilt":
                 text = "yes" if v else "no"
+            elif key == "tie":
+                text = "off" if v is None else str(v)
+            elif key in ("x0", "y0"):
+                text = "-" if v is None else f"{v:.3f}"
             elif key in ("r0", "r1", "r1_reached"):
                 text = f"{v:.1f}"
             elif key == "sky":
@@ -672,6 +700,8 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             else:
                 text = str(v)
             item = QtWidgets.QTableWidgetItem(text)
+            if key == "n":
+                item.setData(Qt.UserRole + 2, dict(info))
             if key in ("n", "score"):
                 item.setData(Qt.UserRole, info.get("n"))
             if key == "score":
@@ -683,10 +713,50 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             elif key == "score" and best:
                 item.setForeground(QtGui.QColor("#3fb950"))
             self.models.setItem(row, col, item)
-        want = self.model_step.currentData()
+        self._style_flag(row, info)
+        want = self._tab_key()
         if want:
             self.models.setRowHidden(row, single.category(str(info.get("stage", ""))) != want)
+        self._count_tabs()
         self.models.scrollToBottom()
+
+    def _style_flag(self, row: int, info: dict) -> None:
+        """A high-contrast core in red, a fit left out of the mean in italics."""
+        flag = info.get("flag")
+        for col, (_label, key) in enumerate(self.MODEL_COLUMNS):
+            cell = self.models.item(row, col)
+            if cell is None:
+                continue
+            if flag == "core" and key in ("core", "score"):
+                cell.setForeground(QtGui.QColor("#f85149"))
+            f = cell.font()
+            f.setItalic(flag == "poor")
+            cell.setFont(f)
+            tip = {
+                "core": "a high-contrast core: never kept nor averaged",
+                "poor": "left out of the mean (its residual or R1 reached)",
+            }.get(flag)
+            if info.get("averaged"):
+                tip = "in the mean"
+            if tip:
+                cell.setToolTip(tip)
+
+    def _tab_key(self) -> str:
+        return self.model_tabs.tabData(self.model_tabs.currentIndex()) or ""
+
+    def _count_tabs(self) -> None:
+        """Each tab with how many models it has."""
+        counts = {}
+        for row in range(self.models.rowCount()):
+            item = self.models.item(row, 1)
+            cat = item.data(Qt.UserRole + 1) if item is not None else ""
+            counts[cat] = counts.get(cat, 0) + 1
+        labels = dict([("", "All")] + [(k, lbl) for k, _p, lbl in single.CATEGORIES])
+        for i in range(self.model_tabs.count()):
+            key = self.model_tabs.tabData(i) or ""
+            k = self.models.rowCount() if not key else counts.get(key, 0)
+            self.model_tabs.setTabText(i, f"{labels[key]} ({k})" if k else labels[key])
+            self.model_tabs.setTabEnabled(i, bool(k) or not key)
 
     def fill_models(self, rows) -> None:
         """The models table of a finished fit (every model, the kept one marked)."""
@@ -700,6 +770,48 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         if kept is not None:
             self.mark_kept_model(kept)
         self._filter_models()
+
+    def model_row(self, row: int) -> Optional[dict]:
+        """The parameters of the model in table row ``row``."""
+        item = self.models.item(row, 0)
+        return item.data(Qt.UserRole + 2) if item is not None else None
+
+    def model_text(self, row: int) -> str:
+        info = self.model_row(row)
+        if not info:
+            return ""
+        return single.describe(info, self.input.value() or 1)
+
+    def _models_menu(self, pos) -> None:
+        """Right-click on a model: its parameters, to buffers, the mean of the selected."""
+        item = self.models.itemAt(pos)
+        if item is None:
+            return
+        row = item.row()
+        info = self.model_row(row) or {}
+        menu = QtWidgets.QMenu(self)
+        menu.addAction(
+            f"Parameters of model #{info.get('n', '')}…",
+            lambda: show_text(self, f"Model #{info.get('n', '')}", self.model_text(row)),
+        )
+        menu.addAction(
+            "Copy its elliprof command",
+            lambda: QtWidgets.QApplication.clipboard().setText(
+                single.command_for(info, self.input.value() or 1)
+            ),
+        )
+        menu.addSeparator()
+        numbers = self._model_numbers()
+        here = self._model_numbers([row])
+        menu.addAction("To buffers", lambda: self.models_show_requested.emit(here)).setEnabled(
+            bool(here)
+        )
+        if len(numbers) >= 2:
+            menu.addAction(
+                f"Average {len(numbers)} selected",
+                lambda: self.models_average_requested.emit(numbers),
+            )
+        menu.exec(self.models.viewport().mapToGlobal(pos))
 
     def _model_numbers(self, rows=None) -> list:
         """The model numbers of ``rows`` (default: the selected rows), complete ones only."""
@@ -722,7 +834,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.models_average.setText(f"Average {k} selected" if k >= 2 else "Average selected")
 
     def _filter_models(self) -> None:
-        want = self.model_step.currentData()
+        want = self._tab_key()
         for row in range(self.models.rowCount()):
             item = self.models.item(row, 1)
             cat = item.data(Qt.UserRole + 1) if item is not None else ""
@@ -771,6 +883,8 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             out.append("HARMONICS=AUTO")
         if self.search_fix.isChecked():
             out.append("TRYFIX=1,0")
+        if not self.search_wide.isChecked():
+            out.append("SEARCH=BASIC")
         if self.sky_iter.value() and measured_sky:
             out.append(f"SKYITER={self.sky_iter.value()}")
         if self.sky_plane.isChecked():
@@ -1062,6 +1176,26 @@ def fill_table(table: QtWidgets.QTableWidget, columns, rows) -> None:
             text = columns[c][1].format(v) if np.isfinite(v) else ""
             table.setItem(r, c, NumberItem(v, text))
     table.resizeColumnsToContents()
+
+
+def show_text(parent, title: str, text: str) -> None:
+    """A text to read and copy (a model's parameters)."""
+    box = QtWidgets.QDialog(parent)
+    box.setWindowTitle(title)
+    lay = QtWidgets.QVBoxLayout(box)
+    view = QtWidgets.QPlainTextEdit(text)
+    view.setReadOnly(True)
+    view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+    view.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
+    view.setMinimumSize(640, 300)
+    lay.addWidget(view)
+    buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+    copy = buttons.addButton("Copy", QtWidgets.QDialogButtonBox.ActionRole)
+    copy.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(text))
+    buttons.rejected.connect(box.reject)
+    lay.addWidget(buttons)
+    box.setAttribute(Qt.WA_DeleteOnClose)
+    box.show()
 
 
 def plain_table() -> QtWidgets.QTableWidget:

@@ -502,9 +502,15 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ),
                     (
                         "TRYFIX=, HARMONICS=AUTO, TRYCOS3X=, TRYCOS4X=",
-                        "the search: fixed and free centres fitted, the smallest residual kept "
-                        "(fixed centres unless free ones are clearly better); then the "
-                        "harmonics",
+                        "the search: fixed and free centres fitted, the lowest residual kept; "
+                        "then the harmonics",
+                    ),
+                    (
+                        "SEARCH=FULL",
+                        "the default: TIE off and a larger R0 (1.5 × R0, or out of a masked "
+                        "core) tried in the search too, the fixed centre moved to 1/8 px and "
+                        "the number of isophotes changed (NR=AUTO), the lowest residual kept; "
+                        "SEARCH=BASIC: only TRYFIX",
                     ),
                     (
                         "PARALLEL=, RUNS=, JITTER=, SEED=, TAIL=, SHAPETOL=",
@@ -537,20 +543,31 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "models",
                 "models N [STEP=step] [SHOW=k,...] [AVERAGE=k,...]",
                 "The models of buffer N's latest iterative ELLIPROF fit (Automatic or "
-                "Iterative): every model made, numbered, with its parameters (FIXCTR, COS3X, "
-                "COS4X, R0, R1 asked and reached, NR, sky, sky tilt) and its residual, the RMS "
-                "over the noise between 1.15 × R0 and 1.1 × R1. The lowest residual of the "
-                "search, the harmonics and the sky tilt is the fit kept; the averaged fits and "
-                "the refits after it are listed only. ELLIPROF's Models table shows the same, "
-                "with To buffers and Average selected.",
+                "Iterative): every model made, numbered, with its parameters (centre, FIXCTR, "
+                "COS3X, COS4X, TIE, R0, R1 asked and reached, NR, sky, sky tilt), its residual "
+                "and its core's. The residual: between 1.15 × R0 and 1.1 × R1 (as asked, the "
+                "same for every model), in rings 20 % apart, each ring's RMS over its own "
+                "noise (measured once on the image), every ring counted the same, so a "
+                "residual in the bright middle is not hidden by the faint outskirts; the core: "
+                "the rings out to twice 1.15 × R0. The lowest residual of the search, the "
+                "centre, the harmonics, the isophotes and the sky tilt is the fit kept; a "
+                "model whose core is over twice the cleanest (and over 3) is high-contrast, "
+                "never kept nor averaged; the averaged fits and the refits after it are "
+                "listed only. ELLIPROF's Models table shows the same, a tab per step, with "
+                "To buffers, Average selected and each model's parameters on a right click; "
+                "the buffers made carry them too (right-click the buffer).",
                 (
-                    ("STEP=", "one step only: search, harmonics, tilt, residual or average"),
+                    (
+                        "STEP=",
+                        "one step only: search, centre, harmonics, isophotes, tilt, residual "
+                        "or average",
+                    ),
                     ("SHOW=", "these models and their residuals (image − sky − model) in buffers"),
                     (
                         "AVERAGE=",
                         "the mean of these models in buffers: the mean model and the residual "
-                        "image − mean sky − mean model, with its residual in the annulus and "
-                        "each model's alone",
+                        "image − mean sky − mean model, with its residual on the same rings "
+                        "and each model's alone",
                     ),
                 ),
                 "elliprof 1 X0=567 Y0=562 R0=9 R1=AUTO NR=AUTO SKY=3246 HARMONICS=AUTO "

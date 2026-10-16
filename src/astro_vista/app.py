@@ -42,6 +42,7 @@ from .panels import (
     SourceFinderPanel,
     SourcesPanel,
     scrolled,
+    show_text,
 )
 from .pairpanel import PairPanel, PairResultsPanel
 from .skyplanepanel import SkyPlanePanel
@@ -1331,6 +1332,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         n = item.data(Qt.UserRole)
         menu = QtWidgets.QMenu(self)
+        image = self.session.buffers.get(n)
+        if image is not None and image.about:
+            menu.addAction(
+                "Model parameters…",
+                lambda: show_text(self, f"Buffer {n}: {image.label}", image.about),
+            )
+            menu.addSeparator()
         menu.addAction("Save as FITS…", lambda: self.save_buffer(n))
         menu.addAction("Statistics", lambda: self.run_command(f"stats {n}"))
         menu.addAction("Tag (give it a name)…", lambda: self._tag_buffer(n))
@@ -2076,7 +2084,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(f"ELLIPROF • {info['text']}")
             return
         if phase == "chosen":
-            p.mark_kept_model(info["n"])
+            if info.get("rows"):
+                p.fill_models(info["rows"])  # with the flags and the mean's members
+            else:
+                p.mark_kept_model(info["n"])
             return
         if phase in ("call", "fitted"):
             if phase == "call":

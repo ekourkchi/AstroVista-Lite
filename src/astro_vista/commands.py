@@ -71,13 +71,17 @@ HELP = {
     "[RESIDTHRESH=8] [RESIDGROW=2] [RESIDCORE=10]: n times, the faint sources the residual shows "
     "are found, masked (layer residsources) and the galaxy fitted again. Any of R1=AUTO NR=AUTO "
     "SKYITER= SKYPLANE= TRYFIX= HARMONICS=AUTO TRYCOS3X= TRYCOS4X= "
-    "PARALLEL= RUNS= JITTER= TAIL= SHAPETOL= makes it an iterative fit with the pair fit's "
-    "options for one galaxy (SKY= or a sky measurement needed)",
-    "models": "models N [STEP=search|harmonics|tilt|residual|average] [SHOW=k,...] "
-    "[AVERAGE=k,...]  -  the models of buffer N's latest iterative ELLIPROF fit, each with "
-    "its parameters and its residual (RMS over the noise between 1.15 x R0 and 1.1 x R1); "
-    "SHOW= puts models k (and their residuals) in buffers; AVERAGE= the mean of the models "
-    "listed: mean model, residual = image - mean sky - mean model, and its residual",
+    "PARALLEL= RUNS= JITTER= TAIL= SHAPETOL= SEARCH= makes it an iterative fit with the pair "
+    "fit's options for one galaxy (SKY= or a sky measurement needed); SEARCH=FULL (the "
+    "default) also tries TIE off, a larger R0 (out of a masked core), the fixed centre to "
+    "1/8 px and the number of isophotes, SEARCH=BASIC only TRYFIX",
+    "models": "models N [STEP=search|centre|harmonics|isophotes|tilt|residual|average] "
+    "[SHOW=k,...] [AVERAGE=k,...]  -  the models of buffer N's latest iterative ELLIPROF fit, "
+    "each with its parameters and its residual (between 1.15 x R0 and 1.1 x R1, in rings 20% "
+    "apart, each ring's RMS over its own noise, every ring counted the same) and its core's "
+    "(the rings out to twice 1.15 x R0); SHOW= puts models k (and their residuals) in "
+    "buffers; AVERAGE= the mean of the models listed: mean model, residual = image - mean "
+    "sky - mean model, and its residual",
     "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [STEPS=0] [MASK=a,b] [CYCLES=4] "
     "[NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= "
     "Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
@@ -795,6 +799,9 @@ class Session(ImageCommands):
         harmonics = str(keys.get("HARMONICS", "")).strip().upper()
         if harmonics and harmonics != "AUTO":
             raise CommandError("HARMONICS must be AUTO")
+        search = str(keys.get("SEARCH", "FULL")).strip().upper()
+        if search not in ("FULL", "BASIC"):
+            raise CommandError("SEARCH must be FULL or BASIC")
         tail = str(keys.get("TAIL", "elliprof")).strip().lower()
         if tail not in pairs.TAILS:
             raise CommandError("TAIL must be one of " + ", ".join(pairs.TAILS))
@@ -822,6 +829,7 @@ class Session(ImageCommands):
             try_cos3x=numbers("TRYCOS3X", int),
             try_cos4x=numbers("TRYCOS4X", int),
             harmonic_search=harmonics == "AUTO",
+            wide=search == "FULL",
             shape_tol=number(keys.get("SHAPETOL", 0), "SHAPETOL"),
             parallel=integer(keys.get("PARALLEL", 1), "PARALLEL"),
             runs=integer(keys.get("RUNS", 1), "RUNS"),
@@ -874,7 +882,8 @@ class Session(ImageCommands):
             "store": result.model_store,
             "data": fitted_data,
             "centre": (x0, y0),
-            "annulus": (single.SCORE_INNER * r0, single.SCORE_OUTER * r1),
+            "rings": result.rings,
+            "buffer": n,
         }
         self.centre = (x0, y0)
         reply = Reply("\n".join(notes + [single.summary(result)]), {"fits", "centre", "models"})
@@ -883,6 +892,8 @@ class Session(ImageCommands):
         if minus:
             reply.text += f"\n(fitted buffer {n} minus {', '.join(minus)})"
         made = []
+        kept_row = next((r for r in result.models if r.get("kept")), None)
+        about = single.describe(kept_row, n) if kept_row is not None else ""
         for kind, key, data in (
             ("model", "TOMODEL", fitres.model),
             ("residual", "TORESID", residual),
@@ -892,6 +903,7 @@ class Session(ImageCommands):
                 if m == n:
                     raise CommandError(f"{key} must not be the image's own buffer")
                 self.buffers[m] = self.buffer(n).derived(f"{image.name} {kind}", data)
+                self.buffers[m].about = about
                 made.append(f"{m} {kind}")
         source = self.buffer(n)
         stale = [
@@ -970,49 +982,48 @@ class Session(ImageCommands):
 
         made, text = [], []
         taken = {n}
+        rings = rec["rings"]
 
-        def put(kind, data):
+        def put(kind, data, about=""):
             m = self.output_buffer(n, kind)
             while m in taken:
                 m = self.free_buffer(m)
             taken.add(m)
             self.buffers[m] = source.derived(f"{source.name} {kind}", data.astype(np.float32))
+            self.buffers[m].about = about
             made.append(f"{m} {kind}")
 
         by_n = {r["n"]: r for r in rec["rows"]}
         if "SHOW" in keys:
             for k in numbers("SHOW"):
-                one = single.average_models(
-                    rec["data"], rec["store"], [k], rec["centre"], *rec["annulus"]
-                )
+                one = single.average_models(rec["data"], rec["store"], [k], rings)
                 tag = f"model #{k} {by_n[k]['stage']}"
-                put(tag, one["model"])
-                put(f"{tag} residual", one["residual"])
+                about = single.describe(by_n[k], n)
+                put(tag, one["model"], about)
+                put(f"{tag} residual", one["residual"], about)
         if "AVERAGE" in keys:
             picked = numbers("AVERAGE")
             if len(picked) < 2:
                 raise CommandError("AVERAGE needs two models or more")
-            mean = single.average_models(
-                rec["data"], rec["store"], picked, rec["centre"], *rec["annulus"]
-            )
+            mean = single.average_models(rec["data"], rec["store"], picked, rings)
             tag = "models mean of " + ",".join(f"#{k}" for k in picked)
-            put(f"{tag} model", mean["model"])
-            put(f"{tag} residual", mean["residual"])
-            sc = mean["score"]
-            inner, outer = rec["annulus"]
 
-            def alone(k):  # on the same annulus as the mean
-                v = single.average_models(
-                    rec["data"], rec["store"], [k], rec["centre"], *rec["annulus"]
-                )["score"]
+            def alone(k):  # on the same rings as the mean
+                v = single.average_models(rec["data"], rec["store"], [k], rings)["score"]
                 return "-" if v is None else f"{v:.3f}"
 
-            text.append(
+            line = (
                 f"mean of {len(picked)} models ({', '.join(f'#{k}' for k in picked)}): residual "
-                + (f"{sc:.3f}" if sc is not None else "-")
-                + f" (RMS over the noise, {inner:.1f} to {outer:.1f} px); each alone: "
+                + ("-" if mean["score"] is None else f"{mean['score']:.3f}")
+                + ("" if mean["core"] is None else f", core {mean['core']:.2f}")
+                + f" (RMS over the noise, rings {rings.inner:.1f} to {rings.outer:.1f} px); "
+                + "each alone: "
                 + ", ".join(f"#{k} {alone(k)}" for k in picked)
             )
+            about = "\n\n".join([line] + [single.describe(by_n[k], n) for k in picked])
+            put(f"{tag} model", mean["model"], about)
+            put(f"{tag} residual", mean["residual"], about)
+            text.append(line)
         if not made:
             text = single.models_table(rows)
         if made:
@@ -2152,7 +2163,7 @@ KEYWORDS = {
     "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
     "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE= RESIDMASK= RESIDTHRESH= "
     "RESIDGROW= RESIDCORE= START= FACTOR= SKYITER= SKYPLANE= SKYFACTOR= TRYFIX= TRYFACTOR= "
-    "TRYCOS3X= TRYCOS4X= HARMONICS= PARALLEL= RUNS= JITTER= SEED= TAIL= SHAPETOL=",
+    "TRYCOS3X= TRYCOS4X= HARMONICS= PARALLEL= RUNS= JITTER= SEED= TAIL= SHAPETOL= SEARCH=",
     "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
@@ -2493,6 +2504,7 @@ ITERATIVE = {
     "SEED",
     "TAIL",
     "SHAPETOL",
+    "SEARCH",
 }
 
 
