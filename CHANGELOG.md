@@ -19,6 +19,9 @@ newest is at the top.
   lists every elliprof call (its step: search, harmonics, sky tilt, residual sources or
   averaging; R0 to R1, NR, passed or why it failed) and every finished fit in bold with its
   score, the best so far in green; the image shows the isophotes of the latest fit.
+- **ELLIPROF's score.** The residuals of a single fit are compared between 1.15 × R0 (the
+  core is often disturbed) and 1.1 × R1, every fit compared on the same annulus (that of
+  the fit kept), no longer out to 1.1 × the R1 asked.
 - **ELLIPROF: the sky analyser and the harmonic analysis.** The pair fit's sky section
   (segmentation settings, Measure, the verdict, histogram and cell map, Use this sky, the
   factor and its refinement, and after a fit the residual on the sky pixels with the next

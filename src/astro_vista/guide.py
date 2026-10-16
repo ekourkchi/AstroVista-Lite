@@ -906,7 +906,10 @@ TIPS = {
     "pixels and the next factor). <b>Progress</b>: while an iterative fit runs, the table "
     "under Fit isophotes lists every elliprof call (its step, R0 to R1, NR, passed or why it "
     "failed) and, in bold, every finished fit with its score (the residual's RMS over the "
-    "noise; green: the best so far), and the image shows the isophotes of the latest fit.",
+    "noise; green: the best so far), and the image shows the isophotes of the latest fit. "
+    "<b>Score</b>: the residual's RMS over the noise between 1.15 × R0 (the core is often "
+    "disturbed) and 1.1 × R1; fits that are compared (centres, harmonics, the sky tilt) are "
+    "scored on the same annulus, that of the fit kept.",
     "resid_sources": "<b>Residual sources</b> (RESIDMASK=n, RESIDTHRESH=8): the source finder "
     "cannot separate globular clusters, faint stars and small galaxies that sit on a bright "
     "galaxy from its light, so they stay in the fit. Once a fit is made, they stand out in "

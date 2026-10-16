@@ -110,6 +110,10 @@ Cancelled = Optional[Callable[[], bool]]
 
 
 HARMONIC_ROUNDS = 3  # the harmonics and the search, alternated at most this many times
+# the residuals are compared between SCORE_INNER x R0 (the core is often disturbed) and
+# SCORE_OUTER x R1, the same annulus for every fit compared: R1 that of the fit kept
+SCORE_INNER = 1.15
+SCORE_OUTER = 1.1
 
 
 class _Stop(Exception):
@@ -281,9 +285,11 @@ def _guard(fit, r1, nr, comp, s, image, mask, call, out):
     return chosen
 
 
-def score(result: SingleResult, mask: np.ndarray, centre, reach: float) -> Optional[float]:
+def score(
+    result: SingleResult, mask: np.ndarray, centre, inner: float, outer: float
+) -> Optional[float]:
     """How well the model describes the galaxy: the RMS of the residual (clipped at 10
-    sigma) within ``reach`` px of the centre, beyond 10 px from it, over its local noise."""
+    sigma) between ``inner`` and ``outer`` px from the centre, over its local noise."""
     from . import sky as skies
 
     if result.residual is None:
@@ -291,7 +297,7 @@ def score(result: SingleResult, mask: np.ndarray, centre, reach: float) -> Optio
     ny, nx = result.residual.shape
     yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
     r = np.hypot(xx - centre[0], yy - centre[1])
-    good = ~mask & np.isfinite(result.residual) & (r > 10) & (r < reach)
+    good = ~mask & np.isfinite(result.residual) & (r > inner) & (r < outer)
     if good.sum() < 50:
         return None
     sigma = skies.local_noise(result.residual, good)
@@ -377,7 +383,16 @@ def fit_single(
     counter = {"n": 0}
     stopped = lambda: cancelled is not None and cancelled()  # noqa: E731
     centre = (s.x0, s.y0)
-    reach = 1.1 * s.r1
+
+    def band(ref: SingleResult) -> Tuple[float, float]:
+        return SCORE_INNER * s.r0, SCORE_OUTER * (ref.r1 or s.r1)
+
+    def compare(results, ref: SingleResult) -> None:
+        """Every fit of ``results`` scored on ``ref``'s annulus, so that they compare."""
+        inner, outer = band(ref)
+        for r in results:
+            if r.complete:
+                r.score = score(r, r.mask, centre, inner, outer)
 
     def say(info):
         if progress is not None:
@@ -391,7 +406,8 @@ def fit_single(
             tagged = lambda info: progress({**info, "stage": stage})  # noqa: E731
         r = with_sky(img, m, settings, support, header, tagged, cancelled, fitter, counter)
         r.mask = m
-        r.score = score(r, m, centre, reach)
+        if r.complete:  # on its own annulus (compare() puts fits on a common one)
+            r.score = score(r, m, centre, SCORE_INNER * settings.r0, SCORE_OUTER * r.r1)
         say(
             {
                 "phase": "fitted",
@@ -427,6 +443,9 @@ def fit_single(
         results = each(
             [v for _l, v in variants], s.parallel, ["search: " + lbl for lbl, _v in variants]
         )
+        ref = next((r for r in results if r.complete), None)
+        if ref is not None:
+            compare(results, ref)
         rows_ = [
             {"variant": lbl, "status": r.status, "score": r.score, "r1": r.r1}
             for (lbl, _v), r in zip(variants, results)
@@ -474,6 +493,7 @@ def fit_single(
             s.parallel,
             [f"harmonics {rnd}: COS3X={a} COS4X={b}" for a, b in combos],
         )
+        compare([kept] + tried, kept)
         harmonic_rows.append(
             {
                 "round": rnd,
@@ -520,6 +540,7 @@ def fit_single(
         )
         again, again_s, again_rows = search(replace(s, cos3x=a, cos4x=b), f" (COS3X={a} COS4X={b})")
         rows += again_rows
+        compare([again, tried[i]], tried[i])
         if again.complete and again.score is not None and again.score <= tried[i].score:
             kept, kept_s = again, again_s
         else:
@@ -533,6 +554,7 @@ def fit_single(
             plane, words = tilt
             say({"phase": "stage", "text": "the sky tilt taken out: fitted again"})
             again = one(kept_s, mask, image - plane, stage="sky tilt out")
+            compare([kept, again], kept)
             if again.complete and again.score is not None and again.score < kept.score:
                 kept, image = again, image - plane
                 sky_map = kept_s.sky + plane
@@ -689,6 +711,12 @@ def summary(result: SingleResult) -> str:
     ]
     if result.reason:
         lines.append(result.reason)
+    if result.complete:
+        lines.append(
+            f"scores: the residual's RMS over the noise between {SCORE_INNER:g} x R0 and "
+            f"{SCORE_OUTER:g} x R1 ({SCORE_INNER * s.r0:.1f} to {SCORE_OUTER * result.r1:.1f} "
+            "px); the fits compared are scored on the same annulus"
+        )
     for row in result.search:
         sc = "-" if row["score"] is None else f"{row['score']:.3f}"
         lines.append(

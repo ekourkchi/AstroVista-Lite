@@ -2008,7 +2008,7 @@ def test_a_single_galaxy_grows_and_keeps_its_largest_clean_r1():
     seen2 = []
     r2 = single.fit_single(image, mask, s2, fitter=SteadyFitter(), progress=seen2.append)
     stages = [m["stage"] for m in seen2 if m["phase"] == "fitted"]
-    assert stages[:2] == ["search: centres fixed", "search: centres free"]
+    assert set(stages[:2]) == {"search: centres fixed", "search: centres free"}  # in parallel
     assert sum(x.startswith("average") for x in stages) == 2
     assert any(m["phase"] == "stage" and m["text"].startswith("averaging") for m in seen2)
     assert len(r2.search) == 2 and sum(bool(x.get("chosen")) for x in r2.search) == 1
@@ -2175,3 +2175,20 @@ def test_the_elliprof_panel_has_the_sky_analyser():
     settle()
     assert "median" in e.resid_card.text()  # the residual on the sky pixels, after the fit
     window.close()
+
+
+def test_the_single_fits_score_leaves_out_the_core_and_beyond_r1():
+    from astro_vista import single
+
+    rng = np.random.default_rng(1)
+    residual = rng.normal(0, 1, (200, 200))
+    r = single.SingleResult("fitted", single.SingleSettings(x0=100, y0=100, r0=10, r1=60))
+    r.residual = residual.copy()
+    mask = np.zeros(residual.shape, bool)
+    base = single.score(r, mask, (100, 100), 11.5, 66)
+    yy, xx = np.mgrid[0:200, 0:200] + 0.5
+    rr = np.hypot(xx - 100, yy - 100)
+    r.residual[rr < 11] += 50  # a disturbed core
+    r.residual[rr > 70] += 50  # light beyond R1
+    assert single.score(r, mask, (100, 100), 11.5, 66) == pytest.approx(base)
+    assert single.score(r, mask, (100, 100), 5, 66) > base + 0.5
