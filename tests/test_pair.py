@@ -2008,7 +2008,7 @@ def test_a_single_galaxy_grows_and_keeps_its_largest_clean_r1():
     seen2 = []
     r2 = single.fit_single(image, mask, s2, fitter=SteadyFitter(), progress=seen2.append)
     stages = [m["stage"] for m in seen2 if m["phase"] == "fitted"]
-    assert set(stages[:2]) == {"search: centres fixed", "search: centres free"}  # in parallel
+    assert stages[:2] == ["search", "search"]
     assert sum(x.startswith("average") for x in stages) == 2
     assert any(m["phase"] == "stage" and m["text"].startswith("averaging") for m in seen2)
     assert len(r2.search) == 2 and sum(bool(x.get("chosen")) for x in r2.search) == 1
@@ -2038,6 +2038,22 @@ def test_elliprof_with_the_pair_fits_options():
     assert any("elliprof mean fit 2 of 2 residual" in x for x in names)
     fit = ses.fits[ses.buffers[1].key]
     assert fit.profile is not None and len(fit.ellipses) == len(fit.profile)
+    # every model kept: listed by step, put in buffers, averaged
+    listed = ses.execute("models 1").text
+    assert listed.startswith("models (residual") and "<- kept" in listed
+    rows = ses.single_models[ses.buffers[1].key]["rows"]
+    done = [r["n"] for r in rows if r["status"] == "fitted"]
+    assert "search" in ses.execute("models 1 STEP=search").text
+    shown = ses.execute(f"models 1 SHOW={done[0]}").text
+    assert f"model #{done[0]}" in shown and "residual" in shown
+    mean = ses.execute(f"models 1 AVERAGE={done[0]},{done[1]}").text
+    assert mean.startswith("mean of 2 models") and "each alone" in mean
+    names = [b.name for b in ses.buffers.values()]
+    assert any(f"models mean of #{done[0]},#{done[1]} residual" in x for x in names)
+    with pytest.raises(CommandError):
+        ses.execute(f"models 1 AVERAGE={done[0]}")
+    with pytest.raises(CommandError):
+        ses.execute("models 1 SHOW=999")
     # the plain command is the same as before: one elliprof call
     plain = ses.execute("elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=100 NR=15 SKY=1000 MASK=stars").text
     assert plain.startswith("15 isophotes in")
@@ -2090,20 +2106,50 @@ def test_the_elliprof_panel_writes_the_iterative_fit():
             "reason": "ellipses cross",
         }
     )
-    p.add_call(
-        {
-            "phase": "fitted",
-            "stage": "search: centres fixed",
-            "status": "fitted",
-            "score": 1.234,
-            "r1": 96,
-            "nr": 13,
-        }
+    model = {
+        "phase": "fitted",
+        "n": 1,
+        "stage": "search",
+        "status": "fitted",
+        "fixctr": 1,
+        "cos3x": 2,
+        "cos4x": 2,
+        "r0": 3,
+        "r1": 120,
+        "r1_reached": 96,
+        "nr": 13,
+        "sky": 1000.0,
+        "tilt": False,
+        "score": 1.234,
+        "chooses": True,
+    }
+    p.add_model(model)
+    p.add_model({**model, "n": 2, "cos4x": 1, "score": 1.1})
+    assert p.calls.rowCount() == 1 and "FAILED" in p.calls.item(0, 4).text()
+    assert p.models.rowCount() == 2 and p.models.item(1, 11).text() == "1.100"
+    assert p.models.item(1, 4).text() == "1" and p.models.item(0, 7).text() == "96.0"
+    p.mark_kept_model(2)
+    assert p.models.item(1, 11).font().bold() and not p.models.item(0, 11).font().bold()
+    # a finished fit's models: filtered by step, selected, shown or averaged
+    p.fill_models(
+        [
+            {**model, "kept": True},
+            {**model, "n": 2, "stage": "harmonics 1", "cos4x": 1, "score": 1.1},
+            {**model, "n": 3, "stage": "average 2/3", "chooses": False},
+        ]
     )
-    assert p.calls.rowCount() == 2 and "FAILED" in p.calls.item(0, 4).text()
-    assert p.calls.item(1, 4).text().startswith("score 1.234") and p.calls.item(1, 4).font().bold()
+    assert p.models.rowCount() == 3 and p.models.item(0, 11).font().bold()
+    p.model_step.setCurrentIndex(p.model_step.findData("harmonics"))
+    assert [p.models.isRowHidden(r) for r in range(3)] == [True, False, True]
+    p.model_step.setCurrentIndex(0)
+    got = []
+    p.models_average_requested.connect(got.append)
+    p.models.selectAll()
+    assert p.models_average.isEnabled() and p.models_average.text() == "Average 3 selected"
+    p.models_average.click()
+    assert got == [[1, 2, 3]]
     p.clear_calls()
-    assert p.calls.rowCount() == 0
+    assert p.calls.rowCount() == 0 and p.models.rowCount() == 0
     p.fit_mode.setCurrentIndex(0)
     assert not p.calls.isVisibleTo(p)
     app.processEvents()
@@ -2125,7 +2171,12 @@ def test_the_single_fit_analyses_every_harmonic_and_reports_crossings():
     assert len(combos) == len(pair.COS3X_VALUES) * len(pair.COS4X_VALUES)
     assert r.harmonic_choice[1] == 1
     text = single.summary(r)
-    assert "harmonic analysis" in text and "harmonics kept: COS3X=2 COS4X=1" in text
+    assert "models (residual" in text and "harmonics kept: COS3X=2 COS4X=1" in text
+    # every model listed with its parameters and its residual; the kept one the lowest
+    compared = [m for m in r.models if m["chooses"] and m["score"] is not None]
+    kept = [m for m in r.models if m["kept"]]
+    assert len(kept) == 1 and kept[0]["score"] == min(m["score"] for m in compared)
+    assert all({"fixctr", "cos3x", "cos4x", "r0", "r1", "nr", "sky"} <= set(m) for m in r.models)
     assert "ellipses: none cross" in text
     assert any("the search again" in x for x in r.steps)
 

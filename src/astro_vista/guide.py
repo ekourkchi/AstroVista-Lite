@@ -909,7 +909,13 @@ TIPS = {
     "noise; green: the best so far), and the image shows the isophotes of the latest fit. "
     "<b>Score</b>: the residual's RMS over the noise between 1.15 × R0 (the core is often "
     "disturbed) and 1.1 × R1; fits that are compared (centres, harmonics, the sky tilt) are "
-    "scored on the same annulus, that of the fit kept.",
+    "scored on the same annulus, R0 and R1 as asked; the lowest residual is kept. "
+    "<b>Models</b>: after the fit, every model made is listed with its parameters (centres, "
+    "COS3X, COS4X, R0, R1 asked and reached, NR, sky, tilt) and its residual; the kept one is "
+    "green and bold. Show one step (search, harmonics, tilt, residual sources, averaged fits), "
+    "select rows (Shift, Ctrl/Cmd), and put them in buffers (To buffers, or double-click) or "
+    "make the mean of the selected (Average selected: the mean model and the residual image − "
+    "mean sky − mean model, with its residual in the same annulus).",
     "resid_sources": "<b>Residual sources</b> (RESIDMASK=n, RESIDTHRESH=8): the source finder "
     "cannot separate globular clusters, faint stars and small galaxies that sit on a bright "
     "galaxy from its light, so they stay in the fit. Once a fit is made, they stand out in "

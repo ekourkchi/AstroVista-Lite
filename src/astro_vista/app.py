@@ -940,6 +940,8 @@ class MainWindow(QtWidgets.QMainWindow):
         e.sky_segment_requested.connect(self.elliprof_sky_segment)
         e.sky_mask_toggled.connect(self.pair_sky_mask)
         e.cancel_requested.connect(self.cancel_elliprof)
+        e.models_show_requested.connect(lambda ks: self.elliprof_models(ks, False))
+        e.models_average_requested.connect(lambda ks: self.elliprof_models(ks, True))
         e.mask_sources_requested.connect(self.mask_sources)
         e.x0.valueChanged.connect(lambda _v: self._overlays())
         e.y0.valueChanged.connect(lambda _v: self._overlays())
@@ -1164,6 +1166,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.elliprof.cancel.setEnabled(False)
                 self._single_live = None
                 self.elliprof.progress.setText("")
+                self._fill_elliprof_models()
                 self._refresh_elliprof_sky()
                 self.elliprof.status.setText(reply.text.splitlines()[0])
                 self.show_result(self.profile)
@@ -2047,6 +2050,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self._single_live, self._single_live_key = None, image.key
         self.run_command(panel.command(n, model, resid, measured_sky=measured))
 
+    def _fill_elliprof_models(self) -> None:
+        """The models table: every model of the latest iterative fit of ELLIPROF's image."""
+        n = self._tool_number(self.elliprof.input, say=False)
+        image = self.session.buffers.get(n) if n is not None else None
+        rec = self.session.single_models.get(image.key) if image is not None else None
+        if rec is not None:
+            self.elliprof.fill_models(rec["rows"])
+
+    def elliprof_models(self, numbers: list, average: bool) -> None:
+        """Selected models of the latest iterative fit into buffers, or their mean."""
+        n = self._tool_number(self.elliprof.input)
+        if n is None or not numbers:
+            return
+        key = "AVERAGE" if average else "SHOW"
+        self.run_command(f"models {n} {key}=" + ",".join(str(k) for k in numbers))
+
     def _single_progress(self, info: dict) -> None:
         """An iterative ELLIPROF fit's progress: the table, the line above it and the
         isophotes of the latest fit drawn as they come."""
@@ -2056,8 +2075,14 @@ class MainWindow(QtWidgets.QMainWindow):
             p.progress.setText(info["text"])
             self.statusBar().showMessage(f"ELLIPROF • {info['text']}")
             return
+        if phase == "chosen":
+            p.mark_kept_model(info["n"])
+            return
         if phase in ("call", "fitted"):
-            p.add_call(info)
+            if phase == "call":
+                p.add_call(info)
+            else:
+                p.add_model(info)
             if info.get("ellipses"):
                 self._single_live = info["ellipses"]
                 if not self._live_timer.isActive():

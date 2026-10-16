@@ -534,6 +534,30 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "MASK=u12517j TORESID=4 RAW",
             ),
             _c(
+                "models",
+                "models N [STEP=step] [SHOW=k,...] [AVERAGE=k,...]",
+                "The models of buffer N's latest iterative ELLIPROF fit (Automatic or "
+                "Iterative): every model made, numbered, with its parameters (FIXCTR, COS3X, "
+                "COS4X, R0, R1 asked and reached, NR, sky, sky tilt) and its residual, the RMS "
+                "over the noise between 1.15 × R0 and 1.1 × R1. The lowest residual of the "
+                "search, the harmonics and the sky tilt is the fit kept; the averaged fits and "
+                "the refits after it are listed only. ELLIPROF's Models table shows the same, "
+                "with To buffers and Average selected.",
+                (
+                    ("STEP=", "one step only: search, harmonics, tilt, residual or average"),
+                    ("SHOW=", "these models and their residuals (image − sky − model) in buffers"),
+                    (
+                        "AVERAGE=",
+                        "the mean of these models in buffers: the mean model and the residual "
+                        "image − mean sky − mean model, with its residual in the annulus and "
+                        "each model's alone",
+                    ),
+                ),
+                "elliprof 1 X0=567 Y0=562 R0=9 R1=AUTO NR=AUTO SKY=3246 HARMONICS=AUTO "
+                "MASK=u12517j\nmodels 1 STEP=harmonics\nmodels 1 SHOW=2\n"
+                "models 1 AVERAGE=1,2,3",
+            ),
+            _c(
                 "sources",
                 "sources N [KEYWORD=value ...] [MASK=a,b] [TOSEG=M]",
                 "Find the sources (stars and galaxies) in buffer N and measure them, with SEP "

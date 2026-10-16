@@ -73,6 +73,11 @@ HELP = {
     "SKYITER= SKYPLANE= TRYFIX= HARMONICS=AUTO TRYCOS3X= TRYCOS4X= "
     "PARALLEL= RUNS= JITTER= TAIL= SHAPETOL= makes it an iterative fit with the pair fit's "
     "options for one galaxy (SKY= or a sky measurement needed)",
+    "models": "models N [STEP=search|harmonics|tilt|residual|average] [SHOW=k,...] "
+    "[AVERAGE=k,...]  -  the models of buffer N's latest iterative ELLIPROF fit, each with "
+    "its parameters and its residual (RMS over the noise between 1.15 x R0 and 1.1 x R1); "
+    "SHOW= puts models k (and their residuals) in buffers; AVERAGE= the mean of the models "
+    "listed: mean model, residual = image - mean sky - mean model, and its residual",
     "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [STEPS=0] [MASK=a,b] [CYCLES=4] "
     "[NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= "
     "Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
@@ -162,6 +167,8 @@ class Session(ImageCommands):
     def __init__(self):
         self.buffers: Dict[int, Image] = {}
         self.fits: Dict[str, FitResult] = {}  # the latest fit of each image (by its key)
+        # every model of the latest iterative ELLIPROF fit of each image (models N)
+        self.single_models: Dict[str, dict] = {}
         self.runs: List[detection.SourceRun] = []
         self.masks: Dict[str, Mask] = {}
         self.centre: Optional[Tuple[float, float]] = None
@@ -832,8 +839,9 @@ class Session(ImageCommands):
                 f"PARALLEL must be 1 to {pairs.MAX_PARALLEL}, RUNS 1 to {pairs.MAX_RUNS}"
             )
         self.stop_flag = False
+        fitted_data = np.asarray(image.data, float)
         result = single.fit_single(
-            np.asarray(image.data, float),
+            fitted_data,
             masked,
             st,
             header=image.header,
@@ -861,8 +869,15 @@ class Session(ImageCommands):
             seconds=result.seconds,
         )
         self.fits[image.key] = fitres
+        self.single_models[image.key] = {
+            "rows": result.models,
+            "store": result.model_store,
+            "data": fitted_data,
+            "centre": (x0, y0),
+            "annulus": (single.SCORE_INNER * r0, single.SCORE_OUTER * r1),
+        }
         self.centre = (x0, y0)
-        reply = Reply("\n".join(notes + [single.summary(result)]), {"fits", "centre"})
+        reply = Reply("\n".join(notes + [single.summary(result)]), {"fits", "centre", "models"})
         if "RAW" in flags:
             residual = result.residual.astype(np.float32)
         if minus:
@@ -920,6 +935,89 @@ class Session(ImageCommands):
             )
             reply.changed |= {"sources", "masks"}
         return reply
+
+    def c_models(self, words, keys) -> Reply:
+        """The models of buffer N's latest iterative ELLIPROF fit: listed (STEP= one
+        category), put in buffers (SHOW=), or averaged (AVERAGE=)."""
+        from . import single
+
+        if not words:
+            raise CommandError(HELP["models"])
+        n = integer(words[0], "the buffer")
+        source = self.buffer(n)
+        rec = self.single_models.get(source.key)
+        if rec is None:
+            raise CommandError(f"buffer {n} has no iterative ELLIPROF fit (elliprof ... R1=AUTO)")
+        rows = rec["rows"]
+        if "STEP" in keys:
+            want = str(keys["STEP"]).strip().lower()
+            if want not in {c[0] for c in single.CATEGORIES}:
+                raise CommandError(
+                    "STEP must be one of " + ", ".join(c[0] for c in single.CATEGORIES)
+                )
+            rows = [r for r in rows if single.category(r["stage"]) == want]
+
+        def numbers(key):
+            out = []
+            for tok in re.split(r"[,\s]+", str(keys[key]).strip()):
+                if not tok:
+                    continue
+                k = integer(tok.lstrip("#"), key)
+                if k not in rec["store"]:
+                    raise CommandError(f"model #{k} is not one of buffer {n}'s complete models")
+                out.append(k)
+            return out
+
+        made, text = [], []
+        taken = {n}
+
+        def put(kind, data):
+            m = self.output_buffer(n, kind)
+            while m in taken:
+                m = self.free_buffer(m)
+            taken.add(m)
+            self.buffers[m] = source.derived(f"{source.name} {kind}", data.astype(np.float32))
+            made.append(f"{m} {kind}")
+
+        by_n = {r["n"]: r for r in rec["rows"]}
+        if "SHOW" in keys:
+            for k in numbers("SHOW"):
+                one = single.average_models(
+                    rec["data"], rec["store"], [k], rec["centre"], *rec["annulus"]
+                )
+                tag = f"model #{k} {by_n[k]['stage']}"
+                put(tag, one["model"])
+                put(f"{tag} residual", one["residual"])
+        if "AVERAGE" in keys:
+            picked = numbers("AVERAGE")
+            if len(picked) < 2:
+                raise CommandError("AVERAGE needs two models or more")
+            mean = single.average_models(
+                rec["data"], rec["store"], picked, rec["centre"], *rec["annulus"]
+            )
+            tag = "models mean of " + ",".join(f"#{k}" for k in picked)
+            put(f"{tag} model", mean["model"])
+            put(f"{tag} residual", mean["residual"])
+            sc = mean["score"]
+            inner, outer = rec["annulus"]
+
+            def alone(k):  # on the same annulus as the mean
+                v = single.average_models(
+                    rec["data"], rec["store"], [k], rec["centre"], *rec["annulus"]
+                )["score"]
+                return "-" if v is None else f"{v:.3f}"
+
+            text.append(
+                f"mean of {len(picked)} models ({', '.join(f'#{k}' for k in picked)}): residual "
+                + (f"{sc:.3f}" if sc is not None else "-")
+                + f" (RMS over the noise, {inner:.1f} to {outer:.1f} px); each alone: "
+                + ", ".join(f"#{k} {alone(k)}" for k in picked)
+            )
+        if not made:
+            text = single.models_table(rows)
+        if made:
+            text.append("buffers: " + "; ".join(made))
+        return Reply("\n".join(text), {"buffers", "data"} if made else set())
 
     def _residual_outputs(self, image: Image, runs, added, line: str) -> str:
         """RESIDMASK: each round's sources in the residual as source runs, and the pixels
@@ -2050,6 +2148,7 @@ class Session(ImageCommands):
 
 # keywords offered by Tab completion after each command
 KEYWORDS = {
+    "models": "STEP= SHOW= AVERAGE=",
     "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
     "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE= RESIDMASK= RESIDTHRESH= "
     "RESIDGROW= RESIDCORE= START= FACTOR= SKYITER= SKYPLANE= SKYFACTOR= TRYFIX= TRYFACTOR= "

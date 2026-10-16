@@ -13,6 +13,7 @@ fitting.fit_array, as the pair fit's.
 
 from __future__ import annotations
 
+import itertools
 import math
 import time
 from dataclasses import dataclass, field, replace
@@ -98,6 +99,10 @@ class SingleResult:
     resid_mask: Optional[np.ndarray] = None
     mask: Optional[np.ndarray] = None  # the fitting mask used
     harmonics: List[dict] = field(default_factory=list)  # the harmonic analysis, every try
+    models: List[dict] = field(default_factory=list)  # every model made: settings, residual
+    # every complete model, by its number: its model (float32), sky, sky tilt and mask, so
+    # that any of them can be shown or several averaged afterwards (Session.single_models)
+    model_store: Dict[int, dict] = field(default_factory=dict)
     harmonic_choice: Tuple[int, int] = (2, 2)  # COS3X, COS4X of the fit kept
 
     @property
@@ -110,8 +115,9 @@ Cancelled = Optional[Callable[[], bool]]
 
 
 HARMONIC_ROUNDS = 3  # the harmonics and the search, alternated at most this many times
-# the residuals are compared between SCORE_INNER x R0 (the core is often disturbed) and
-# SCORE_OUTER x R1, the same annulus for every fit compared: R1 that of the fit kept
+# every model's residual is measured between SCORE_INNER x R0 (the core is often
+# disturbed) and SCORE_OUTER x R1, its R0 and R1 as asked: the same annulus for every
+# model compared (search, harmonics, sky tilt), and the lowest residual kept
 SCORE_INNER = 1.15
 SCORE_OUTER = 1.1
 
@@ -285,6 +291,32 @@ def _guard(fit, r1, nr, comp, s, image, mask, call, out):
     return chosen
 
 
+def _key(v: "SingleSettings") -> tuple:
+    return (v.fixctr, v.cos3x, v.cos4x, v.r0, v.r1, v.nr, round(v.sky, 6), v.sky_iter)
+
+
+def _model_row(number, stage, settings, r, tilt, chooses) -> dict:
+    """A model's parameters and its residual (the models table)."""
+    return {
+        "n": number,
+        "stage": stage,
+        "status": r.status,
+        "fixctr": settings.fixctr if settings.fixctr is not None else 0,
+        "cos3x": settings.cos3x if settings.cos3x is not None else 2,
+        "cos4x": settings.cos4x if settings.cos4x is not None else 2,
+        "r0": settings.r0,
+        "r1": settings.r1,
+        "r1_reached": r.r1,
+        "nr": r.nr,
+        "sky": r.settings.sky,
+        "tilt": tilt,
+        "inner": SCORE_INNER * settings.r0,
+        "outer": SCORE_OUTER * settings.r1,
+        "score": r.score,
+        "chooses": chooses,
+    }
+
+
 def score(
     result: SingleResult, mask: np.ndarray, centre, inner: float, outer: float
 ) -> Optional[float]:
@@ -384,54 +416,48 @@ def fit_single(
     stopped = lambda: cancelled is not None and cancelled()  # noqa: E731
     centre = (s.x0, s.y0)
 
-    def band(ref: SingleResult) -> Tuple[float, float]:
-        return SCORE_INNER * s.r0, SCORE_OUTER * (ref.r1 or s.r1)
-
-    def compare(results, ref: SingleResult) -> None:
-        """Every fit of ``results`` scored on ``ref``'s annulus, so that they compare."""
-        inner, outer = band(ref)
-        for r in results:
-            if r.complete:
-                r.score = score(r, r.mask, centre, inner, outer)
+    models: List[dict] = []  # every model made
+    order = itertools.count(1)  # each model's number, given when it is started
 
     def say(info):
         if progress is not None:
             progress(info)
 
-    def one(settings, m=mask, img=image, stage="fit"):
-        """One fit (with its sky iterations); every call and the fit's score reported,
-        labelled by ``stage``."""
+    def one(settings, m=mask, img=image, stage="fit", plane=None, chooses=True, number=None):
+        """One fit (with its sky iterations), scored between SCORE_INNER x R0 and
+        SCORE_OUTER x R1 (as asked) and listed in ``models`` (``chooses``: one of the
+        models the lowest residual is chosen from); every call reported, by ``stage``."""
+        number = number if number is not None else next(order)
         tagged = None
         if progress is not None:
             tagged = lambda info: progress({**info, "stage": stage})  # noqa: E731
         r = with_sky(img, m, settings, support, header, tagged, cancelled, fitter, counter)
         r.mask = m
-        if r.complete:  # on its own annulus (compare() puts fits on a common one)
-            r.score = score(r, m, centre, SCORE_INNER * settings.r0, SCORE_OUTER * r.r1)
+        if r.complete:
+            r.score = score(r, m, centre, SCORE_INNER * settings.r0, SCORE_OUTER * settings.r1)
+        row = _model_row(number, stage, settings, r, plane is not None, chooses)
+        models.append({**row, "settings": settings, "result": r, "plane": plane})
         say(
             {
                 "phase": "fitted",
-                "stage": stage,
-                "status": r.status,
-                "score": r.score,
-                "r1": r.r1,
-                "nr": r.nr,
+                **row,
                 "call": counter["n"],
                 "ellipses": pair.profile_ellipses(r.profile) if r.complete else None,
             }
         )
         return r
 
-    def each(items, workers, stages):
-        jobs = list(zip(items, stages))
+    def each(items, workers, stages, chooses=True):
+        jobs = [(x, lbl, next(order)) for x, lbl in zip(items, stages)]
         if workers <= 1 or len(jobs) <= 1:
-            return [one(x, stage=lbl) for x, lbl in jobs]
+            return [one(x, stage=lbl, number=k, chooses=chooses) for x, lbl, k in jobs]
         with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
-            return list(pool.map(lambda j: one(j[0], stage=j[1]), jobs))
+            return list(
+                pool.map(lambda j: one(j[0], stage=j[1], number=j[2], chooses=chooses), jobs)
+            )
 
     def search(base: SingleSettings, tag: str = ""):
-        """Every TRYFIX on ``base``: the fit kept (fixed centres
-        unless free ones lower the residual by more than FREE_GAIN), its settings, the rows."""
+        """Every TRYFIX on ``base``: the fit with the lowest residual, its settings, the rows."""
         variants = []
         for fix in base.try_fix or [None]:
             v, label = base, "as asked"
@@ -440,12 +466,7 @@ def fit_single(
                 label = "centres " + {0: "free", 1: "fixed", 2: "median"}[fix]
             variants.append((label + tag, v))
         say({"phase": "stage", "text": f"search{tag}: {len(variants)} fit(s)"})
-        results = each(
-            [v for _l, v in variants], s.parallel, ["search: " + lbl for lbl, _v in variants]
-        )
-        ref = next((r for r in results if r.complete), None)
-        if ref is not None:
-            compare(results, ref)
+        results = each([v for _l, v in variants], s.parallel, ["search" + tag] * len(variants))
         rows_ = [
             {"variant": lbl, "status": r.status, "score": r.score, "r1": r.r1}
             for (lbl, _v), r in zip(variants, results)
@@ -453,12 +474,7 @@ def fit_single(
         done = [(r.score, i) for i, r in enumerate(results) if r.complete and r.score is not None]
         if not done:
             return results[0], variants[0][1], rows_
-        best_i = min(done)[1]
-        fixed = [(sc, i) for sc, i in done if (variants[i][1].fixctr or 0) != 0]
-        if fixed and (variants[best_i][1].fixctr or 0) == 0:
-            f_sc, f_i = min(fixed)
-            if results[best_i].score > f_sc - pair.FREE_GAIN:
-                best_i = f_i
+        best_i = min(done)[1]  # the lowest residual (a tie: the first asked)
         if len(rows_) > 1:
             rows_[best_i]["chosen"] = True
         return results[best_i], variants[best_i][1], rows_
@@ -470,6 +486,7 @@ def fit_single(
         return kept
     steps = list(kept.steps)
     harmonic_rows: List[dict] = []
+    fitted: Dict[tuple, SingleResult] = {}  # the harmonic fits made, by their settings
     # the harmonics, iteratively: every COS3X and COS4X asked (all with HARMONICS=AUTO) on
     # the fit kept, its sky kept; when another combination lowers the residual, the search
     # is made again with it, until the harmonics stay (at most HARMONIC_ROUNDS times).  A
@@ -487,13 +504,19 @@ def fit_single(
         fixed_sky = replace(
             kept_s, sky=kept.settings.sky, sky_factor=kept.settings.sky_factor, sky_iter=0
         )
-        say({"phase": "stage", "text": f"harmonics round {rnd}: {len(combos)} combinations"})
-        tried = each(
-            [replace(fixed_sky, cos3x=a, cos4x=b) for a, b in combos],
-            s.parallel,
-            [f"harmonics {rnd}: COS3X={a} COS4X={b}" for a, b in combos],
+        # a combination already fitted with the same settings and sky is not fitted again
+        trials = [replace(fixed_sky, cos3x=a, cos4x=b) for a, b in combos]
+        new = [v for v in trials if _key(v) not in fitted]
+        say(
+            {
+                "phase": "stage",
+                "text": f"harmonics round {rnd}: {len(new)} combinations"
+                + (f" ({len(trials) - len(new)} fitted before)" if len(new) < len(trials) else ""),
+            }
         )
-        compare([kept] + tried, kept)
+        for v, r in zip(new, each(new, s.parallel, [f"harmonics {rnd}"] * len(new))):
+            fitted[_key(v)] = r
+        tried = [fitted[_key(v)] for v in trials]
         harmonic_rows.append(
             {
                 "round": rnd,
@@ -524,10 +547,10 @@ def fit_single(
             for i, r in enumerate(tried)
             if r.complete and r.score is not None
         ]
-        if not good or min(good)[0] >= kept.score - pair.HARMONIC_GAIN:
+        if not good or min(good)[0] >= kept.score:
             steps.append(
                 f"harmonics (round {rnd}): COS3X={own[0]} COS4X={own[1]} kept; no other of "
-                f"{len(combos)} lowered the residual by more than {pair.HARMONIC_GAIN:g}"
+                f"{len(combos)} has a lower residual"
             )
             break
         i = min(good)[2]
@@ -538,9 +561,8 @@ def fit_single(
             f"harmonics (round {rnd}): COS3X={a} COS4X={b} lowered the residual "
             f"({kept.score:.3f} -> {tried[i].score:.3f}); the search again with them"
         )
-        again, again_s, again_rows = search(replace(s, cos3x=a, cos4x=b), f" (COS3X={a} COS4X={b})")
+        again, again_s, again_rows = search(replace(s, cos3x=a, cos4x=b), " again")
         rows += again_rows
-        compare([again, tried[i]], tried[i])
         if again.complete and again.score is not None and again.score <= tried[i].score:
             kept, kept_s = again, again_s
         else:
@@ -553,14 +575,26 @@ def fit_single(
         if tilt is not None:
             plane, words = tilt
             say({"phase": "stage", "text": "the sky tilt taken out: fitted again"})
-            again = one(kept_s, mask, image - plane, stage="sky tilt out")
-            compare([kept, again], kept)
-            if again.complete and again.score is not None and again.score < kept.score:
-                kept, image = again, image - plane
-                sky_map = kept_s.sky + plane
-                steps.append(words + ": taken out of the image; the fit on it kept")
-            else:
-                steps.append(words + ": the fit without it kept")
+            again = one(kept_s, mask, image - plane, stage="sky tilt out", plane=plane)
+            steps.append(words + ": taken out of the image and fitted again")
+    # the model with the lowest residual of all those compared (search, harmonics, tilt)
+    pool_ = [
+        m for m in models if m["chooses"] and m["result"].complete and m["result"].score is not None
+    ]
+    if pool_:
+        # on a tie, the model the search has (the harmonics nearest the ones asked)
+        best = min(pool_, key=lambda m: (m["result"].score, m["result"] is not kept, m["n"]))
+        if best["result"] is not kept:
+            steps.append(
+                f"the lowest residual of {len(pool_)} models: #{best['n']} {best['stage']}"
+            )
+        kept = best["result"]
+        # its settings, with the sky as asked (the averaged fits refine their own)
+        kept_s = replace(best["settings"], sky=s.sky, sky_factor=s.sky_factor, sky_iter=s.sky_iter)
+        if best["plane"] is not None:
+            image = image - best["plane"]
+            sky_map = best["settings"].sky + best["plane"]
+            steps.append("the fit on the image with the sky tilt taken out kept")
     # RESIDMASK: the faint sources of the residual, masked, and the fit kept again
     if s.resid_rounds and kept.complete and image_obj is not None:
         from . import detection
@@ -590,6 +624,7 @@ def fit_single(
                 kept.mask | add,
                 image,
                 stage=f"residual sources {k}",
+                chooses=False,
             )
             if not again.complete:
                 steps.append(f"residual sources round {k}: the refit was incomplete; not used")
@@ -617,16 +652,33 @@ def fit_single(
         more = each(
             jittered,
             s.parallel,
-            [
-                f"average {k}/{n_avg}: R0 {v.r0:g}, R1 {v.r1:g}"
-                for k, v in enumerate(jittered, start=2)
-            ],
+            [f"average {k}/{n_avg}" for k in range(2, n_avg + 1)],
+            chooses=False,
         )
         members = [kept] + [r for r in more if r.complete]
         if len(members) > 1:
             kept.ensemble = _mean(members, image, mask, kept_s, jittered, more)
     kept.search = rows if len(rows) > 1 else []
     kept.harmonics = harmonic_rows
+    kept.models = sorted(
+        ({k: v for k, v in m.items() if k not in ("settings", "result", "plane")} for m in models),
+        key=lambda m: m["n"],
+    )
+    kept.model_store = {
+        m["n"]: {
+            "model": m["result"].model.astype(np.float32),
+            "sky": float(m["result"].settings.sky),
+            "plane": m["plane"],
+            "mask": m["result"].mask,
+        }
+        for m in models
+        if m["result"].complete
+    }
+    final = next((m for m in models if m["result"] is kept), None)
+    for m in kept.models:
+        m["kept"] = final is not None and m["n"] == final["n"]
+    if final is not None:
+        say({"phase": "chosen", "n": final["n"]})
     kept.harmonic_choice = (
         kept_s.cos3x if kept_s.cos3x is not None else 2,
         kept_s.cos4x if kept_s.cos4x is not None else 2,
@@ -701,6 +753,72 @@ def largest_crossing(profile) -> Optional[float]:
     return max(pair.crossing(ell[k], ell[k + 1]) for k in range(len(ell) - 1))
 
 
+CATEGORIES = [  # (key, the steps' names start with, label)
+    ("search", "search", "the search (centres)"),
+    ("harmonics", "harmonics", "the harmonics"),
+    ("tilt", "sky tilt", "the sky tilt taken out"),
+    ("residual", "residual sources", "refits with residual sources masked"),
+    ("average", "average", "the averaged fits"),
+]
+
+
+def category(stage: str) -> str:
+    """The category of a model's step (CATEGORIES' key)."""
+    for key, prefix, _label in CATEGORIES:
+        if stage.startswith(prefix):
+            return key
+    return "other"
+
+
+def average_models(image, store: Dict[int, dict], numbers, centre, inner, outer) -> dict:
+    """The mean of the models ``numbers``: mean model, mean sky (with any tilt), residual =
+    image - mean sky - mean model (NaN where any of them was masked), and that residual's
+    RMS over the noise in the annulus inner..outer."""
+    picked = [store[k] for k in numbers]
+    model = np.mean([p["model"] for p in picked], axis=0, dtype=np.float64)
+    sky = np.mean(
+        [p["sky"] + (p["plane"] if p["plane"] is not None else 0.0) for p in picked], axis=0
+    )
+    masked = np.zeros(image.shape, bool)
+    for p in picked:
+        if p["mask"] is not None:
+            masked |= p["mask"]
+    residual = image - sky - model
+    probe = SingleResult("fitted", None, residual=residual)
+    return {
+        "model": model,
+        "sky": sky,
+        "residual": np.where(masked, np.nan, residual),
+        "score": score(probe, masked, centre, inner, outer),
+    }
+
+
+def models_table(models: List[dict]) -> List[str]:
+    """Every model made: its parameters and its residual, the lowest kept."""
+    if not models:
+        return []
+    out = [
+        f"models (residual: RMS over the noise between {SCORE_INNER:g} x R0 and "
+        f"{SCORE_OUTER:g} x R1; the lowest of those compared is kept, the averaged fits and "
+        "refits after it are listed only):",
+        f"  {'#':>3} {'step':<34} {'FIXCTR':>6} {'COS3X':>5} {'COS4X':>5} {'R0':>6} "
+        f"{'R1':>6} {'reached':>7} {'NR':>3} {'sky':>9} {'tilt':>4} {'annulus':>13} "
+        f"{'residual':>8}",
+    ]
+    for m in models:
+        sc = "-" if m["score"] is None else f"{m['score']:.3f}"
+        if m["status"] != "fitted":
+            sc = m["status"]
+        mark = "  <- kept" if m.get("kept") else ("" if m["chooses"] else "  (not compared)")
+        out.append(
+            f"  {m['n']:>3} {m['stage'][:34]:<34} {m['fixctr']:>6} {m['cos3x']:>5} "
+            f"{m['cos4x']:>5} {m['r0']:>6.1f} {m['r1']:>6.1f} {m['r1_reached']:>7.1f} "
+            f"{m['nr']:>3} {m['sky']:>9.6g} {'yes' if m['tilt'] else 'no':>4} "
+            f"{m['inner']:>6.1f}-{m['outer']:<6.1f} {sc:>8}{mark}"
+        )
+    return out
+
+
 def summary(result: SingleResult) -> str:
     s = result.settings
     lines = [
@@ -711,18 +829,6 @@ def summary(result: SingleResult) -> str:
     ]
     if result.reason:
         lines.append(result.reason)
-    if result.complete:
-        lines.append(
-            f"scores: the residual's RMS over the noise between {SCORE_INNER:g} x R0 and "
-            f"{SCORE_OUTER:g} x R1 ({SCORE_INNER * s.r0:.1f} to {SCORE_OUTER * result.r1:.1f} "
-            "px); the fits compared are scored on the same annulus"
-        )
-    for row in result.search:
-        sc = "-" if row["score"] is None else f"{row['score']:.3f}"
-        lines.append(
-            f"  {row['variant']}: {row['status']}, R1 {row['r1']:.1f}, score {sc}"
-            + ("  <- kept" if row.get("chosen") else "")
-        )
     for e in result.sky_iterations:
         med = e.get("median")
         lines.append(
@@ -732,18 +838,8 @@ def summary(result: SingleResult) -> str:
             + (f"; {e['note']}" if e.get("note") else "")
         )
     lines += [f"  {x}" for x in result.steps]
+    lines += models_table(result.models)
     if result.harmonics:
-        lines.append(
-            "harmonic analysis (residual score; R1 reached; * short of the fit kept's R1: "
-            "its ellipses crossed or failed further out):"
-        )
-        for h in result.harmonics:
-            sc = "-" if h["score"] is None else f"{h['score']:.3f}"
-            lines.append(
-                f"  round {h['round']}: COS3X={h['cos3x']:+d} COS4X={h['cos4x']}: score {sc}, "
-                f"R1 {h['r1']:.1f}{' *' if h.get('short') else ''}"
-                + ("  <- kept" if h.get("kept") else "")
-            )
         lines.append(
             f"harmonics kept: COS3X={result.harmonic_choice[0]} COS4X={result.harmonic_choice[1]}"
         )

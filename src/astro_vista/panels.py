@@ -16,7 +16,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 
-from . import detection, guide
+from . import detection, guide, single
 from .flow import FlowLayout
 
 CONTROL = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
@@ -259,6 +259,8 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
     radius_pick_requested = QtCore.Signal(str)  # "r0" or "r1"
     sky_segment_requested = QtCore.Signal()  # measure the sky by segmentation
     sky_mask_toggled = QtCore.Signal(bool)
+    models_show_requested = QtCore.Signal(list)  # model numbers to put in buffers
+    models_average_requested = QtCore.Signal(list)  # model numbers to average
     cancel_requested = QtCore.Signal()
 
     FIT_MODES = ["One elliprof call", "Automatic (as the pair fit)", "Iterative, my settings"]
@@ -452,14 +454,65 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.calls.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         self.calls.verticalHeader().setDefaultSectionSize(22)
         self.calls.setToolTip(
-            "The iterative fit as it runs: every elliprof call (passed, or why it failed) and, "
-            "in bold, each finished fit with its score (the residual's RMS over the noise); "
-            "green: the best so far"
+            "The iterative fit as it runs: every elliprof call, passed or why it failed"
         )
         form.addRow(self.calls)
+        self.models = plain_table()
+        self.models.setColumnCount(len(self.MODEL_COLUMNS))
+        self.models.setHorizontalHeaderLabels([c for c, _k in self.MODEL_COLUMNS])
+        self.models.setMinimumHeight(200)
+        self.models.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.models.verticalHeader().setVisible(False)
+        self.models.verticalHeader().setDefaultSectionSize(22)
+        self.models.setToolTip(
+            "Every model made, with its parameters and its residual: the RMS over the noise "
+            "between 1.15 × R0 and 1.1 × R1 (R0, R1 as asked; 'reached': where its isophotes "
+            "stopped). The lowest residual of those compared is kept (green, bold); grey: "
+            "averaged fits and refits, listed only"
+        )
+        self.models.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.models.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.models.cellDoubleClicked.connect(
+            lambda row, _c: self.models_show_requested.emit(self._model_numbers([row]))
+        )
+        self.models.itemSelectionChanged.connect(self._models_selection)
+        self.model_step = QtWidgets.QComboBox()
+        self.model_step.addItem("All models", "")
+        for key, _prefix, label in single.CATEGORIES:
+            self.model_step.addItem(label[:1].upper() + label[1:], key)
+        self.model_step.setToolTip("Show the models of one step only")
+        self.model_step.currentIndexChanged.connect(self._filter_models)
+        self.models_show = QtWidgets.QPushButton("To buffers")
+        self.models_show.setToolTip(
+            "Each selected model and its residual (image − its sky − its model) into buffers "
+            "(or double-click a row)"
+        )
+        self.models_show.clicked.connect(
+            lambda: self.models_show_requested.emit(self._model_numbers())
+        )
+        self.models_average = QtWidgets.QPushButton("Average selected")
+        self.models_average.setToolTip(
+            "The mean of the selected models into buffers: the mean model and the residual "
+            "image − mean sky − mean model, with its residual in the same annulus"
+        )
+        self.models_average.clicked.connect(
+            lambda: self.models_average_requested.emit(self._model_numbers())
+        )
+        self.models_bar = QtWidgets.QWidget()
+        bar = QtWidgets.QHBoxLayout(self.models_bar)
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.addWidget(self.model_step, 1)
+        bar.addWidget(self.models_show)
+        bar.addWidget(self.models_average)
+        self.models_heading = heading("Models: the lowest residual is kept")
+        form.addRow(self.models_heading)
+        form.addRow(self.models_bar)
+        form.addRow(self.models)
+        self._models_selection()
         self._best_score = None
-        self.fit_mode.currentIndexChanged.connect(lambda i: self.calls.setVisible(i > 0))
-        self.calls.setVisible(False)
+        for w in (self.calls, self.models_heading, self.models_bar, self.models):
+            self.fit_mode.currentIndexChanged.connect(lambda i, w=w: w.setVisible(i > 0))
+            w.setVisible(False)
         self.build_residual_sky(form, "Residual sky", "Fit isophotes")
 
     def _iterative_box(self) -> QtWidgets.QGroupBox:
@@ -547,53 +600,156 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.fit_mode.currentIndexChanged.connect(lambda i: box.setVisible(i == 2))
         return box
 
+    MODEL_COLUMNS = [
+        ("#", "n"),
+        ("step", "stage"),
+        ("FIXCTR", "fixctr"),
+        ("COS3X", "cos3x"),
+        ("COS4X", "cos4x"),
+        ("R0", "r0"),
+        ("R1", "r1"),
+        ("reached", "r1_reached"),
+        ("NR", "nr"),
+        ("sky", "sky"),
+        ("tilt", "tilt"),
+        ("residual", "score"),
+    ]
+
     def clear_calls(self) -> None:
         self.calls.setRowCount(0)
+        self.models.setRowCount(0)
         self.progress.setText("")
         self._best_score = None
 
     def add_call(self, info: dict) -> None:
-        """A row of the progress table, from the fit's progress message ("call": an
-        elliprof call; "fitted": a fit finished, with its score)."""
+        """A row of the calls table: an elliprof call, passed or why it failed."""
         row = self.calls.rowCount()
         self.calls.insertRow(row)
-        done = info.get("phase") == "fitted"
-        best = False
-        if done:
-            sc = info.get("score")
-            if info.get("status") != "fitted" or sc is None:
-                result, colour = f"fit {info.get('status', '')}: no score", "#f85149"
-            else:
-                best = self._best_score is None or sc < self._best_score
-                self._best_score = sc if best else self._best_score
-                result = f"score {sc:.3f}" + ("  best so far" if best else "")
-                colour = "#3fb950" if best else None
-            radii = f"to {info.get('r1', 0):.1f}"
-        else:
-            ok = info.get("passed")
-            result = "passed" if ok else f"FAILED: {info.get('reason', '')}"
-            colour = None if ok else "#f85149"
-            radii = f"{info.get('r0', 0):g}–{info.get('r1', 0):.1f}"
+        ok = info.get("passed")
         stage = info.get("stage", "")
         if info.get("sky_iteration"):
             stage += f" (sky {info['sky_iteration']}: ×{info['sky_factor']:.5f})"
         cells = [
-            "" if done else str(info.get("call", "")),
+            str(info.get("call", "")),
             stage,
-            radii,
+            f"{info.get('r0', 0):g}–{info.get('r1', 0):.1f}",
             str(info.get("nr", "")),
-            result,
+            "passed" if ok else f"FAILED: {info.get('reason', '')}",
         ]
         for col, text in enumerate(cells):
             item = QtWidgets.QTableWidgetItem(text)
-            if done:
-                f = item.font()
-                f.setBold(True)
-                item.setFont(f)
-            if colour and col == 4:
-                item.setForeground(QtGui.QColor(colour))
+            if col == 4 and not ok:
+                item.setForeground(QtGui.QColor("#f85149"))
             self.calls.setItem(row, col, item)
         self.calls.scrollToBottom()
+
+    def add_model(self, info: dict) -> None:
+        """A row of the models table: a finished model's parameters and its residual
+        (green: the lowest so far of those compared)."""
+        row = self.models.rowCount()
+        self.models.insertRow(row)
+        sc = info.get("score")
+        compared = info.get("chooses", True)
+        best = False
+        if compared and info.get("status") == "fitted" and sc is not None:
+            best = self._best_score is None or sc < self._best_score
+            if best:
+                self._best_score = sc
+        for col, (_label, key) in enumerate(self.MODEL_COLUMNS):
+            v = info.get(key)
+            if key == "score":
+                text = (
+                    f"{v:.3f}"
+                    if info.get("status") == "fitted" and v is not None
+                    else str(info.get("status", ""))
+                )
+            elif key == "tilt":
+                text = "yes" if v else "no"
+            elif key in ("r0", "r1", "r1_reached"):
+                text = f"{v:.1f}"
+            elif key == "sky":
+                text = f"{v:.6g}"
+            else:
+                text = str(v)
+            item = QtWidgets.QTableWidgetItem(text)
+            if key in ("n", "score"):
+                item.setData(Qt.UserRole, info.get("n"))
+            if key == "score":
+                item.setData(Qt.UserRole + 1, info.get("status"))
+            if key == "stage":
+                item.setData(Qt.UserRole + 1, single.category(str(v)))
+            if not compared:
+                item.setForeground(QtGui.QColor("#8b949e"))
+            elif key == "score" and best:
+                item.setForeground(QtGui.QColor("#3fb950"))
+            self.models.setItem(row, col, item)
+        want = self.model_step.currentData()
+        if want:
+            self.models.setRowHidden(row, single.category(str(info.get("stage", ""))) != want)
+        self.models.scrollToBottom()
+
+    def fill_models(self, rows) -> None:
+        """The models table of a finished fit (every model, the kept one marked)."""
+        self.models.setRowCount(0)
+        self._best_score = None
+        kept = None
+        for r in rows:
+            self.add_model(r)
+            if r.get("kept"):
+                kept = r["n"]
+        if kept is not None:
+            self.mark_kept_model(kept)
+        self._filter_models()
+
+    def _model_numbers(self, rows=None) -> list:
+        """The model numbers of ``rows`` (default: the selected rows), complete ones only."""
+        if rows is None:
+            rows = sorted({i.row() for i in self.models.selectedIndexes()})
+        out = []
+        for row in rows:
+            item = self.models.item(row, 0)
+            done = self.models.item(row, len(self.MODEL_COLUMNS) - 1)
+            if item is None or self.models.isRowHidden(row):
+                continue
+            if done is not None and done.data(Qt.UserRole + 1) == "fitted":
+                out.append(int(item.data(Qt.UserRole)))
+        return out
+
+    def _models_selection(self) -> None:
+        k = len(self._model_numbers())
+        self.models_show.setEnabled(k >= 1)
+        self.models_average.setEnabled(k >= 2)
+        self.models_average.setText(f"Average {k} selected" if k >= 2 else "Average selected")
+
+    def _filter_models(self) -> None:
+        want = self.model_step.currentData()
+        for row in range(self.models.rowCount()):
+            item = self.models.item(row, 1)
+            cat = item.data(Qt.UserRole + 1) if item is not None else ""
+            self.models.setRowHidden(row, bool(want) and cat != want)
+        self._models_selection()
+
+    def mark_kept_model(self, number: int) -> None:
+        """The model kept: its row green and bold, and shown."""
+        for row in range(self.models.rowCount()):
+            item = self.models.item(row, 0)
+            kept = item is not None and item.data(Qt.UserRole) == number
+            for col in range(self.models.columnCount()):
+                cell = self.models.item(row, col)
+                if cell is None:
+                    continue
+                f = cell.font()
+                f.setBold(kept)
+                cell.setFont(f)
+                if kept:
+                    cell.setForeground(QtGui.QColor("#3fb950"))
+                elif (
+                    col == self.models.columnCount() - 1
+                    and cell.foreground().color() == QtGui.QColor("#3fb950")
+                ):
+                    cell.setData(Qt.ForegroundRole, None)  # no longer the best: plain
+            if kept:
+                self.models.scrollToItem(item)
 
     def is_iterative(self) -> bool:
         return self.fit_mode.currentIndex() > 0

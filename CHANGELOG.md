@@ -19,9 +19,13 @@ newest is at the top.
   lists every elliprof call (its step: search, harmonics, sky tilt, residual sources or
   averaging; R0 to R1, NR, passed or why it failed) and every finished fit in bold with its
   score, the best so far in green; the image shows the isophotes of the latest fit.
-- **ELLIPROF's score.** The residuals of a single fit are compared between 1.15 × R0 (the
-  core is often disturbed) and 1.1 × R1, every fit compared on the same annulus (that of
-  the fit kept), no longer out to 1.1 × the R1 asked.
+- **ELLIPROF's models.** Every model of an iterative fit is listed (report, the Models table,
+  `models N`) with its parameters and its residual: the RMS over the noise between
+  1.15 × R0 (the core is often disturbed) and 1.1 × R1, R0 and R1 as asked, the same for
+  every model compared. The fit kept is the lowest residual of the search, the harmonics
+  and the sky tilt (no margin for fixed centres or the default harmonics). Any model can be
+  put in buffers with its residual, and the selected ones averaged (`models N SHOW=`,
+  `AVERAGE=`; To buffers and Average selected in the panel), filtered by step.
 - **ELLIPROF: the sky analyser and the harmonic analysis.** The pair fit's sky section
   (segmentation settings, Measure, the verdict, histogram and cell map, Use this sky, the
   factor and its refinement, and after a fit the residual on the sky pixels with the next
