@@ -1850,6 +1850,15 @@ def test_the_mean_makes_a_buffer_for_each_fit_and_clears_an_earlier_mean():
     names = [b.name for b in ses.buffers.values()]
     members = [x for x in names if "pair mean fit" in x]
     assert members and len(members) % 2 == 0 and any(x.endswith("residual") for x in members)
+    # every buffer of the fit carries its parameters (a right click on the buffer)
+    made = [b for n, b in ses.buffers.items() if n != 1]
+    assert all(b.about for b in made), [b.name for b in made if not b.about]
+    assert all("A " in b.about and "B " in b.about for b in made)
+    # TOSKY: the sky of the fit kept, of the mean and of each fit
+    ses.execute(line.replace("RUNS=3", "RUNS=3 TOSKY=20"))
+    assert ses.buffers[20].name.endswith("pair sky") and np.allclose(ses.buffers[20].data, 1000)
+    skies = [b for b in ses.buffers.values() if "pair mean" in b.name and b.name.endswith("sky")]
+    assert len(skies) == 1 + len([x for x in members if x.endswith("residual")])
     assert "mean residual = image - mean sky - mean A + B" in text
     # a fit with no mean removes the earlier mean's buffers
     ses.execute(line.replace("RUNS=3 SEED=1 ", ""))
@@ -2029,13 +2038,25 @@ def test_elliprof_with_the_pair_fits_options():
     ses.execute("sky 1 SEGMENT")
     text = ses.execute(
         "elliprof 1 X0=294.3 Y0=263.8 R0=3 R1=AUTO NR=AUTO FIXCTR=1 TIE=-3 RMSTAR "
-        "TAIL=measured SKYITER=2 TRYFIX=1,0 SHAPETOL=0.12 PARALLEL=2 MASK=stars TOMODEL=3 TORESID=4"
+        "TAIL=measured SKYITER=2 TRYFIX=1,0 SHAPETOL=0.12 PARALLEL=2 MASK=stars TOMODEL=3 TORESID=4 "
+        "TOSKY=5"
     ).text
     assert "R1=AUTO ->" in text and "fitted: R1" in text and "<- kept" in text
     assert "mean of 2 fits" in text
     names = [b.name for b in ses.buffers.values()]
     assert any("elliprof mean residual" in x for x in names)
     assert any("elliprof mean fit 2 of 2 residual" in x for x in names)
+    # every buffer of the fit carries its model's parameters; TOSKY: the sky of the fit kept,
+    # of the mean and of each fit averaged
+    made = {n: b for n, b in ses.buffers.items() if "elliprof" in b.name or n in (3, 4, 5)}
+    assert all(b.about for b in made.values()), [b.name for b in made.values() if not b.about]
+    kept = next(r for r in ses.single_models[ses.buffers[1].key]["rows"] if r["kept"])
+    assert ses.buffers[5].name.endswith(" sky") and ses.buffers[5].about.startswith("model #")
+    assert np.allclose(ses.buffers[5].data, kept["sky"]) or kept["tilt"]
+    skies = [b for b in made.values() if b.name.endswith(" sky") and "mean" in b.name]
+    assert len(skies) == 3  # the mean's and the two fits'
+    mean_sky = next(b for b in skies if "mean sky" in b.name)
+    assert mean_sky.about.startswith("the mean of 2 of 2 fits")
     fit = ses.fits[ses.buffers[1].key]
     assert fit.profile is not None and len(fit.ellipses) == len(fit.profile)
     # every model kept: listed by step, put in buffers, averaged
@@ -2044,11 +2065,14 @@ def test_elliprof_with_the_pair_fits_options():
     rows = ses.single_models[ses.buffers[1].key]["rows"]
     done = [r["n"] for r in rows if r["status"] == "fitted"]
     assert "search" in ses.execute("models 1 STEP=search").text
-    shown = ses.execute(f"models 1 SHOW={done[0]}").text
+    shown = ses.execute(f"models 1 SHOW={done[0]} TOSKY=1").text
     assert f"model #{done[0]}" in shown and "residual" in shown
     # the buffers carry their model's parameters (a right click on the buffer)
     made = [b for b in ses.buffers.values() if f"model #{done[0]}" in b.name]
-    assert len(made) == 2 and all(b.about.startswith(f"model #{done[0]}") for b in made)
+    assert len(made) == 3 and all(b.about.startswith(f"model #{done[0]}") for b in made)
+    sky = next(b for b in made if b.name.endswith(" sky"))
+    row = next(r for r in rows if r["n"] == done[0])
+    assert np.allclose(sky.data, row["sky"]) or row["tilt"]
     assert "the elliprof command for this model" in made[0].about
     assert ses.buffers[4].about.startswith("model #") and "kept" in ses.buffers[4].about
     # SEARCH=FULL by default: TIE off and a larger R0 tried as well
@@ -2141,6 +2165,7 @@ def test_the_elliprof_panel_writes_the_iterative_fit():
         assert w in words, w
     assert not any(w.startswith(("START", "FACTOR", "TRYFACTOR")) for w in words)
     assert "SKYITER=3" not in p.command(1, 3, 4, measured_sky=False).split()
+    assert "TOSKY=7" in p.command(1, 3, 4, tosky=7).split()
     # Fits to average and the harmonics: shown in Automatic (as in the pair fit) and followed
     assert p.parallel_row.isVisibleTo(p) and p.all_harmonics.isVisibleTo(p)
     assert "HARMONICS=AUTO" in words
@@ -2355,3 +2380,33 @@ def test_the_single_fits_score_leaves_out_the_core_and_beyond_r1():
     core = rr < 8.3
     assert single.masked_core(core, (100, 100), 30) == pytest.approx(8, abs=1)
     assert single.masked_core(mask, (100, 100), 30) == 0
+
+
+def test_the_averaged_fits_are_made_on_the_image_the_kept_tilt_was_taken_out_of():
+    from astro_vista import single
+
+    snap = iterative_snapshot()
+    ny, nx = snap.image.shape
+    yy, xx = np.mgrid[0:ny, 0:nx] + 0.5
+    image = snap.image + 0.2 * (xx - nx / 2)  # a strong tilt of the sky
+    mask = np.zeros(image.shape, bool)
+    seen = []
+
+    class Records(SteadyFitter):
+        def __call__(self, data, x0, y0, r0, r1, nr, **kw):
+            seen.append(float(np.ptp(np.median(data, axis=0))))
+            return super().__call__(data, x0, y0, r0, r1, nr, **kw)
+
+    s = single.SingleSettings(
+        x0=30.5, y0=30.5, r0=2, r1=20, sky=100.0, sky_plane=True, parallel=3, wide=False
+    )
+    r = single.fit_single(image, mask, s, fitter=Records())
+    rows = {m["n"]: m for m in r.models}
+    kept = next(m for m in r.models if m["kept"])
+    assert kept["tilt"], "the fit on the image with the tilt taken out is kept"
+    averaged = [m for m in r.models if m["stage"].startswith("average")]
+    assert averaged and all(m["tilt"] for m in averaged)
+    assert all(r.model_store[m["n"]]["plane"] is not None for m in averaged)
+    assert all(rows[f["n"]] for f in r.ensemble["fits"]) and r.ensemble["plane"] is not None
+    # the averaged fits saw the flat image (the tilt spans 0.2 x 120 = 24 counts)
+    assert max(seen[-len(averaged) :]) < 5 < seen[0]

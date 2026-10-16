@@ -450,6 +450,14 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         self.residual_buffer = BufferChoice("residual")
         form.addRow(tip(output_row(self.make_model, self.model_buffer), "results"))
         form.addRow(output_row(self.make_residual, self.residual_buffer))
+        self.make_sky = QtWidgets.QCheckBox("Add the sky image")
+        self.make_sky.setToolTip(
+            "TOSKY: the sky subtracted (the level, plus the plane when a sky tilt was taken "
+            "out), for the fit kept and, with fits averaged, for the mean and each fit; also "
+            "for the models put in buffers from the table"
+        )
+        self.sky_buffer = BufferChoice("sky")
+        form.addRow(output_row(self.make_sky, self.sky_buffer))
 
         self.run = QtWidgets.QPushButton("Fit isophotes")
         self.run.setDefault(True)
@@ -1006,7 +1014,12 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             self.mask_file.setText(str(values["mask_file"] or ""))
 
     def command(
-        self, n: int, tomodel: Optional[int], toresid: Optional[int], measured_sky: bool = False
+        self,
+        n: int,
+        tomodel: Optional[int],
+        toresid: Optional[int],
+        measured_sky: bool = False,
+        tosky: Optional[int] = None,
     ) -> str:
         """The elliprof command line for buffer ``n`` (``measured_sky``: the image has a
         current sky measurement, which the sky refinement needs)."""
@@ -1035,13 +1048,15 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         if layers:
             parts.append("MASK=" + ",".join(layers))
         # a buffer this fit writes cannot also mask it
-        buffers = [b for b in self.ticked_buffers() if b not in (n, tomodel, toresid)]
+        buffers = [b for b in self.ticked_buffers() if b not in (n, tomodel, toresid, tosky)]
         if buffers:
             parts.append("MASKBUF=" + ",".join(str(b) for b in buffers))
         if tomodel:
             parts.append(f"TOMODEL={tomodel}")
         if toresid:
             parts.append(f"TORESID={toresid}")
+        if tosky:
+            parts.append(f"TOSKY={tosky}")
         return " ".join(parts)
 
 

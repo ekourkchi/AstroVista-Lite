@@ -1273,6 +1273,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for choice in (
             self.elliprof.model_buffer,
             self.elliprof.residual_buffer,
+            self.elliprof.sky_buffer,
             self.finder.segmentation_buffer,
             *self.skyplane.choices(),
         ):
@@ -1750,6 +1751,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 return
         line = p.command(n)
+        if p.make_sky.isChecked():  # a shared keyword: before the galaxies' own
+            m = self.session.output_buffer(n, "pair sky")
+            line = line.replace(" A: ", f" TOSKY={m} A: ", 1)
         note_text = getattr(p, "sky_note", "")
         if not p.sky_id and note_text:
             line += f"   # sky typed: {note_text}"
@@ -2055,9 +2059,16 @@ class MainWindow(QtWidgets.QMainWindow):
             resid = panel.residual_buffer.value() or s.output_buffer(n, "residual")
             if resid == model and panel.residual_buffer.value() is None:
                 resid = s.free_buffer(model)
-        if n in (model, resid) or (model is not None and model == resid):
+        sky = None
+        if panel.make_sky.isChecked():
+            sky = panel.sky_buffer.value() or s.output_buffer(n, "sky")
+            while panel.sky_buffer.value() is None and sky in (model, resid):
+                sky = s.free_buffer(sky)
+        chosen = [b for b in (model, resid, sky) if b is not None]
+        if n in chosen or len(set(chosen)) < len(chosen):
             self.statusBar().showMessage(
-                "The model and the residual need two buffers, other than the image's own"
+                "The model, the residual and the sky need buffers of their own, other than "
+                "the image's"
             )
             return
         image = s.buffers[n]
@@ -2067,7 +2078,7 @@ class MainWindow(QtWidgets.QMainWindow):
             panel.cancel.setEnabled(True)
             panel.clear_calls()
             self._single_live, self._single_live_key = None, image.key
-        self.run_command(panel.command(n, model, resid, measured_sky=measured))
+        self.run_command(panel.command(n, model, resid, measured_sky=measured, tosky=sky))
 
     def _fill_elliprof_models(self) -> None:
         """The models table: every model of the latest iterative fit of ELLIPROF's image."""
@@ -2083,7 +2094,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if n is None or not numbers:
             return
         key = "AVERAGE" if average else "SHOW"
-        self.run_command(f"models {n} {key}=" + ",".join(str(k) for k in numbers))
+        sky = " TOSKY=1" if self.elliprof.make_sky.isChecked() else ""
+        self.run_command(f"models {n} {key}=" + ",".join(str(k) for k in numbers) + sky)
 
     def _single_progress(self, info: dict) -> None:
         """An iterative ELLIPROF fit's progress: the table, the line above it and the

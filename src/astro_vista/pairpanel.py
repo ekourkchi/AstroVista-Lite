@@ -809,6 +809,12 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         manual(self.advanced)
         # ---- the run
         form.addRow(heading("5. Run"))
+        self.make_sky = QtWidgets.QCheckBox("Add the sky image")
+        self.make_sky.setToolTip(
+            "TOSKY: the sky subtracted (the level, plus the plane when a sky tilt was taken "
+            "out), for the fit kept and, with fits averaged, for the mean and each fit"
+        )
+        form.addRow(self.make_sky)
         buttons = QtWidgets.QHBoxLayout()
         self.run = QtWidgets.QPushButton("Fit pair")
         self.run.setDefault(True)

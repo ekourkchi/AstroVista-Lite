@@ -477,7 +477,7 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
             _c(
                 "elliprof",
                 "elliprof N X0= Y0= R0= R1= NR= [NITER=10] [SKY=] [RMSTAR] [MASK=a,b] "
-                "[MASKBUF=M,...] [MASKFILE=file] [TOMODEL=M] [TORESID=M]",
+                "[MASKBUF=M,...] [MASKFILE=file] [TOMODEL=M] [TORESID=M] [TOSKY=M]",
                 "Fit elliptical isophotes to buffer N with ELLIPROF, John Tonry's isophote "
                 "fitting from MONSTA (through the elliprof package): NR ellipses from R0 to "
                 "R1 around X0, Y0. The profile goes to Results ▸ Profile and the ellipses onto "
@@ -493,6 +493,13 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ("MASKBUF=", "buffers used as masks: masked where 0 or NaN"),
                     ("MASKFILE=", "a mask file (FITS or .dmask, 0 = masked)"),
                     ("TOMODEL=, TORESID=", "the buffers for the model and the residual"),
+                    (
+                        "TOSKY=",
+                        "the buffer for the sky subtracted (with the sky tilt taken out, if "
+                        "any); with fits averaged, the mean's sky and each fit's go to buffers "
+                        "too. Every buffer of an iterative fit carries its model's parameters "
+                        "(right-click it ▸ Model parameters…)",
+                    ),
                     ("RAW", "the residual on every pixel (masked ones too), not blanked"),
                     (
                         "R1=AUTO, NR=AUTO",
@@ -547,7 +554,7 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
             ),
             _c(
                 "models",
-                "models N [STEP=step] [SHOW=k,...] [AVERAGE=k,...]",
+                "models N [STEP=step] [SHOW=k,...] [AVERAGE=k,...] [TOSKY=1]",
                 "The models of buffer N's latest iterative ELLIPROF fit (Automatic or "
                 "Iterative): every model made, numbered, with its parameters (centre, FIXCTR, "
                 "COS3X, COS4X, TIE, R0, R1 asked and reached, NR, sky, sky tilt), its residual "
@@ -575,6 +582,7 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "image − mean sky − mean model, with its residual on the same rings "
                         "and each model's alone",
                     ),
+                    ("TOSKY=1", "each model's sky too (and the mean's), with its tilt if any"),
                 ),
                 "elliprof 1 X0=567 Y0=562 R0=9 R1=AUTO NR=AUTO SKY=3246 HARMONICS=AUTO "
                 "MASK=u12517j\nmodels 1 STEP=harmonics\nmodels 1 SHOW=2\n"
@@ -681,6 +689,11 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                     ),
                     ("CORECAP=", "the largest core left out around the other galaxy (50 px)"),
                     ("TOMODELA=, TOMODELB=, TOMODEL=, TORESID=", "the result buffers (free ones)"),
+                    (
+                        "TOSKY=",
+                        "the buffer for the sky subtracted (with its tilt, if any); with fits "
+                        "averaged, the mean's sky and each fit's too",
+                    ),
                     ("VIEWS", "also the image − sky − B and image − sky − A"),
                     ("STOP, BOOTSTRAP=0", "stop once stable; no partial first fits"),
                     ("CORES=0", "mask nothing around the companion (its model is subtracted)"),

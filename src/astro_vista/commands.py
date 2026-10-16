@@ -64,7 +64,7 @@ HELP = {
     "image with the tilt removed and the level kept, with its sky measured (for elliprof and "
     "pair); TOSUB: the image minus the whole plane; TOPLANE: the plane",
     "elliprof": "elliprof N X0= Y0= R0= R1= NR= [NITER=10] [SKY=] [RMSTAR] [MASKFILE=file] "
-    "[MASK=a,b] [MASKBUF=M,...] [TOMODEL=M] [TORESID=M] [RAW] [MINUS=M,...] [MODE=3,4] "
+    "[MASK=a,b] [MASKBUF=M,...] [TOMODEL=M] [TORESID=M] [TOSKY=M] [RAW] [MINUS=M,...] [MODE=3,4] "
     "[COS3X=] [COS4X=] [FIXCTR=0|1|2] [RLAW=] [GAIN=] [TIE=]  -  fit elliptical isophotes to "
     "buffer N; MASK= names mask layers, MASKBUF= buffers used as masks (0 or NaN masked); "
     "MINUS= subtracts buffers first; RAW keeps every pixel of the residual; RESIDMASK=n "
@@ -74,16 +74,18 @@ HELP = {
     "PARALLEL= RUNS= JITTER= TAIL= SHAPETOL= SEARCH= makes it an iterative fit with the pair "
     "fit's options for one galaxy (SKY= or a sky measurement needed); SEARCH=FULL (the "
     "default) also tries TIE off, a larger R0 (out of a masked core), the fixed centre to "
-    "1/8 px and the number of isophotes, SEARCH=BASIC only TRYFIX",
+    "1/8 px and the number of isophotes, SEARCH=BASIC only TRYFIX; TOSKY=M: the sky used (with "
+    "the tilt taken out, if any) in buffer M, and in an iterative fit the sky of the mean and "
+    "of each fit averaged too",
     "models": "models N [STEP=search|centre|harmonics|isophotes|tilt|residual|average] "
-    "[SHOW=k,...] [AVERAGE=k,...]  -  the models of buffer N's latest iterative ELLIPROF fit, "
+    "[SHOW=k,...] [AVERAGE=k,...] [TOSKY=1]  -  the models of buffer N's latest iterative ELLIPROF fit, "
     "each with its parameters and its residual (between 1.15 x R0 and 1.1 x R1, in rings 20% "
     "apart, each ring's RMS over its own noise, every ring counted the same) and its core's "
     "(the rings out to twice 1.15 x R0); SHOW= puts models k (and their residuals) in "
     "buffers; AVERAGE= the mean of the models listed: mean model, residual = image - mean "
-    "sky - mean model, and its residual",
+    "sky - mean model, and its residual; TOSKY=1 adds each one's sky (with its tilt, if any)",
     "pair": "pair N SKY=s [SKYFACTOR=1] [SKYITER=0] [STEPS=0] [MASK=a,b] [CYCLES=4] "
-    "[NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M]  A: X0= "
+    "[NITER=10] [CORECAP=50] [VIEWS] [TOMODEL=M] [TORESID=M] [TOMODELA=M] [TOMODELB=M] [TOSKY=M]  A: X0= "
     "Y0= R0= R1= [NR=25] [NAME=] [MODE=] "
     "[FIXCTR=0] [CORE=] [ADAPTIVE] [START=] [BLOCK=]  B: X0= Y0= R0= R1= ...  -  fit two overlapping galaxies: "
     "ELLIPROF on A and on B in turn, each with the other's model taken out (help pair)",
@@ -745,6 +747,7 @@ class Session(ImageCommands):
         for kind, key, data in (
             ("model", "TOMODEL", result.model),
             ("residual", "TORESID", residual),
+            ("sky", "TOSKY", np.full(image.shape, s.sky or 0.0, np.float32)),
         ):
             if key in keys:
                 m = integer(keys[key], key)
@@ -899,10 +902,21 @@ class Session(ImageCommands):
         made = []
         kept_row = next((r for r in result.models if r.get("kept")), None)
         about = single.describe(kept_row, n) if kept_row is not None else ""
-        for kind, key, data in (
-            ("model", "TOMODEL", fitres.model),
-            ("residual", "TORESID", residual),
-        ):
+        by_n = {r["n"]: r for r in result.models}
+        e = result.ensemble
+        plane = e.get("plane") if e else None
+        if plane is None and result.sky_map is not None and kept_row is not None:
+            plane = result.sky_map - kept_row["sky"]
+
+        def sky_image(level):
+            """The sky of a fit: its level, with the tilt taken out when there was one."""
+            sky = np.full(image.shape, level, np.float32)
+            return sky if plane is None else (sky + plane).astype(np.float32)
+
+        outputs = [("model", "TOMODEL", fitres.model), ("residual", "TORESID", residual)]
+        if "TOSKY" in keys and kept_row is not None:
+            outputs.append(("sky", "TOSKY", sky_image(kept_row["sky"])))
+        for kind, key, data in outputs:
             if key in keys:
                 m = integer(keys[key], key)
                 if m == n:
@@ -918,27 +932,43 @@ class Session(ImageCommands):
         ]
         for m in stale:
             del self.buffers[m]
-        e = result.ensemble
+        want_sky = "TOSKY" in keys
         extra = []
-        if result.sky_map is not None:
-            extra.append(("elliprof sky", result.sky_map))
+        if result.sky_map is not None and not want_sky:
+            extra.append(("elliprof sky", result.sky_map, about))
         if e:
+            members = [by_n[f["n"]] for f in e["fits"] if f.get("n") in by_n]
+            mean_about = "\n\n".join(
+                [
+                    f"the mean of {e['members']} of {e['of']} fits: sky {e['sky']:.8g} "
+                    f"(spread {e['sky_spread']:.3g})"
+                    + (", its tilt taken out" if plane is not None else "")
+                ]
+                + [single.describe(r, n) for r in members]
+            )
             extra += [
-                ("elliprof mean model", e["model"]),
-                ("elliprof mean residual", e["residual"]),
-                ("elliprof mean model spread", e["spread"]),
+                ("elliprof mean model", e["model"], mean_about),
+                ("elliprof mean residual", e["residual"], mean_about),
+                ("elliprof mean model spread", e["spread"], mean_about),
             ]
+            if want_sky:
+                extra.append(("elliprof mean sky", sky_image(e["sky"]), mean_about))
             total = len(e["fits"])
             for k, f in enumerate(e["fits"], 1):
-                extra.append((f"elliprof mean fit {k} of {total} model", f["model"]))
-                extra.append((f"elliprof mean fit {k} of {total} residual", f["residual"]))
-        taken = {n} | {integer(keys[k], k) for k in ("TOMODEL", "TORESID") if k in keys}
-        for kind, data in extra:
+                one = single.describe(by_n[f["n"]], n) if f.get("n") in by_n else ""
+                tag = f"elliprof mean fit {k} of {total}"
+                extra.append((f"{tag} model", f["model"], one))
+                extra.append((f"{tag} residual", f["residual"], one))
+                if want_sky:
+                    extra.append((f"{tag} sky", sky_image(f["sky"]), one))
+        taken = {n} | {integer(keys[k], k) for k in ("TOMODEL", "TORESID", "TOSKY") if k in keys}
+        for kind, data, text in extra:
             m = self.output_buffer(n, kind)
             while m in taken:
                 m = self.free_buffer(m)
             taken.add(m)
             self.buffers[m] = source.derived(f"{source.name} {kind}", data)
+            self.buffers[m].about = text
             made.append(f"{m} {kind}")
         if made:
             reply.text += "\nbuffers: " + "; ".join(made)
@@ -999,6 +1029,7 @@ class Session(ImageCommands):
             made.append(f"{m} {kind}")
 
         by_n = {r["n"]: r for r in rec["rows"]}
+        with_sky = str(keys.get("TOSKY", "0")) not in ("0", "")
         if "SHOW" in keys:
             for k in numbers("SHOW"):
                 one = single.average_models(rec["data"], rec["store"], [k], rings)
@@ -1006,6 +1037,8 @@ class Session(ImageCommands):
                 about = single.describe(by_n[k], n)
                 put(tag, one["model"], about)
                 put(f"{tag} residual", one["residual"], about)
+                if with_sky:
+                    put(f"{tag} sky", np.broadcast_to(one["sky"], source.shape), about)
         if "AVERAGE" in keys:
             picked = numbers("AVERAGE")
             if len(picked) < 2:
@@ -1028,6 +1061,8 @@ class Session(ImageCommands):
             about = "\n\n".join([line] + [single.describe(by_n[k], n) for k in picked])
             put(f"{tag} model", mean["model"], about)
             put(f"{tag} residual", mean["residual"], about)
+            if with_sky:
+                put(f"{tag} sky", np.broadcast_to(mean["sky"], source.shape), about)
             text.append(line)
         if not made:
             text = single.models_table(rows)
@@ -1375,7 +1410,7 @@ class Session(ImageCommands):
         # output buffers: given, or free ones; never the image, a mask buffer or each other
         taken = {n} | {integer(t, "MASKBUF") for t in maskbuf}
         outputs = {}
-        for key in ("TOMODELA", "TOMODELB", "TOMODEL", "TORESID"):
+        for key in ("TOMODELA", "TOMODELB", "TOMODEL", "TORESID", "TOSKY"):
             if key in shared:
                 m = integer(shared[key], key)
                 if m in taken:
@@ -1537,7 +1572,12 @@ class Session(ImageCommands):
                 }
         if result.complete:
             a, b = result.commits["A"].model, result.commits["B"].model
+            about = pairs.describe_fit("the fit kept", result, snap)
             views = {
+                "TOSKY": (
+                    f"{image.name} pair sky",
+                    np.broadcast_to(pairs.sky_of(snap), image.shape).astype(np.float32),
+                ),
                 "TOMODELA": (f"{image.name} pair A model ({snap.components['A'].label})", a),
                 "TOMODELB": (f"{image.name} pair B model ({snap.components['B'].label})", b),
                 "TOMODEL": (f"{image.name} pair A+B model", result.total),
@@ -1551,6 +1591,7 @@ class Session(ImageCommands):
                 name, data = views[key]
                 self.buffers[m] = image.derived(name, data)
                 self.buffers[m].note = job.line
+                self.buffers[m].about = about
                 made.append(f"{m} {name.split(' pair ', 1)[1]}")
             e = result.ensemble
             # the mean's buffers of an earlier fit of this image go first (a fit with fewer
@@ -1572,28 +1613,50 @@ class Session(ImageCommands):
                 made.append("removed the earlier mean's " + ", ".join(str(m) for m in stale))
             if e:
                 taken = set(job.outputs.values()) | {n}
+                fits = e.get("fits", [])
+                mean_about = "\n\n".join(
+                    [
+                        f"the mean of {e['members']} of {e['of']} pair fits: sky "
+                        f"{e['sky']:.8g} (spread {e['sky_spread']:.3g})"
+                        + (", with its tilt" if e.get("sky_map") is not None else "")
+                    ]
+                    + [f.get("about", "") for f in fits]
+                )
                 outputs = [
-                    ("pair mean A model", e["A"]),
-                    ("pair mean B model", e["B"]),
-                    ("pair mean A+B model", e["model"]),
+                    ("pair mean A model", e["A"], mean_about),
+                    ("pair mean B model", e["B"], mean_about),
+                    ("pair mean A+B model", e["model"], mean_about),
                 ]
-                if e.get("sky_map") is not None:
-                    outputs.append(("pair mean sky", e["sky_map"]))
+                if e.get("sky_map") is not None or "TOSKY" in job.outputs:
+                    sky = e["sky_map"] if e.get("sky_map") is not None else e["sky"]
+                    outputs.append(("pair mean sky", np.broadcast_to(sky, image.shape), mean_about))
                 outputs += [
-                    ("pair mean residual", e["residual"]),
-                    ("pair model spread", e["spread"]),
+                    ("pair mean residual", e["residual"], mean_about),
+                    ("pair model spread", e["spread"], mean_about),
                 ]
-                total = len(e.get("fits", []))
-                for k, f in enumerate(e.get("fits", []), 1):
-                    outputs.append((f"pair mean fit {k} of {total} model", f["model"]))
-                    outputs.append((f"pair mean fit {k} of {total} residual", f["residual"]))
-                for kind, data in outputs:
+                total = len(fits)
+                for k, f in enumerate(fits, 1):
+                    one = f.get("about", "")
+                    outputs.append((f"pair mean fit {k} of {total} model", f["model"], one))
+                    outputs.append((f"pair mean fit {k} of {total} residual", f["residual"], one))
+                    if "TOSKY" in job.outputs and "sky_image" in f:
+                        outputs.append(
+                            (
+                                f"pair mean fit {k} of {total} sky",
+                                np.broadcast_to(f["sky_image"], image.shape),
+                                one,
+                            )
+                        )
+                for kind, data, text in outputs:
                     m = self.output_buffer(n, kind)
                     while m in taken:
                         m = self.free_buffer(m)
                     taken.add(m)
-                    self.buffers[m] = image.derived(f"{image.name} {kind}", data)
+                    self.buffers[m] = image.derived(
+                        f"{image.name} {kind}", np.asarray(data, np.float32)
+                    )
                     self.buffers[m].note = job.line
+                    self.buffers[m].about = text
                     made.append(f"{m} {kind.split('pair ', 1)[1]}")
             reply.text += "\nbuffers: " + "; ".join(made)
             reply.changed |= {"buffers", "data"}
@@ -1633,6 +1696,28 @@ class Session(ImageCommands):
         what = f"pair call {k}: {h['galaxy']} cycle {h['cycle']} R1 {h['r1']:.1f}"
         n_in = self.output_buffer(integer(words[0], "the buffer"), f"{what} input")
         self.buffers[n_in] = image.derived(f"{image.name} {what} input {h['input']}", data)
+        c = snap.components.get(h["galaxy"])
+        st = snap.settings
+        about = "\n".join(
+            [
+                f"{what}",
+                f"  {'passed' if h['passed'] else 'failed: ' + str(h['reason'])}; fitted on "
+                f"{h['input']} (companion {h['companion']})",
+                f"  sky {st.sky:.8g}" + (", its tilt taken out" if snap.tilt else ""),
+                f"  TIE={st.tie} TAIL={st.tail} NITER={st.niter}",
+            ]
+            + (
+                [
+                    f"  {c.label}: centre {c.x0:.3f}, {c.y0:.3f} FIXCTR={c.fixctr}; R0 {c.r0:g}, "
+                    f"R1 {h['r1']:.1f} (final {c.r1:.1f}); NR {c.nr}; COS3X=%d COS4X=%d"
+                    % pairs.effective_harmonics(c)
+                ]
+                if c is not None
+                else []
+            )
+            + ["", "the fit kept:", pairs.describe_fit("the fit kept", record.result, snap)]
+        )
+        self.buffers[n_in].about = about
         made = [f"{n_in} the input ({h['input']})"]
         show = n_in
         if h["model"] is not None:
@@ -1640,6 +1725,7 @@ class Session(ImageCommands):
             while n_model == n_in:
                 n_model = self.free_buffer(n_model)
             self.buffers[n_model] = image.derived(f"{image.name} {what} model", h["model"])
+            self.buffers[n_model].about = about
             made.append(f"{n_model} its model")
             show = n_model
         status = "passed" if h["passed"] else f"failed: {h['reason']}"
@@ -2178,12 +2264,12 @@ class Session(ImageCommands):
 
 # keywords offered by Tab completion after each command
 KEYWORDS = {
-    "models": "STEP= SHOW= AVERAGE=",
+    "models": "STEP= SHOW= AVERAGE= TOSKY=",
     "elliprof": "X0= Y0= R0= R1= NR= NITER= SKY= RMSTAR MASK= MASKBUF= MASKFILE= TOMODEL= "
-    "TORESID= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE= RESIDMASK= RESIDTHRESH= "
+    "TORESID= TOSKY= RAW MINUS= MODE= COS3X= COS4X= FIXCTR= RLAW= GAIN= TIE= RESIDMASK= RESIDTHRESH= "
     "RESIDGROW= RESIDCORE= START= FACTOR= SKYITER= SKYPLANE= SKYFACTOR= TRYFIX= TRYFACTOR= "
     "TRYCOS3X= TRYCOS4X= HARMONICS= PARALLEL= RUNS= JITTER= SEED= TAIL= SHAPETOL= SEARCH=",
-    "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= "
+    "pair": "SKY= SKYFACTOR= SKYITER= STEPS= MASK= CYCLES= NITER= CORECAP= VIEWS TOMODEL= TORESID= TOMODELA= TOMODELB= TOSKY= "
     "A: B: X0= Y0= R0= R1= NR= NAME= MODE= FIXCTR= CORE= ADAPTIVE BLOCK= START= STEP= FACTOR= "
     "RADII= CORES= CONVERGE= CONSECUTIVE= ONFAIL= DAMP= POLISH= TRYDAMP= TRYFIX= TRYFACTOR= TAIL= "
     "TIE= RMSTAR SKYPLANE= PARALLEL= COS3X= COS4X= TRYCOS3X= TRYCOS4X= RUNS= JITTER= SEED= "
@@ -2231,6 +2317,7 @@ def completions(session: "Session", line: str):
             "MASKBUF",
             "TOMODEL",
             "TORESID",
+            "TOSKY",
             "TOSEG",
             "OUT",
             "TOMODELA",
@@ -2438,6 +2525,8 @@ Shared (before A:)
   STOP          stop early once A, B and A + B all change by less than 2 %
   VIEWS         also make the image - sky - B and image - sky - A buffers
   TOMODELA= TOMODELB= TOMODEL= TORESID=   the result buffers (free ones by default)
+  TOSKY=M       the sky subtracted (with its tilt, if any) in buffer M; with fits averaged,
+                the mean's sky and each fit's too
 Each galaxy (after A: or B:)
   X0= Y0= R0= R1=   its centre (ELLIPROF's coordinates) and radii (semi-major, pixels)
   NR=25  NAME="..."  FIXCTR=0|1|2

@@ -447,6 +447,7 @@ SHARED = {
     "TIMEOUT",
     "TOMODEL",
     "TORESID",
+    "TOSKY",
     "TOMODELA",
     "TOMODELB",
     "VIEWS",
@@ -3163,6 +3164,30 @@ def sky_of(snap: Snapshot):
     return float(snap.settings.sky)
 
 
+def describe_fit(label: str, result: "PairResult", snap: Snapshot) -> str:
+    """A pair fit's parameters as text: its sky (and tilt), and each galaxy's centre, radii,
+    isophotes and harmonics (a buffer's Model parameters)."""
+    st = snap.settings
+    score = result.quality.get("score") if result.quality else None
+    lines = [
+        f"pair fit: {label}",
+        f"  {result.status}" + ("" if score is None else f"; residual score {score:.4g}"),
+        f"  sky {st.sky:.8g}"
+        + (f" ({st.sky_factor:.5f} x {st.sky_base:.8g})" if st.sky_base else "")
+        + (", its tilt taken out" if snap.tilt else ""),
+        f"  TIE={st.tie} DAMP={st.damp:g} TAIL={st.tail} NITER={st.niter}",
+    ]
+    for cid, c in snap.components.items():
+        commit = result.commits.get(cid)
+        c3, c4 = effective_harmonics(c)
+        reached = f", {commit.r1_call:.1f} reached" if commit is not None else ""
+        lines.append(
+            f"  {cid} {c.label}: centre {c.x0:.3f}, {c.y0:.3f} FIXCTR={c.fixctr}; R0 {c.r0:g}, "
+            f"R1 {c.r1:.1f} asked{reached}; NR {c.nr}; COS3X={c3} COS4X={c4}"
+        )
+    return "\n".join(lines)
+
+
 def original_image(snap: Snapshot) -> np.ndarray:
     """The image a fit was made on, with any SKYPLANE tilt put back: D itself."""
     if snap.tilt:
@@ -3209,9 +3234,12 @@ def ensemble(
     out_members = []
     for i, total, sky in zip(members, totals, skies_):
         rows[i]["mean"] = True
+        label = rows[i].get("variant", f"fit {i + 1}")
         out_members.append(
             {
-                "label": rows[i].get("variant", f"fit {i + 1}"),
+                "label": label,
+                "about": describe_fit(label, fits[i][0], fits[i][1]),
+                "sky_image": sky,
                 "score": fits[i][0].quality.get("score"),
                 "sky": float(np.mean(sky)),
                 "model": total,

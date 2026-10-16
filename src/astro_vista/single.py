@@ -575,14 +575,19 @@ def fit_single(
         )
         return r
 
-    def each(items, workers, stages, chooses=True):
+    def each(items, workers, stages, chooses=True, img=None, plane=None):
+        """``img``: the image fitted (the image as given by default), ``plane`` the sky
+        tilt taken out of it."""
+        img = image if img is None else img
+
+        def run(j):
+            return one(j[0], img=img, stage=j[1], number=j[2], chooses=chooses, plane=plane)
+
         jobs = [(x, lbl, next(order)) for x, lbl in zip(items, stages)]
         if workers <= 1 or len(jobs) <= 1:
-            return [one(x, stage=lbl, number=k, chooses=chooses) for x, lbl, k in jobs]
+            return [run(j) for j in jobs]
         with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
-            return list(
-                pool.map(lambda j: one(j[0], stage=j[1], number=j[2], chooses=chooses), jobs)
-            )
+            return list(pool.map(run, jobs))
 
     def cached(trials, stage):
         """Fits with a fixed sky, each made once (the same settings and sky: reused)."""
@@ -767,7 +772,7 @@ def fit_single(
             kept, kept_s = best, replace(kept_s, nr=k)
     # SKYPLANE: a tilt of the sky in the residual, taken out, and the fit again (kept if
     # the residual is lower)
-    sky_map = None
+    sky_map = kept_plane = None
     if s.sky_plane and kept.complete and not stopped():
         tilt = _tilt(kept.residual, mask)
         if tilt is not None:
@@ -804,8 +809,10 @@ def fit_single(
         # its settings, with the sky as asked (the averaged fits refine their own)
         kept_s = replace(best["settings"], sky=s.sky, sky_factor=s.sky_factor, sky_iter=s.sky_iter)
         if best["plane"] is not None:
-            image = image - best["plane"]
-            sky_map = best["settings"].sky + best["plane"]
+            # the averaged fits are made on the same image, the tilt taken out
+            kept_plane = best["plane"]
+            image = image - kept_plane
+            sky_map = best["settings"].sky + kept_plane
             steps.append("the fit on the image with the sky tilt taken out kept")
     flagged = sum(bool(m["flag"]) for m in compared)
     if flagged:
@@ -876,6 +883,8 @@ def fit_single(
             s.parallel,
             [f"average {k}/{n_avg}" for k in range(2, n_avg + 1)],
             chooses=False,
+            img=image,
+            plane=kept_plane,
         )
         members, left = [("the fit kept", kept)], []
         limit = (1 + AVERAGE_TOL) * kept.score if kept.score is not None else None
@@ -903,6 +912,9 @@ def fit_single(
             )
         if len(members) > 1:
             kept.ensemble = _mean(members, image, n_avg)
+            kept.ensemble["plane"] = kept_plane  # the sky tilt taken out, or None
+            for f, (_lbl, r) in zip(kept.ensemble["fits"], members):
+                f["n"] = next(x["n"] for x in models if x["result"] is r)
     final = next((m for m in models if m["result"] is kept), None)
     if final is not None and kept.ensemble:
         final["averaged"] = True

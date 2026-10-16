@@ -5,6 +5,15 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Every model buffer has its parameters.** Each buffer an iterative ELLIPROF or pair fit
+  makes (the fit kept, the mean, each fit averaged, the spread, a pair call's input and
+  model) has Model parameters… on its right-click menu.
+- **The sky as a buffer.** *Add the sky image* (ELLIPROF and Pair fit; `TOSKY=M`, and
+  `models N SHOW=… TOSKY=1`) puts the sky subtracted, the level plus the plane when a sky
+  tilt was taken out, in a buffer, for the fit kept, the mean and each fit averaged.
+- **Fix: the averaged single fits and a sky tilt.** When the fit with the sky tilt taken out
+  was kept, the other fits averaged were made on the image with the tilt left in; they are
+  now made on the same image as the fit kept.
 - **The segmentation's inverse as a mask layer.** With the segmentation image (TOSEG), the
   Source finder makes the mask layer `segK` (K: the run): every source's pixels masked
   (`SEGMASK=0`, or the panel's box unticked: not made).
