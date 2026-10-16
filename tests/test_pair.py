@@ -2424,3 +2424,30 @@ def test_the_averaged_fits_are_made_on_the_image_the_kept_tilt_was_taken_out_of(
     assert all(rows[f["n"]] for f in r.ensemble["fits"]) and r.ensemble["plane"] is not None
     # the averaged fits saw the flat image (the tilt spans 0.2 x 120 = 24 counts)
     assert max(seen[-len(averaged) :]) < 5 < seen[0]
+
+
+def test_only_the_repeats_averaged_make_the_mean_and_the_spread():
+    import copy
+
+    snap = iterative_snapshot()
+    kept = pair.run(snap, fitter=SteadyFitter())
+    kept.quality = {"score": 1.0}
+    good = copy.copy(kept)
+    good.quality = {"score": 1.02}
+    failed = copy.copy(kept)
+    failed.status, failed.quality = "retained_after_failed_update", {"score": 1.01}
+    poor = copy.copy(kept)
+    poor.quality = {"score": 1.2}
+    poor.total = kept.total + 50.0  # it would widen the spread
+    fits = [(kept, snap), (good, snap), (failed, snap), (poor, snap)]
+    rows = [{"variant": f"fit {k}"} for k in range(4)]
+    e = pair.ensemble(fits, rows, float("inf"), True)
+    assert e["members"] == 2 and len(e["fits"]) == 2
+    assert np.allclose(e["spread"], 0.0)  # the kept and the good one are the same model
+    assert rows[2]["left_out"].startswith("retained") and rows[3]["left_out"].startswith("residual")
+    assert rows[0]["mean"] and rows[1]["mean"] and not rows[3].get("mean")
+    # a kept fit that is itself retained after a failed update: such repeats are like it
+    kept.status = "retained_after_failed_update"
+    rows = [{"variant": f"fit {k}"} for k in range(4)]
+    e = pair.ensemble(fits, rows, float("inf"), True)
+    assert e["members"] == 3 and "left_out" not in rows[2]

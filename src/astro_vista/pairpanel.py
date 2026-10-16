@@ -821,6 +821,7 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         # ---- the run
         form.addRow(heading("5. Run"))
         self.make_sky = QtWidgets.QCheckBox("Add the sky image")
+        self.make_sky.setChecked(True)
         self.make_sky.setToolTip(
             "TOSKY: the sky subtracted (the level, plus the plane when a sky tilt was taken "
             "out), for the fit kept and, with fits averaged, for the mean and each fit"
@@ -1482,7 +1483,11 @@ class PairResultsPanel(QtWidgets.QWidget):
                     x
                     for x in (
                         ("kept: " + self.record.result.search_choice) if r.get("chosen") else "",
-                        "in the mean" if r.get("mean") else "",
+                        (
+                            "in the mean"
+                            if r.get("mean")
+                            else (f"left out: {r['left_out']}" if r.get("left_out") else "")
+                        ),
                     )
                     if x
                 ),

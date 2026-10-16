@@ -451,6 +451,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         form.addRow(tip(output_row(self.make_model, self.model_buffer), "results"))
         form.addRow(output_row(self.make_residual, self.residual_buffer))
         self.make_sky = QtWidgets.QCheckBox("Add the sky image")
+        self.make_sky.setChecked(True)
         self.make_sky.setToolTip(
             "TOSKY: the sky subtracted (the level, plus the plane when a sky tilt was taken "
             "out), for the fit kept and, with fits averaged, for the mean and each fit; also "

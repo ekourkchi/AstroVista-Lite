@@ -5,6 +5,11 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **The pair fit's mean and spread: only the fits averaged.** A repeat (PARALLEL, RUNS) is
+  left out of the mean, the spread and the per-fit buffers when it kept a model after a
+  failed fit (and the fit kept did not), a galaxy was fitted short of 0.8 x its R1 in the fit kept, or its residual is
+  over 1.05 x the kept's, as for one galaxy; the report and the Search table say why.
+- **Add the sky image** is ticked by default (ELLIPROF and Pair fit).
 - **Close all closes the mask layers too**, and what belonged to the images (sources, fits,
   skies, the fit tables); the session is saved first.
 - **The Layers fold.** The ▾ beside Layers folds them to their title and gives the buffer

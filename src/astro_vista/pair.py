@@ -3197,6 +3197,12 @@ def original_image(snap: Snapshot) -> np.ndarray:
     return snap.image
 
 
+# the repeats averaged (PARALLEL, RUNS): left out if their residual is over (1 + REPEAT_TOL)
+# x the kept fit's or a galaxy was fitted short of REPEAT_REACH x its R1 in the kept fit
+REPEAT_TOL = 0.05
+REPEAT_REACH = 0.8
+
+
 def ensemble(
     fits: List[Tuple[PairResult, Snapshot]],
     rows: List[dict],
@@ -3218,6 +3224,37 @@ def ensemble(
         return {}
     best = min(sc for sc, _i in scores)
     members = [i for sc, i in scores if sc <= best * (1 + share)]
+    if repeats:
+        # the repeats of the fit kept (fits[0]) as the single fit averages them: a valid
+        # pair (when the kept is one), each galaxy fitted out to REPEAT_REACH x the kept's R1, the residual within
+        # REPEAT_TOL of the kept's; the others are left out of the mean and the spread
+        kept = fits[0][0]
+        kept_score = kept.quality.get("score") if kept.quality else None
+        valid = ("stable_valid_pair", "valid_pair_not_stable")
+        chosen = []
+        for i in members:
+            r = fits[i][0]
+            why = ""
+            if i and kept.status in valid and r.status not in valid:  # worse than the kept
+                why = r.status.replace("_", " ")
+            elif i and any(
+                r.commits[c].r1_call < REPEAT_REACH * kept.commits[c].r1_call
+                for c in ("A", "B")
+                if c in kept.commits
+            ):
+                why = "fitted short of " + ", ".join(
+                    f"{c} {r.commits[c].r1_call:.1f}" for c in ("A", "B") if c in r.commits
+                )
+            elif i and kept_score and r.quality.get("score", 0) > (1 + REPEAT_TOL) * kept_score:
+                why = f"residual {r.quality.get('score'):.4g}"
+            if why:
+                rows[i]["left_out"] = why
+            else:
+                chosen.append(i)
+        for i, row in enumerate(rows):
+            if i not in members and i < len(fits) and "left_out" not in row:
+                row["left_out"] = "incomplete"
+        members = chosen
     if len(members) < 2:
         return {}
     d = original_image(fits[members[0]][1])
@@ -3597,6 +3634,7 @@ def summary(result: PairResult, snap: Snapshot) -> str:
         lines.append(
             f"  {row['variant']}: {row['status']}, score {score}"
             + ("  (in the mean)" if row.get("mean") else "")
+            + (f"  (left out: {row['left_out']})" if row.get("left_out") else "")
         )
     if e:
         lines.append(
@@ -3998,6 +4036,7 @@ def report(result: PairResult, snap: Snapshot, line: str = "", measured=None) ->
         add(
             f"variant {row['variant']}: {row['status']}, score {score}"
             + ("  (in the mean)" if row.get("mean") else "")
+            + (f"  (left out: {row['left_out']})" if row.get("left_out") else "")
             + ("  <- kept" if row.get("chosen") else "")
         )
     if result.search_choice:
