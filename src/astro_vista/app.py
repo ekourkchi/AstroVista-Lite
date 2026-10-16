@@ -984,6 +984,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.skyplane.mask_toggled.connect(self.pair_sky_mask)
         pp.changed.connect(self._overlays)
         self.finder.show_sources.toggled.connect(lambda on: self.layers.set_checked("sources", on))
+        self.finder.show_centres.toggled.connect(
+            lambda on: self.layers.set_checked("srccentres", on)
+        )
 
         v = self.viewer
         v.moved.connect(self._show_position)
@@ -1033,6 +1036,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.layers.toggled.connect(self._layer_toggled)
         self.layers.mask_command.connect(self._mask_command)
         self.layers.colour_changed.connect(self._layer_colour)
+        self._saved_colours()
         self.layers.opacity_changed.connect(self._mask_opacity)
         self.layers.active_changed.connect(self._set_active_mask)
         self.layers.show_only.connect(self._show_only_mask)
@@ -1740,13 +1744,15 @@ class MainWindow(QtWidgets.QMainWindow):
         run = self._run_on_shown()
         exact = bool(QtWidgets.QApplication.keyboardModifiers() & Qt.AltModifier)
         said = f"{cid}: centre {x:.2f}, {y:.2f}"
-        if run is not None and len(run) and not exact:
-            row = run.nearest(x, y)
-            sx = float(run.columns["X_IMAGE"][row]) - 0.5
-            sy = float(run.columns["Y_IMAGE"][row]) - 0.5
-            if np.hypot(sx - x, sy - y) <= 3.0:
-                x, y = sx, sy
-                said = f"{cid}: snapped to source {int(run.columns['NUMBER'][row])} at {x:.2f}, {y:.2f}"
+        if run is not None and self.pair_panel.snap.isChecked() and not exact:
+            # a click anywhere inside a found source takes that source's centre
+            row = run.under(x, y)
+            if row is not None:
+                x, y = run.centre_of(row)
+                said = (
+                    f"{cid}: the centre of source {int(run.columns['NUMBER'][row])}, "
+                    f"{x:.2f}, {y:.2f} (Alt-click: the point clicked)"
+                )
         card.set_centre(x, y)
         self.statusBar().showMessage(said)
         card.match.setText(said)
@@ -1990,7 +1996,7 @@ class MainWindow(QtWidgets.QMainWindow):
         shown = self.layers.checked
         for cid, card in p.cards.items():
             d = {}
-            if not card.visible.isChecked() or not shown("pair"):
+            if not card.visible.isChecked() or not shown(f"pair{cid}"):
                 out[cid] = d
                 continue
             x, y = card.centre()
@@ -2214,10 +2220,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         n = self._current_number(say=False)
         run = self._run_on_shown()
-        if self.elliprof.snap.isChecked() and run is not None and n is not None and len(run):
-            row = run.nearest(x, y)
-            sx, sy, a, _b, _t = run.ellipses()[row]
-            if np.hypot(sx - x, sy - y) <= max(a, 3.0):
+        exact = bool(QtWidgets.QApplication.keyboardModifiers() & Qt.AltModifier)
+        if self.elliprof.snap.isChecked() and run is not None and n is not None and not exact:
+            row = run.under(x, y)  # a click anywhere inside a found source: its centre
+            if row is not None:
                 number = int(run.columns["NUMBER"][row])
                 self.run_command(f"centre {n} RUN={run.number} SOURCE={number}")
                 return
@@ -2928,10 +2934,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 if self.viewer.mode == "crosshair":
                     self.set_mode("pan")
         else:
-            if key == "sources":
-                self.finder.show_sources.blockSignals(True)
-                self.finder.show_sources.setChecked(on)
-                self.finder.show_sources.blockSignals(False)
+            box = {"sources": self.finder.show_sources, "srccentres": self.finder.show_centres}
+            if key in box:
+                box[key].blockSignals(True)
+                box[key].setChecked(on)
+                box[key].blockSignals(False)
             self._overlays()
 
     def _say_no_wcs(self, on: bool) -> None:
@@ -2944,10 +2951,34 @@ class MainWindow(QtWidgets.QMainWindow):
             if m is not None:
                 m.colour = colour
                 self._refresh_masks()
-        elif key == "centre":
+        else:
+            self._overlay_colour(key, colour)
+            settings().setValue(f"colours/{key}", colour)  # remembered next time
+
+    def _overlay_colour(self, key: str, colour: str) -> None:
+        """An overlay drawn in ``colour``; the pair fit's A and B in their cards and plots
+        too."""
+        if key == "centre":
             self.viewer.centre.setPen(pg_pen(colour))
         else:
             self.viewer.set_layer_colour(key, colour)
+        if key in ("pairA", "pairB"):
+            from . import pairpanel
+
+            cid = key[-1]
+            pairpanel.COLOURS[cid] = colour
+            self.pair_panel.cards[cid].set_colour(colour)
+            self.pair_results.draw()
+        self.layers.set_colour(key, colour)
+
+    def _saved_colours(self) -> None:
+        """The overlay colours chosen in an earlier session."""
+        from .panels import OVERLAYS
+
+        for key, _label, _colour, _on in OVERLAYS:
+            colour = settings().value(f"colours/{key}", "")
+            if colour and QtGui.QColor(str(colour)).isValid():
+                self._overlay_colour(key, str(colour))
 
     def _apply_contours(self) -> None:
         panel = self.contour_panel
@@ -3113,8 +3144,10 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.viewer.show_isophotes(result.ellipses if result and show("isophotes") else [])
         run = self._run_on_shown()
-        if run is not None and show("sources"):
-            self.viewer.show_sources(run.ellipses())
+        if run is not None and (show("sources") or show("srccentres")):
+            ellipses = run.ellipses()
+            self.viewer.sources.setVisible(show("sources"))
+            self.viewer.show_sources(ellipses, centres=show("srccentres"))
         else:
             self.viewer.show_sources([])
         x, y = self.elliprof.x0.value(), self.elliprof.y0.value()

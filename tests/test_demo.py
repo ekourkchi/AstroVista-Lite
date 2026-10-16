@@ -2106,3 +2106,45 @@ def test_the_window_keeps_the_session_and_offers_it_at_the_start(tmp_path, monke
         again.close()
     finally:
         app_module.settings().remove("session/folder")
+
+
+def test_a_click_inside_a_source_takes_its_centre_and_the_centres_show_as_crosses(tmp_path):
+    from PySide6 import QtCore, QtWidgets
+
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+
+    def wait():
+        deadline = QtCore.QDeadlineTimer(60000)
+        while window.busy() and not deadline.hasExpired():
+            app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+
+    window.open_path(write_fits(galaxy(), tmp_path / "galaxy.fits"))
+    wait()
+    window.run_command("sources 1")
+    wait()
+    run = window.session.runs[-1]
+    row = run.under(158.0, 147.0)  # well off the galaxy's centre, inside it
+    assert row is not None and run.under(5.0, 5.0) is None
+    cx, cy = run.centre_of(row)
+    assert abs(cx - 150) < 1 and abs(cy - 140) < 1
+    # pair: Pick A, click inside the galaxy
+    window._pick_target = "pair:A:centre"
+    window._centre_picked(158.0, 147.0)
+    assert window.pair_panel.cards["A"].centre() == pytest.approx((cx, cy), abs=0.01)
+    # ELLIPROF the same
+    window._pick_target = "centre"
+    window._centre_picked(158.0, 147.0)
+    wait()
+    assert (window.elliprof.x0.value(), window.elliprof.y0.value()) == pytest.approx(
+        (cx, cy), abs=0.01
+    )
+    # the centres as small crosses, on a tick
+    marks = window.viewer.source_centres
+    assert len(marks.data) == len(run)
+    window.finder.show_centres.setChecked(False)
+    wait()
+    assert len(marks.data) == 0 and not window.layers.checked("srccentres")
+    window.close()

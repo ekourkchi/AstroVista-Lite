@@ -226,6 +226,9 @@ class Viewer(QtWidgets.QWidget):
         )
         self.isophotes = Ellipses("#7CFC00", 1.4)
         self.sources = Ellipses("#00d5ff", 1.0)
+        self.source_centres = pg.ScatterPlotItem(
+            size=5, symbol="+", pen=pg.mkPen("#00d5ff", width=1), brush=None
+        )
         self.selected = Ellipses("#ffd200", 2.4)
         # the crosshair: two lines upright on the screen (not turned with the image)
         self.cross_v = pg.InfiniteLine(
@@ -243,6 +246,7 @@ class Viewer(QtWidgets.QWidget):
             self.contours,
             self.isophotes,
             self.sources,
+            self.source_centres,
             self.selected,
         )
         for z, overlay in enumerate(overlays):
@@ -266,9 +270,9 @@ class Viewer(QtWidgets.QWidget):
         self.radii.setZValue(39)
         self.radii.setParentItem(self.group)
         self.radius_from = None  # while picking a radius: the centre it is measured from
-        # the pair fit: guides (dashed) and fitted ellipses of A (magenta) and B (orange)
+        # the pair fit: guides (dashed) and fitted ellipses of A (cyan) and B (orange)
         self.pair_items = {}
-        for cid, colour in (("A", "#ff4dff"), ("B", "#ff9f1c")):
+        for cid, colour in (("A", "#00e5ff"), ("B", "#ff9f1c")):
             for kind, width, style, z in (
                 ("guide", 1.2, Qt.DashLine, 38),
                 ("core", 1.2, Qt.DotLine, 38),
@@ -749,8 +753,14 @@ class Viewer(QtWidgets.QWidget):
     def show_isophotes(self, ellipses) -> None:
         self.isophotes.set_ellipses(ellipses or [])
 
-    def show_sources(self, ellipses) -> None:
-        self.sources.set_ellipses(list(ellipses or []))
+    def show_sources(self, ellipses, centres: bool = False) -> None:
+        """The sources' Kron ellipses and (``centres``) a small + at each one's centre."""
+        ellipses = list(ellipses or [])
+        self.sources.set_ellipses(ellipses)
+        if centres and ellipses:
+            self.source_centres.setData([e[0] for e in ellipses], [e[1] for e in ellipses])
+        else:
+            self.source_centres.setData([], [])
 
     def show_selected(self, ellipse) -> None:
         self.selected.set_ellipses([ellipse] if ellipse is not None else [])
@@ -832,6 +842,17 @@ class Viewer(QtWidgets.QWidget):
             self.isophotes.set_colour(colour)
         elif key == "sources":
             self.sources.set_colour(colour)
+        elif key == "srccentres":
+            self.source_centres.setPen(pg.mkPen(colour, width=1))
+        elif key in ("pairA", "pairB"):
+            cid = key[-1]
+            for (c, kind), item in self.pair_items.items():
+                if c != cid or kind == "failed":
+                    continue
+                if kind == "centre":
+                    item.setPen(pg.mkPen(colour, width=1.8))
+                else:
+                    item.set_colour(colour)
 
     def set_contours(self, levels, method: str = "Smooth", size: int = 1) -> None:
         """Contours at ``levels`` (values), after smoothing (contours.smoothed)."""

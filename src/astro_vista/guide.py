@@ -49,7 +49,7 @@ Each ellipse is a star or a galaxy. Click one to see its row in the Sources tabl
 the Plots tab, plot <code>MAG_AUTO</code> against <code>FLUX_RADIUS</code>: stars form
 a narrow sequence. <i>Question:</i> which sources are stars?</li>
 <li><b>Find the centre.</b> In the ELLIPROF tab press <i>Pick on the image</i> and click
-the galaxy's bright core: with <i>Snap to sources</i> the small red cross jumps to the
+anywhere inside the galaxy: with <i>Snap to sources</i> the small red cross jumps to the
 centre the Source finder measured. Pick R1, the largest ellipse, by clicking where the galaxy
 fades into the sky.</li>
 <li><b>Mask what is not the galaxy.</b> Press <i>Mask the found sources</i> (every
@@ -588,10 +588,11 @@ bad.</p>""",
     "layers": (
         "Layers",
         """
-<p>What is drawn over the image: the isophotes, the sources, the ELLIPROF centre with R0
-and R1, contours, the crosshair, and the mask layers. The compass and scale bar are always
+<p>What is drawn over the image: the isophotes, the sources, their centres (small
+crosses), the ELLIPROF centre with R0 and R1, the pair fit's A and B (each its own row and
+colour), contours, the crosshair, and the mask layers. The compass and scale bar are always
 shown, for images with a WCS. Tick to
-show; click the colour box to change the colour; right-click a mask layer for what can be
+show; click the colour box to change the colour (remembered next time); right-click a mask layer for what can be
 done to it. The mask tools draw on the mask layer selected (in bold).</p>
 <p>Any mask layer, and any image buffer of the same size (where it is 0 or NaN), can mask
 the isophote fit: tick it in the ELLIPROF tab's Masks list.</p>""",
@@ -863,8 +864,10 @@ TIPS = {
     "ELLIPROF's models reach beyond R1, so their outer light is part of the residual.",
     "pair_centre": "<b>The centre</b> of this galaxy, in ELLIPROF's coordinates (the first "
     "pixel's centre is at 0.5). <i>Pick A</i> takes one click for A, then one for B. A click "
-    "within 3 pixels of a found source takes the source's centre, and the card says so; "
-    "Alt-click places the centre exactly where you click. The fit refines the centre of "
+    "anywhere inside a found source (its segment, or its Kron ellipse) takes that source's "
+    "centre with <i>Snap to sources</i>, and the card says so; Alt-click places the centre "
+    "exactly where you click. A is drawn in cyan and B in orange: click their colour boxes "
+    "in Layers to change them. The fit refines the centre of "
     "every ellipse (unless <i>Centres</i> says otherwise).",
     "pair_mode": "<b>Harmonics</b> (ELLIPROF's COS3X and COS4X): every isophote's fit measures "
     "the cos 3θ and cos 4θ terms; these choose what goes into the model. 2 puts in each "

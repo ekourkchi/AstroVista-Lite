@@ -1,7 +1,7 @@
 """The Pair fit tool (two overlapping galaxies, fitted in turn) and its results.
 
 The panel only builds command lines (``sky N SEGMENT ...``, ``pair N ...``); the window
-runs them, as it runs every other tool's.  Galaxy A is drawn in magenta and B in orange,
+runs them, as it runs every other tool's.  Galaxy A is drawn in cyan and B in orange (both can be changed in Layers),
 everywhere.
 """
 
@@ -46,7 +46,7 @@ from .panels import (
     whole,
 )
 
-COLOURS = {"A": "#ff4dff", "B": "#ff9f1c"}
+COLOURS = {"A": "#00e5ff", "B": "#ff9f1c"}  # cyan and orange (Layers: click to change)
 COS3X_SHOWN = [
     (2, "2: each isophote (default)"),
     (1, "1: median of all"),
@@ -102,13 +102,8 @@ class GalaxyCard(QtWidgets.QGroupBox):
     def __init__(self, cid: str, parent=None):
         super().__init__(parent)
         self.cid = cid
-        colour = COLOURS[cid]
         self.setTitle(f"Galaxy {cid}")
-        self.setStyleSheet(
-            f"QGroupBox {{ border: 2px solid {colour}; border-radius: 6px; margin-top: 10px; "
-            f"padding-top: 6px }} QGroupBox::title {{ color: {colour}; subcontrol-origin: "
-            "margin; left: 8px; font-weight: 700 }"
-        )
+        self.set_colour(COLOURS[cid])
         form = QtWidgets.QFormLayout(self)
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
         self.form = form
@@ -286,6 +281,14 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.visible.toggled.connect(lambda _v: self.changed.emit())
         self.core.valueChanged.connect(lambda _v: self.changed.emit())
         self._nr(self.nr.value())
+
+    def set_colour(self, colour: str) -> None:
+        """The card's border and title in the galaxy's colour."""
+        self.setStyleSheet(
+            f"QGroupBox {{ border: 2px solid {colour}; border-radius: 6px; margin-top: 10px; "
+            f"padding-top: 6px }} QGroupBox::title {{ color: {colour}; subcontrol-origin: "
+            "margin; left: 8px; font-weight: 700 }"
+        )
 
     def _start_auto(self, on: bool) -> None:
         self.start.setEnabled(not on)
@@ -564,6 +567,14 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             card.changed.connect(self.changed)
             card.changed.connect(self._summary_line)
             form.addRow(card)
+        self.snap = QtWidgets.QCheckBox("Snap to sources: a click inside one takes its centre")
+        self.snap.setChecked(True)
+        self.snap.setToolTip(
+            "Picking A's or B's centre: a click anywhere inside a source the Source finder "
+            "found (its segment, or its Kron ellipse) takes that source's centre; Alt-click "
+            "takes the point clicked"
+        )
+        form.addRow(self.snap)
         swap = QtWidgets.QPushButton("⇄ Swap A and B")
         swap.setToolTip(
             "A is fitted first. Swapping changes which galaxy that is; with a finite number of "

@@ -3869,7 +3869,7 @@ def export(
         atomic(f"{cid}_profile.csv", lambda p, c=c: c.profile.to_csv(p, index=False))
 
         def reg(p, c=c, cid=cid):
-            colour = "magenta" if cid == "A" else "orange"
+            colour = "cyan" if cid == "A" else "orange"
             rows = [
                 "# Region file format: DS9 version 4.1",
                 f"global color={colour} width=1",

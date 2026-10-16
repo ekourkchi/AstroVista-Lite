@@ -1110,9 +1110,13 @@ class SourceFinderPanel(QtWidgets.QWidget):
         form.addRow(reset)
         self.show_sources = QtWidgets.QCheckBox("Show the sources on the image")
         self.show_sources.setChecked(True)
+        self.show_centres = QtWidgets.QCheckBox("Show their centres (small crosses)")
+        self.show_centres.setChecked(True)
+        self.show_centres.setToolTip("A small + at each source's centre (Layers: Source centres)")
         self.add_segmentation = QtWidgets.QCheckBox("Add the segmentation image")
         self.segmentation_buffer = BufferChoice("segmentation image")
         form.addRow(self.show_sources)
+        form.addRow(self.show_centres)
         form.addRow(output_row(self.add_segmentation, self.segmentation_buffer))
         self.segmentation_mask = QtWidgets.QCheckBox("… and its inverse as a mask layer (segK)")
         self.segmentation_mask.setChecked(True)
@@ -1771,8 +1775,10 @@ OVERLAYS = (
     # key, label, colour, shown at the start
     ("isophotes", "Isophotes (ELLIPROF)", "#7CFC00", True),
     ("sources", "Sources (Source finder)", "#00d5ff", True),
+    ("srccentres", "Source centres (small crosses)", "#00d5ff", True),
     ("centre", "ELLIPROF centre, R0 and R1", "#ff4d4d", True),
-    ("pair", "Pair fit (A and B: guides and isophotes)", "#ff4dff", True),
+    ("pairA", "Pair fit: galaxy A (centre, guides, isophotes)", "#00e5ff", True),
+    ("pairB", "Pair fit: galaxy B (centre, guides, isophotes)", "#ff9f1c", True),
     ("contours", "Contours", "#ffd84a", False),
     ("crosshair", "Crosshair", "#ff9f40", False),
 )
@@ -1931,6 +1937,11 @@ class LayersPanel(QtWidgets.QWidget):
 
     def set_checked(self, key: str, on: bool) -> None:
         self.overlays[key].setCheckState(1, Qt.Checked if on else Qt.Unchecked)
+
+    def set_colour(self, key: str, colour: str) -> None:
+        """Show an overlay's colour in its box (a colour set from elsewhere)."""
+        if key in self.overlays:
+            self.overlays[key].setIcon(0, swatch(colour, 14))
 
     def _changed(self, item, column) -> None:
         key = item.data(0, Qt.UserRole)

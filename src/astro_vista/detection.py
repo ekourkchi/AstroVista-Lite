@@ -213,6 +213,35 @@ class SourceRun:
         d = np.hypot(self.columns["X_IMAGE"] - 0.5 - x, self.columns["Y_IMAGE"] - 0.5 - y)
         return int(np.argmin(d))
 
+    def under(self, x: float, y: float) -> Optional[int]:
+        """The row of the source a click at (x, y) is inside: the segment under it (the
+        segmentation map), else the smallest Kron ellipse holding it; None: the sky."""
+        if not len(self):
+            return None
+        seg = self.segmentation
+        if seg is not None:
+            i, j = int(np.floor(x)), int(np.floor(y))
+            if 0 <= j < seg.shape[0] and 0 <= i < seg.shape[1] and seg[j, i] > 0:
+                rows = np.flatnonzero(self.columns["NUMBER"] == seg[j, i])
+                if rows.size:
+                    return int(rows[0])
+        best, area = None, np.inf
+        for row, (cx, cy, a, b, theta) in enumerate(self.ellipses()):
+            t = np.radians(theta)
+            dx, dy = x - cx, y - cy
+            u = dx * np.cos(t) + dy * np.sin(t)
+            v = -dx * np.sin(t) + dy * np.cos(t)
+            if (u / a) ** 2 + (v / b) ** 2 <= 1.0 and a * b < area:
+                best, area = row, a * b
+        return best
+
+    def centre_of(self, row: int):
+        """(x, y) of source ``row`` in the viewer's coordinates."""
+        return (
+            float(self.columns["X_IMAGE"][row]) - 0.5,
+            float(self.columns["Y_IMAGE"][row]) - 0.5,
+        )
+
 
 def source_mask(
     run: SourceRun, shape, keep: Optional[int] = None, scale: float = 1.5, chosen=None

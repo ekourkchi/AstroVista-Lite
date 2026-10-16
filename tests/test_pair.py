@@ -1086,12 +1086,26 @@ def test_the_pair_tool_in_the_window():
     assert not window._pair_drawing()["A"].get("fit")
     assert window.viewer.pair_items[("A", "fit")]._path.isEmpty()
     window.layers.set_checked("isophotes", True)
-    window.layers.set_checked("pair", False)
+    window.layers.set_checked("pairA", False)  # A and B have a row each
+    settle(1)
+    assert window._pair_drawing()["A"] == {} and window._pair_drawing()["B"]["fit"]
+    window.layers.set_checked("pairB", False)
     settle(1)
     assert window._pair_drawing() == {"A": {}, "B": {}}
-    window.layers.set_checked("pair", True)
+    for key in ("pairA", "pairB"):
+        window.layers.set_checked(key, True)
     settle(1)
     assert window._pair_drawing()["B"]["fit"]
+    # A is cyan; a colour chosen in Layers goes to the drawing and the card, and is kept
+    from astro_vista import app as app_module
+    from astro_vista import pairpanel
+
+    assert pairpanel.COLOURS["A"] == "#00e5ff"
+    window._layer_colour("pairB", "#33ff66")
+    item = window.viewer.pair_items[("B", "fit")]
+    assert item._pen.color().name() == "#33ff66" and "#33ff66" in panel.cards["B"].styleSheet()
+    assert app_module.settings().value("colours/pairB") == "#33ff66"
+    window._layer_colour("pairB", "#ff9f1c")
     # every detected object but A and B, in the mask layer 'objects', ticked for the fit
     window.pair_mask_objects(2.0)
     settle(60)

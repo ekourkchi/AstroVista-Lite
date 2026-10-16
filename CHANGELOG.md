@@ -5,6 +5,14 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **A in cyan, B in orange, your choice.** The pair fit's A and B each have a row in Layers;
+  click its colour box to change the colour (the card, the drawing and the plots follow,
+  and the colour is remembered, as are the other overlays' colours).
+- **Pick a centre by clicking inside the source.** For A, B and ELLIPROF, a click anywhere
+  inside a found source (its segment, or its Kron ellipse) takes that source's centre
+  (*Snap to sources*; Alt-click: the point clicked).
+- **Source centres as small crosses** (Layers: Source centres, and the Source finder's
+  *Show their centres*), as in AstroVista.
 - **Your work is kept for next time.** The buffers (with their names, tags and model
   parameters) and the mask layers are saved to a session folder (`.temp` beside the
   settings, or one chosen in File ▸ Session folder…) when buffers are closed, when the
