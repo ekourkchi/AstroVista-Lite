@@ -24,7 +24,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from . import pair
-from .fitting import fit_array
+from .fitting import centre_masked, fit_array
 
 
 @dataclass
@@ -867,6 +867,8 @@ def fit_single(
     if n_avg > 1 and kept.complete and not stopped():
         rng = np.random.default_rng(s.seed if s.seed is not None else 0)
         floor = R0_MARGIN * masked_core(mask, (kept_s.x0, kept_s.y0), 0.25 * kept_s.r1)
+        if centre_masked(mask, s.x0, s.y0):  # the R0 elliprof could fit there (clear_centre)
+            floor = max(floor, s.r0)
         jittered = []
         for k in range(2, n_avg + 1):
             f0, f1 = (

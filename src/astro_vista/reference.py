@@ -521,7 +521,12 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "the image.",
                 (
                     ("X0=, Y0=", "the centre, in ELLIPROF's coordinates (required)"),
-                    ("R0=, R1=", "the first and last semi-major axis, in pixels (required)"),
+                    (
+                        "R0=, R1=",
+                        "the first and last semi-major axis, in pixels (required); when the "
+                        "centre is masked, R0 is raised 5 % at a time until elliprof can fit "
+                        "the isophote there",
+                    ),
                     ("NR=", "the number of ellipses (required)"),
                     ("NITER=", "iterations of the fit (default 10)"),
                     ("SKY=", "a constant sky subtracted before the fit"),
@@ -848,7 +853,8 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "A: … B: …",
                         "each galaxy: X0= Y0= R0= R1= NR=25 NAME= FIXCTR= CORE= ADAPTIVE "
                         "COS3X= COS4X= (ELLIPROF's harmonics in the model: 2 each isophote's, "
-                        "the default; 1 the median; 0 none; COS3X −2, −1, −3: the 6th order) "
+                        "ELLIPROF's default; 1 the median; 0 none, the panel's default; COS3X "
+                        "−2, −1, −3: the 6th order) "
                         "or MODE=; TRYCOS3X= TRYCOS4X= (values tried on the fit kept, A's then "
                         "B's, kept when the residual falls by more than 0.01 of the noise); "
                         "START= (first R1) with STEP= (+ pixels) or FACTOR= (×), or RADII= "
@@ -856,7 +862,9 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "R1=AUTO, START=AUTO and NR=AUTO (about 30 % apart): the radii and isophotes chosen on "
                         "simulated pairs (R1 where the light away from the other galaxy falls "
                         "below the noise, measured again on the image minus the other's "
-                        "model)",
+                        "model). A galaxy whose centre is masked has its R0 raised 5 % at a "
+                        "time until elliprof can fit the isophote there (when none below half "
+                        "R1 will do, the masked patch over its centre is not used)",
                     ),
                 ),
                 "pair 1 SKY=3246 MASK=u12517j CYCLES=2 A: NAME=UGC12517 X0=567 Y0=562 R0=9 "

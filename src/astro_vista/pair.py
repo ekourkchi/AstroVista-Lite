@@ -34,7 +34,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from . import masks as maskops
-from .fitting import MODES, SIXTH_ORDER_WARNING, ArrayFit, fit_array
+from .fitting import MODES, SIXTH_ORDER_WARNING, ArrayFit, centre_masked, fit_array
 
 STATUSES = (
     "stable_valid_pair",
@@ -907,6 +907,16 @@ def match_source(run, comp: Component) -> Match:
         b / a,
         float(c["THETA_IMAGE"][k]),
     )
+
+
+def raised_r0(c: Component, r0: float) -> Component:
+    """The galaxy with R0 raised (its centre masked): a first R1 (START) or listed radii
+    that it would reach are moved out to 1.5 R0 (or left out)."""
+    start = c.start
+    if start is not None and start < 1.5 * r0:
+        start = min(1.5 * r0, c.r1) if 1.5 * r0 < c.r1 else None
+    radii = ([r for r in c.radii if r >= 1.5 * r0] or None) if c.radii else c.radii
+    return replace(c, r0=r0, start=start, radii=radii)
 
 
 def match_pair(run, galaxies) -> Tuple[Dict[str, Match], str]:
@@ -3236,6 +3246,8 @@ def jittered(snap: Snapshot, s: Settings) -> List[Tuple[str, Snapshot]]:
                 for _ in range(2)
             )
             r0, r1 = c.r0 * f0, c.r1 * f1
+            if r0 < c.r0 and centre_masked(snap.fit_mask, c.x0, c.y0):
+                r0 = c.r0 * (2 - f0)  # a masked centre: never below the R0 fitted, outward
             if r0 >= 0.5 * r1:  # R0 stays as asked, and below R1 (a shrunk R1 may pass it)
                 r0 = min(c.r0, 0.5 * r1)
             changes = dict(r0=round(r0, 2), r1=round(r1, 2), try_cos3x=[], try_cos4x=[])

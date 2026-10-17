@@ -5,6 +5,12 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **A masked centre: R0 raised until elliprof can fit.** When the pixel at a galaxy's
+  centre is masked, R0 is raised by 5 % at a time until elliprof fits the isophote at R0
+  (a short trial fit on a cut-out each time), in one ELLIPROF call, the iterative fit and
+  the pair fit; what was done is said with the fit. The averaged repeats never go below
+  that R0. In the pair fit, the masked patch over a centre is no longer simply left out:
+  only when no R0 below half R1 will do.
 - **The buffers in tabs.** Above the buffer list: *All*, *Images* (the project's images,
   masks and auxiliary files), *Model* (the fit kept: its model, residual and sky), *Mean*
   (the averaged fit's mean model, residual, spread and sky), *Fit 1*, *Fit 2*, ... (each

@@ -10,7 +10,7 @@ from __future__ import annotations
 import shlex
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -55,6 +55,7 @@ class FitResult:
     command: str = ""
     version: str = ""
     seconds: float = 0.0
+    notes: List[str] = field(default_factory=list)  # what was changed to fit (R0 raised)
 
 
 def fit(image: Image, s: FitSettings) -> FitResult:
@@ -76,6 +77,22 @@ def fit(image: Image, s: FitSettings) -> FitResult:
         masked |= masks.load(s.mask_file, image.shape)
     if s.extra_mask is not None:
         masked |= s.extra_mask
+    notes = []
+    # a masked centre: R0 raised until elliprof can fit the isophote there
+    r0, note = clear_centre(
+        np.asarray(image.data, np.float64),
+        s.x0,
+        s.y0,
+        s.r0,
+        s.r1,
+        masked | ~np.isfinite(image.data),
+        sky=s.sky,
+        fixctr=s.fixctr if s.fixctr is not None else 0,
+    )
+    if note:
+        notes.append(note)
+    if r0 != s.r0:
+        s = replace(s, r0=r0)
     with tempfile.TemporaryDirectory(prefix="astro-vista-") as tmp:
         tmp = Path(tmp)
         source = image.derived(image.name, image.data)
@@ -124,6 +141,7 @@ def fit(image: Image, s: FitSettings) -> FitResult:
         command=command_line(image, s),
         version=elliprof.__version__,
         seconds=time.perf_counter() - start,
+        notes=notes,
     )
 
 
@@ -269,3 +287,83 @@ def fit_array(
             result.precision,
             message,
         )
+
+
+# a galaxy whose centre is masked: R0 is raised by this factor at a time until elliprof can
+# fit the isophote at R0 (clear_centre)
+R0_GROWTH = 1.05
+
+
+def centre_masked(masked: Optional[np.ndarray], x0: float, y0: float) -> bool:
+    """Whether the pixel at the centre (ELLIPROF's coordinates) is masked."""
+    if masked is None:
+        return False
+    i, j = int(np.floor(x0)), int(np.floor(y0))
+    ny, nx = masked.shape
+    return 0 <= i < nx and 0 <= j < ny and bool(masked[j, i])
+
+
+def first_isophote_ok(profile) -> bool:
+    """Whether elliprof fitted the innermost isophote: every value finite, an ellipticity of
+    0 to 0.95 and a positive intensity (a masked one comes back NaN, or as its start)."""
+    if profile is None or not len(profile):
+        return False
+    row = profile.iloc[0]
+    try:
+        values = [float(row[k]) for k in ("Rmaj", "x0", "y0", "I0", "alpha", "ellip")]
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not all(np.isfinite(values)):
+        return False
+    return 0 <= values[5] < 0.95 and values[3] > 0
+
+
+def clear_centre(
+    data: np.ndarray,
+    x0: float,
+    y0: float,
+    r0: float,
+    r1: float,
+    masked: Optional[np.ndarray],
+    sky: Optional[float] = None,
+    fitter=None,
+    **options,
+) -> Tuple[float, str]:
+    """R0 for a galaxy whose centre is masked: raised by 5 % at a time (R0_GROWTH) until
+    elliprof fits the isophote at R0 (a short call, four isophotes out to 1.6 R0, on a
+    cut-out around the centre), never past half R1.  (R0, what was done); R0 as given and
+    "" when the centre is not masked; R0 as given and why when no R0 would do."""
+    if not centre_masked(masked, x0, y0):
+        return r0, ""
+    fitter = fitter or fit_array
+    ny, nx = data.shape
+    r, tries = float(r0), 0
+    while r < 0.5 * r1:
+        tries += 1
+        outer = min(1.6 * r, r1)
+        half = int(np.ceil(outer * 1.3)) + 8  # the cut-out: the probe's isophotes and more
+        i0, j0 = max(int(x0) - half, 0), max(int(y0) - half, 0)
+        i1, j1 = min(int(x0) + half + 1, nx), min(int(y0) + half + 1, ny)
+        probe = fitter(
+            data[j0:j1, i0:i1],
+            x0 - i0,
+            y0 - j0,
+            r,
+            outer,
+            4,
+            sky=sky,
+            masked=masked[j0:j1, i0:i1],
+            **options,
+        )
+        if first_isophote_ok(probe.profile):
+            if tries == 1:
+                return r, ""  # masked, but elliprof fits it at R0 as it is
+            return r, (
+                f"the centre is masked: R0 raised from {r0:g} to {r:.3g} px (5 % at a time) "
+                "until elliprof could fit the isophote there"
+            )
+        r *= R0_GROWTH
+    return r0, (
+        f"the centre is masked and elliprof could fit no isophote between R0 {r0:g} and half "
+        f"R1 ({0.5 * r1:g} px): R0 kept at {r0:g}"
+    )

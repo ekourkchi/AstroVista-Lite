@@ -2328,3 +2328,32 @@ def test_a_picture_of_a_region_of_the_view(tmp_path, monkeypatch):
     QTest.keyClick(window.viewer.canvas, QtCore.Qt.Key_Escape)
     assert not window.viewer._grabbing
     window.close()
+
+
+def test_a_masked_centre_raises_r0_until_elliprof_can_fit(tmp_path):
+    from astro_vista.commands import Session
+    from astro_vista.fitting import R0_GROWTH, clear_centre
+
+    image = galaxy(stars=False)
+    data = image.data.astype(np.float64)
+    yy, xx = np.mgrid[0 : image.shape[0], 0 : image.shape[1]] + 0.5
+    hole = np.hypot(xx - 150, yy - 140) <= 10  # the centre masked out to 10 px
+    r0, note = clear_centre(data, 150, 140, 2.0, 120, hole, sky=100.0)
+    assert 10 <= r0 <= 10 * R0_GROWTH**3 and "raised from 2 to" in note
+    # each step is 5 %: R0 is 2 x 1.05^k
+    k = round(np.log(r0 / 2.0) / np.log(R0_GROWTH))
+    assert r0 == pytest.approx(2.0 * R0_GROWTH**k)
+    assert clear_centre(data, 150, 140, 2.0, 120, ~hole & False, sky=100.0) == (2.0, "")
+    # the same in the fits: one elliprof call, and the iterative fit
+    write_fits(image, tmp_path / "g.fits")
+    s = Session()
+    s.folder = tmp_path
+    s.execute("rd 1 g.fits")
+    s.execute("mask new hole 1")
+    s.execute("mask circle hole 150 140 10")
+    reply = s.execute("elliprof 1 X0=150 Y0=140 R0=2 R1=100 NR=12 SKY=100 MASK=hole")
+    assert "R0 raised from 2 to" in reply.text
+    first = float(s.fits[s.buffers[1].key].profile["Rmaj"].iloc[0])
+    assert first == pytest.approx(r0, rel=0.06)
+    reply = s.execute("elliprof 1 X0=150 Y0=140 R0=2 R1=100 NR=AUTO SKY=100 MASK=hole TRYFIX=1")
+    assert "R0 raised from 2 to" in reply.text

@@ -26,7 +26,7 @@ from . import detection
 from . import masks as maskops
 from . import pair as pairs
 from . import sky as skies
-from .fitting import MODES, FitResult, FitSettings, fit
+from .fitting import MODES, FitResult, FitSettings, clear_centre, fit
 from .images import Image, image_hdus, read_fits, write_fits
 from .masks import Mask
 from .cmdbase import CommandError, Reply, integer, number, split_line
@@ -883,8 +883,13 @@ class Session(ImageCommands):
         self.fits[image.key] = result
         self.centre = (s.x0, s.y0)
         reply = Reply(
-            f"{len(result.profile)} isophotes in {result.seconds:.2f} s "
-            f"(elliprof {result.version}); {int(result.masked.sum())} pixels masked",
+            "\n".join(
+                result.notes
+                + [
+                    f"{len(result.profile)} isophotes in {result.seconds:.2f} s "
+                    f"(elliprof {result.version}); {int(result.masked.sum())} pixels masked"
+                ]
+            ),
             {"fits", "centre"},
         )
         residual = result.residual
@@ -944,6 +949,13 @@ class Session(ImageCommands):
         else:
             r1 = number(keys["R1"], "R1")
         r0 = number(keys["R0"], "R0")
+        # a masked centre: R0 raised by 5 % at a time until elliprof can fit there
+        r0, note = clear_centre(
+            np.asarray(image.data, np.float64), x0, y0, r0, r1, masked, sky=sky * factor,
+            fixctr=fs.fixctr if fs.fixctr is not None else 0,
+        )  # fmt: skip
+        if note:
+            notes.append(note)
         nr = 0 if str(keys.get("NR", "AUTO")).upper() == "AUTO" else integer(keys["NR"], "NR")
 
         def numbers(key, kind=float):
@@ -1601,7 +1613,6 @@ class Session(ImageCommands):
                 raise CommandError(f"no mask file {path}")
             masked |= maskops.load(path, image.shape)
             label.append(path.name)
-        uncovered = _uncover_centres(masked, own)
         # output buffers: given, or free ones; never the image, a mask buffer or each other
         taken = {n} | {integer(t, "MASKBUF") for t in maskbuf}
         outputs = {}
@@ -1672,6 +1683,20 @@ class Session(ImageCommands):
                 "SKYITER needs the sky support of a current sky measurement of this image "
                 f"(sky {n} SEGMENT)"
             )
+        # a masked centre: R0 raised by 5 % at a time until elliprof can fit there; when no
+        # R0 below half R1 will do, the masked patch over the centre is not used
+        uncovered = []
+        data = np.asarray(image.data, np.float64)
+        for cid, c in list(components.items()):
+            r0, note = clear_centre(
+                data, c.x0, c.y0, c.r0, c.r1, masked | ~np.isfinite(data), sky=settings.sky,
+                fixctr=c.fixctr,
+            )  # fmt: skip
+            if r0 != c.r0:
+                components[cid] = pairs.raised_r0(c, r0)
+                uncovered.append(f"{cid}: {note}")
+            elif note:
+                uncovered += _uncover_centres(masked, {cid: {"X0": c.x0, "Y0": c.y0}})
         self._pair_runs += 1
         provenance = {
             "file": str(image.path) if image.path else None,

@@ -2598,3 +2598,28 @@ def test_harmonics_are_none_by_default_and_the_common_ones_are_searched():
     e.harmonic_search.setCurrentIndex(e.harmonic_search.findData("AUTO"))
     assert "HARMONICS=AUTO" in e.command(1, 3, 4).split()
     app.processEvents()
+
+
+def test_a_masked_centre_in_the_pair_fit_raises_r0_and_keeps_the_mask():
+    scene = synthetic.pair()
+    a, b = scene.galaxies["A"], scene.galaxies["B"]
+    s = Session()
+    s.buffers[1] = Image("pair.fits", scene.data.copy())
+    s.execute("mask new hole 1")
+    s.execute(f"mask circle hole {a.x:.2f} {a.y:.2f} 8")  # A's centre masked out to 8 px
+    s.execute("mask role hole fit")
+    line = (
+        f"1 SKY={scene.sky:g} MASK=hole A: X0={a.x:.2f} Y0={a.y:.2f} R0=2 R1=80 START=10 "
+        f"B: X0={b.x:.2f} Y0={b.y:.2f} R0=2 R1=40"
+    )
+    job = s.pair_prepare(line)
+    ca, cb = job.snap.components["A"], job.snap.components["B"]
+    assert 8 <= ca.r0 <= 8 * 1.05**3 and cb.r0 == 2
+    assert ca.start >= 1.5 * ca.r0  # the first R1 moved out with it
+    assert job.snap.fit_mask[int(a.y), int(a.x)]  # the mask is kept
+    assert any("R0 raised from 2 to" in n for n in job.snap.notes)
+    # a mask over the whole galaxy (beyond half R1): the patch there is not used instead
+    s.execute(f"mask circle hole {a.x:.2f} {a.y:.2f} 45")
+    job = s.pair_prepare(line)
+    assert job.snap.components["A"].r0 == 2 and not job.snap.fit_mask[int(a.y), int(a.x)]
+    assert any("is not used" in n for n in job.snap.notes)
