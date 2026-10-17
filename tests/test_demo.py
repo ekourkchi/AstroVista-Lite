@@ -2245,3 +2245,86 @@ def test_a_restored_session_keeps_its_project(tmp_path):
     s.execute("project close")
     s.execute(f"session restore {tmp_path / 'kept'}")
     assert s.project.name == "field one" and s.project.shape == (40, 50)
+
+
+def test_the_buffers_are_in_tabs_by_what_made_them(tmp_path):
+    from PySide6 import QtWidgets
+
+    from astro_vista.app import MainWindow
+    from astro_vista.images import Image, group_order
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    s = window.session
+    image = Image("g.fits", galaxy().data.astype(np.float32))
+    s.buffers[1] = image
+    names = [
+        "model", "residual", "sky", "elliprof mean model", "elliprof mean sky",
+        "elliprof mean fit 1 of 2 model", "elliprof mean fit 1 of 2 sky",
+        "elliprof mean fit 2 of 2 model", "pair A model (A)", "pair mean A model",
+        "pair mean fit 1 of 2 residual", "model #3 harmonics 1",
+    ]  # fmt: skip
+    for k, name in enumerate(names, 2):
+        s.buffers[k] = image.derived(f"g.fits {name}", image.data)
+    window._refresh_buffers()
+    tabs = window.buffer_tabs
+    labels = [tabs.tabText(k) for k in range(tabs.count())]
+    assert labels == [
+        "All", "Images", "Model", "Mean", "Fit 1", "Fit 2", "Model #3",
+        "Pair model", "Pair mean", "Pair fit 1",
+    ]  # fmt: skip
+    assert labels[1:] == sorted(labels[1:], key=group_order)
+
+    def visible():
+        items = [window.buffer_list.item(k) for k in range(window.buffer_list.count())]
+        return [i.data(QtCore.Qt.UserRole) for i in items if not i.isHidden()]
+
+    from PySide6 import QtCore
+
+    tabs.setCurrentIndex(labels.index("Fit 1"))
+    assert visible() == [7, 8]  # its model and its sky
+    tabs.setCurrentIndex(labels.index("Model"))
+    assert visible() == [2, 3, 4]
+    window.show_buffer(9)  # a buffer of another tab: its tab comes forward
+    assert tabs.tabText(tabs.currentIndex()) == "Fit 2" and visible() == [9]
+    tabs.setCurrentIndex(0)
+    assert len(visible()) == len(s.buffers)
+    window.close()
+
+
+def test_a_picture_of_a_region_of_the_view(tmp_path, monkeypatch):
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtTest import QTest
+
+    from astro_vista.app import MainWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = MainWindow()
+    window.resize(1200, 800)
+    window.show()
+    window.open_path(write_fits(galaxy(), tmp_path / "galaxy.fits"))
+    deadline = QtCore.QDeadlineTimer(30000)
+    while window.busy() and not deadline.hasExpired():
+        app.processEvents(QtCore.QEventLoop.AllEvents, 50)
+    target = tmp_path / "picture.png"
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), "PNG (*.png)")
+    )
+    window.a_snapshot.trigger()
+    view = window.viewer.canvas.viewport()
+    QTest.mousePress(view, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, QtCore.QPoint(40, 30))
+    QTest.mouseMove(view, QtCore.QPoint(140, 90))
+    QTest.mouseRelease(view, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, QtCore.QPoint(140, 90))
+    app.processEvents()
+    picture = QtGui.QImage(str(target))
+    ratio = view.devicePixelRatioF()
+    assert not picture.isNull()
+    assert abs(picture.width() - 100 * ratio) <= 2 * ratio
+    assert abs(picture.height() - 60 * ratio) <= 2 * ratio
+    assert not QtWidgets.QApplication.clipboard().pixmap().isNull()
+    assert not window.viewer._grabbing  # one picture, then the tool it was
+    # Esc cancels
+    window.a_snapshot.trigger()
+    QTest.keyClick(window.viewer.canvas, QtCore.Qt.Key_Escape)
+    assert not window.viewer._grabbing
+    window.close()

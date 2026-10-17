@@ -5,6 +5,15 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **The buffers in tabs.** Above the buffer list: *All*, *Images* (the project's images,
+  masks and auxiliary files), *Model* (the fit kept: its model, residual and sky), *Mean*
+  (the averaged fit's mean model, residual, spread and sky), *Fit 1*, *Fit 2*, ... (each
+  averaged fit's own model, residual and sky), the models picked in the models table, and
+  the same for the pair fit (*Pair model*, *Pair mean*, *Pair fit 1*, ...). Showing a
+  buffer brings its tab forward.
+- **A picture of a region.** View ▸ Picture of a region… (Shift+S, the camera in the tool
+  bar): drag a box over the image and it is saved as a PNG as shown (the scale, colours,
+  isophotes, masks and marks), and copied to the clipboard; a click takes the whole view.
 - **Harmonics: none by default, the common ones searched.** COS3X and COS4X are 0 by
   default in ELLIPROF (every mode) and the pair fit. The *Harmonic search* tries the ones
   most used, COS3X=-1 and COS4X=1, against none (`HARMONICS=COMMON`, the default); *Every*

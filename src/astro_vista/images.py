@@ -8,6 +8,7 @@ pixel at 1, so they are 0.5 larger: ``fits = view + 0.5``.
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,22 @@ class Image:
     def shape(self):
         return self.data.shape
 
+    @property
+    def group(self) -> str:
+        """The tab of the buffer list it is shown in: Images (the project's own), Model (a
+        fit's model, residual and sky), Mean and Fit k (an averaged fit's), the same for
+        the pair fit, and the models picked in the models table."""
+        made = (
+            self.name[len(self.family) + 1 :]
+            if self.family and self.name.startswith(self.family + " ")
+            else ""
+        )
+        for pattern, group in GROUPS:
+            m = re.match(pattern, made)
+            if m:
+                return group.format(*m.groups())
+        return "Images"
+
     def wcs(self):
         """The celestial WCS of the header, or None when it has none."""
         if not hasattr(self, "_wcs"):
@@ -66,6 +83,34 @@ class Image:
         """A new image of the same size and WCS (a model, a residual, a segmentation)."""
         data = np.asarray(data, dtype=np.float32)
         return Image(name, data, self.header.copy(), None, self.key)
+
+
+# the tab of a buffer made from an image, from what its name says it is (Image.group)
+GROUPS = (
+    (r"elliprof mean fit (\d+) of \d+ ", "Fit {}"),
+    (r"elliprof mean ", "Mean"),
+    (r"pair mean fit (\d+) of \d+ ", "Pair fit {}"),
+    (r"pair (?:mean |model spread)", "Pair mean"),
+    (r"pair call \d+:", "Pair calls"),
+    (r"pair ", "Pair model"),
+    (r"model #(\d+)", "Model #{}"),
+    (r"models mean of ", "Models mean"),
+    (r"(?:model|residual|sky|elliprof sky)$", "Model"),
+)
+
+
+def group_order(group: str):
+    """Where a tab goes: Images, Model, Mean, Fit 1, 2, ..., the models picked, then the
+    pair fit's Model, Mean, Fit 1, 2, ... and calls."""
+    pair = group.startswith("Pair ")
+    base = group[5:] if pair else group
+    m = re.fullmatch(r"(.*?)\s*#?(\d+)", base)
+    kind, k = (m.group(1), int(m.group(2))) if m else (base, 0)
+    if kind == "Model" and "#" in base:
+        kind = "Model #"
+    ranks = ["images", "model", "mean", "fit", "model #", "models mean", "calls"]
+    rank = ranks.index(kind.lower()) if kind.lower() in ranks else len(ranks)
+    return (pair, rank, k, group)
 
 
 def first_header(path) -> Optional[str]:

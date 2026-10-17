@@ -424,9 +424,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.buffer_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.buffer_list.customContextMenuRequested.connect(self._buffer_menu)
         self.buffer_list.setIconSize(QtCore.QSize(40, 40))
+        # the buffers in tabs: All, the project's images, a fit's model, the mean, each fit
+        self.buffer_tabs = QtWidgets.QTabBar()
+        self.buffer_tabs.setExpanding(False)
+        self.buffer_tabs.setUsesScrollButtons(True)
+        self.buffer_tabs.setDocumentMode(True)
+        self.buffer_tabs.setElideMode(Qt.ElideNone)
+        self.buffer_tabs.currentChanged.connect(lambda _i: self._filter_buffers())
+        buffers_box = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(buffers_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
+        box.addWidget(self.buffer_tabs)
+        box.addWidget(self.buffer_list, 1)
         self.layers = LayersPanel()
         left = QtWidgets.QSplitter(Qt.Vertical)
-        left.addWidget(self.buffer_list)
+        left.addWidget(buffers_box)
         left.addWidget(self.layers)
         left.setSizes([120, 560])
         self.left_split = left
@@ -612,6 +625,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_new_project = a("&New project…", self.new_project, shortcut="Ctrl+Shift+N")
         self.a_close_project = a("&Close project", self.close_project)
         self.a_project_info = a("Project…", lambda: self.run_command("project"))
+        self.a_snapshot = a(
+            "Picture of a region…",
+            self.viewer.start_region_grab,
+            "📷",
+            "Shift+S",
+            "Drag a box over the image: a PNG of it as shown (a click: the whole view), also "
+            "copied to the clipboard (Shift+S)",
+        )
         self.a_restore = a("Restore the last session", self.restore_session)
         self.a_session_folder = a("Session folder…", self.choose_session_folder)
         self.a_quit = a("&Quit", self.close, shortcut=QtGui.QKeySequence.Quit)
@@ -778,6 +799,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.a_sources,
                 self.a_profile_png,
                 self.a_plot_png,
+                self.a_snapshot,
                 None,
                 self.a_restore,
                 self.a_session_folder,
@@ -806,6 +828,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.a_invert,
                 self.a_hist,
                 self.a_display_bar,
+                None,
+                self.a_snapshot,
                 None,
                 self.a_terminal,
             ),
@@ -951,7 +975,14 @@ class MainWindow(QtWidgets.QMainWindow):
         tools.addWidget(self.angle)
         bar(
             "View",
-            (self.a_zoom_in, self.a_zoom_out, self.a_actual, self.a_fit_view, self.a_north),
+            (
+                self.a_zoom_in,
+                self.a_zoom_out,
+                self.a_actual,
+                self.a_fit_view,
+                self.a_north,
+                self.a_snapshot,
+            ),
         )
         run = bar("Run", (self.tb_elliprof, self.tb_finder, self.tb_display, self.tb_contours))
         run.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)  # "Elliprof", "Find sources"
@@ -1031,6 +1062,7 @@ class MainWindow(QtWidgets.QMainWindow):
         v.contrast_changed.connect(self._contrast_dragged)
         v.pending_angle.connect(self._pending_angle)
         v.hint.connect(self.statusBar().showMessage)
+        v.region_grabbed.connect(self._region_grabbed)
 
         self.profile.row_selected.connect(self._isophote_selected)
         self.sources.source_selected.connect(self._source_selected)
@@ -1307,10 +1339,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 tip.insert(0, f"tag: {image.tag}")
             tip.append(f"made by: {image.note}" if image.note else str(image.path or ""))
             item.setToolTip("\n".join(t for t in tip if t))
+            item.setData(Qt.UserRole + 1, image.group)
             self.buffer_list.addItem(item)
             if n == self.shown:
                 self.buffer_list.setCurrentItem(item)
         self.buffer_list.blockSignals(False)
+        self._buffer_groups()
         # the blink menu: tags where given, with how each buffer was made as its tooltip
         # the result buffers offered in the tools: the free ones (the occupied on request)
         occupied = {n: b.label for n, b in self.session.buffers.items()}
@@ -1334,6 +1368,52 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.shown not in self.session.buffers:
             self.show_buffer(min(self.session.buffers) if self.session.buffers else None)
 
+    def _buffer_groups(self) -> None:
+        """The tabs: All, then each group the buffers are in (Images, Model, Mean, Fit 1,
+        ...), the tab chosen kept when it still has buffers."""
+        from .images import group_order
+
+        counts = {}
+        for image in self.session.buffers.values():
+            counts[image.group] = counts.get(image.group, 0) + 1
+        groups = ["All"] + sorted(counts, key=group_order)
+        tabs = self.buffer_tabs
+        current = tabs.tabData(tabs.currentIndex()) if tabs.count() else "All"
+        tabs.blockSignals(True)
+        while tabs.count():
+            tabs.removeTab(0)
+        for g in groups:
+            k = tabs.addTab(g)
+            tabs.setTabData(k, g)
+            count = len(self.session.buffers) if g == "All" else counts[g]
+            tabs.setTabToolTip(k, f"{g}: {count} buffer{'s' if count != 1 else ''}")
+        tabs.setCurrentIndex(groups.index(current) if current in groups else 0)
+        tabs.setVisible(len(groups) > 2)  # tabs only when there is more than one group
+        tabs.blockSignals(False)
+        self._filter_buffers()
+
+    def _filter_buffers(self) -> None:
+        """Show the buffers of the tab chosen."""
+        tabs = self.buffer_tabs
+        group = tabs.tabData(tabs.currentIndex()) if tabs.count() else "All"
+        for k in range(self.buffer_list.count()):
+            item = self.buffer_list.item(k)
+            item.setHidden(group not in ("All", None) and item.data(Qt.UserRole + 1) != group)
+
+    def _show_group_of(self, n: Optional[int]) -> None:
+        """Bring the tab of buffer ``n`` forward when the tab chosen does not hold it."""
+        image = self.session.buffers.get(n) if n is not None else None
+        tabs = self.buffer_tabs
+        if image is None or not tabs.count():
+            return
+        group = tabs.tabData(tabs.currentIndex())
+        if group in ("All", image.group):
+            return
+        for k in range(tabs.count()):
+            if tabs.tabData(k) == image.group:
+                tabs.setCurrentIndex(k)
+                return
+
     def show_buffer(self, n: Optional[int], keep_limits: bool = False) -> None:
         if self._residual_display is not None and n != self._residual_shown:
             stretch, mode = self._residual_display  # the display before the residual
@@ -1344,6 +1424,7 @@ class MainWindow(QtWidgets.QMainWindow):
         previous = self.viewer.image
         same = previous is not None and image is not None and previous.key == image.key
         self.shown = n if image is not None else None
+        self._show_group_of(self.shown)
         self.viewer.set_image(image, keep_view=same, keep_limits=keep_limits)
         if image is not None and image.display == "smooth":
             self._show_smooth(n)
@@ -2177,6 +2258,31 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._core_cache = None
             p.set_core_note(pairs.cores_note(self._core_cache))
         return self._core_cache
+
+    def _region_grabbed(self, picture: QtGui.QPixmap) -> None:
+        """A picture of the region dragged: on the clipboard, and saved as a PNG."""
+        if picture.isNull():
+            return
+        QtWidgets.QApplication.clipboard().setPixmap(picture)
+        stem = self._stem() if self.viewer.image is not None else "view"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save the picture",
+            str(self.session.folder / f"{stem}_view.png"),
+            "PNG (*.png)",
+        )
+        size = f"{picture.width()} × {picture.height()} px"
+        if not path:
+            self.statusBar().showMessage(f"The picture ({size}) is on the clipboard")
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        if picture.save(path, "PNG"):
+            self.statusBar().showMessage(
+                f"Saved the picture ({size}) to {path}; also on the clipboard"
+            )
+        else:
+            QtWidgets.QMessageBox.warning(self, TITLE, f"Could not write {path}.")
 
     def export_pair(self) -> None:
         n = self._tool_number(self.pair_panel.input)

@@ -198,6 +198,7 @@ class Viewer(QtWidgets.QWidget):
     contrast_changed = QtCore.Signal(float, float)  # contrast, bias (a drag)
     pending_angle = QtCore.Signal(float)  # the rotation of the shape waiting to be applied
     hint = QtCore.Signal(str)  # what can be done now (for the status bar)
+    region_grabbed = QtCore.Signal(object)  # a picture (QPixmap) of the region dragged
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -331,6 +332,10 @@ class Viewer(QtWidgets.QWidget):
         self.canvas.scene().sigMouseClicked.connect(self._mouse_clicked)
         self.canvas.viewport().installEventFilter(self)
         self.canvas.installEventFilter(self)
+        # a picture of a region of the view: dragged as a box (start_region_grab)
+        self._grabbing = False
+        self._grab_from = None
+        self._band = QtWidgets.QRubberBand(QtWidgets.QRubberBand.Rectangle, self.canvas.viewport())
         self.view.sigRangeChanged.connect(lambda *_: self._view_moved())
         self._later = QtCore.QTimer(self, singleShot=True, interval=120)
         self._later.timeout.connect(self._refresh_view_layers)
@@ -1173,8 +1178,61 @@ class Viewer(QtWidgets.QWidget):
             d["points"][k] = (u, v)
         self._draw_pending()
 
+    def start_region_grab(self) -> None:
+        """The next drag over the image takes a picture of the box dragged, as shown (a
+        click: the whole view); Esc cancels."""
+        self._grabbing = True
+        self._grab_from = None
+        self.canvas.viewport().setCursor(Qt.CrossCursor)
+        self.canvas.setFocus()
+        self.hint.emit(
+            "Drag a box over the image for a picture of it, as shown (a click: the whole "
+            "view); Esc cancels"
+        )
+
+    def cancel_region_grab(self) -> None:
+        self._grabbing = False
+        self._grab_from = None
+        self._band.hide()
+        self.canvas.viewport().unsetCursor()  # the tool's own cursor (on the canvas) shows
+
+    def _grab_event(self, event) -> bool:
+        kind = event.type()
+        if kind == QtCore.QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._grab_from = event.position().toPoint()
+            self._band.setGeometry(QtCore.QRect(self._grab_from, QtCore.QSize()))
+            self._band.show()
+            return True
+        if kind == QtCore.QEvent.MouseMove and self._grab_from is not None:
+            self._band.setGeometry(
+                QtCore.QRect(self._grab_from, event.position().toPoint()).normalized()
+            )
+            return True
+        if kind == QtCore.QEvent.MouseButtonRelease and self._grab_from is not None:
+            rect = QtCore.QRect(self._grab_from, event.position().toPoint()).normalized()
+            self._band.hide()
+            view = self.canvas.viewport()
+            if rect.width() < 4 or rect.height() < 4:  # a click: the whole view
+                rect = view.rect()
+            picture = view.grab(rect.intersected(view.rect()))
+            self.cancel_region_grab()
+            self.region_grabbed.emit(picture)
+            return True
+        return kind in (
+            QtCore.QEvent.MouseButtonPress,
+            QtCore.QEvent.MouseButtonRelease,
+            QtCore.QEvent.MouseButtonDblClick,
+        )
+
     def eventFilter(self, obj, event):
         kind = event.type()
+        if self._grabbing:
+            if kind == QtCore.QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                self.cancel_region_grab()
+                self.hint.emit("")
+                return True
+            if obj is self.canvas.viewport():
+                return self._grab_event(event)
         if obj is self.canvas:
             if kind == QtCore.QEvent.KeyPress:
                 return self._key(event)
