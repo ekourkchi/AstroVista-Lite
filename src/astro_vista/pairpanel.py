@@ -686,6 +686,15 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             "spikes) found in the residual of a first pass is added to the mask"
         )
         form.addRow("Harmonic search", tip(self.harmonic_search, "harmonic_search"))
+        self.shape_tol = number(0.0, 1.0, SHAPE_TOL, decimals=2, step=0.02)
+        self.shape_tol.setSpecialValueText("off")
+        self.shape_tol.setToolTip(
+            "SHAPETOL: the outer ellipses follow the inner ones (their ellipticity and angle change "
+            "gradually). When one of the 3 outermost is off the trend of those inside it by more "
+            "than this (ellipticity and angle together), the fit is touching the sky: R1 is "
+            "reduced by 10 % at a time and fitted again until they follow; 0: off"
+        )
+        form.addRow("Outer ellipses off by", tip(self.shape_tol, "outer_shape"))
         form.addRow(tip(self.wings, "pair_wings"))
         self.pull_check = QtWidgets.QCheckBox("Check the pull of the outer ellipses after the fit")
         self.pull_check.setChecked(True)
@@ -1058,15 +1067,6 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             "image (elliprof's extrapolation is often much too bright)"
         )
         f.addRow("Beyond R1", self.joe_tail)
-        self.shape_tol = number(0.0, 1.0, SHAPE_TOL, decimals=2, step=0.02)
-        self.shape_tol.setSpecialValueText("off")
-        self.shape_tol.setToolTip(
-            "SHAPETOL: at the end, when one of a galaxy's 3 outermost ellipses is off the trend "
-            "of those inside it by more than this (ellipticity and angle together), or its "
-            "model beyond R1 is anomalous, coarser isophotes and a smaller R1 are tried, the "
-            "largest clean one kept, and both galaxies fitted once more; 0: off"
-        )
-        f.addRow("Outer ellipses off by", tip(self.shape_tol, "pair_shape"))
         reset = QtWidgets.QPushButton("Joe's defaults")
         reset.clicked.connect(self.joe_defaults)
         f.addRow(reset)
@@ -1112,7 +1112,6 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             ("PULLPX", self.pull_px, PULL_PX, 1),
             ("PULLFRAC", self.pull_frac, PULL_FRAC, 100),
             ("PULLR0", self.pull_r0, PULL_R0, 1),
-            ("SHAPETOL", self.shape_tol, SHAPE_TOL, 1),
         ):
             v = box.value() / scale
             if abs(v - default) > 1e-9:
@@ -1262,6 +1261,8 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             if self.jitter.value() != 15:
                 out.append(f"JITTER={self.jitter.value() / 100:g}")
         out += harmonic_search_keywords(self.harmonic_search)
+        if abs(self.shape_tol.value() - SHAPE_TOL) > 1e-9:
+            out.append(f"SHAPETOL={self.shape_tol.value():g}")
         if self.wings.isChecked():
             out.append("WINGS=1")
         return out

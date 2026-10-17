@@ -300,7 +300,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         "TAIL=measured",
         "SKYPLANE=1",
         "TRYFIX=1,0",
-        "SHAPETOL=0.12",
     ]
 
     def __init__(self, parent=None):
@@ -487,6 +486,15 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         form.addRow("Residual sources", tip(row, "resid_sources"))
         form.addRow(tip(self.rmstar, "rmstar"))
         form.addRow("NITER", tip(self.niter, "niter"))
+        self.shape_tol = number(0.0, 1.0, 0.12, decimals=2, step=0.02)
+        self.shape_tol.setSpecialValueText("off")
+        self.shape_tol.setToolTip(
+            "SHAPETOL: the outer ellipses follow the inner ones (their ellipticity and angle change "
+            "gradually). When one of the 3 outermost is off the trend of those inside it by more "
+            "than this (ellipticity and angle together), the fit is touching the sky: R1 is "
+            "reduced by 10 % at a time and fitted again until they follow; 0: off"
+        )
+        form.addRow("Outer ellipses off by", tip(self.shape_tol, "outer_shape"))
         for w in (self.parallel_row, self.search_row):
             self.fit_mode.currentIndexChanged.connect(lambda i, w=w: form.setRowVisible(w, i > 0))
             form.setRowVisible(w, False)
@@ -645,13 +653,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
             self.tail.addItem(label, key)
         self.tail.setToolTip("TAIL: the model beyond the last isophote")
         f.addRow("Beyond R1", self.tail)
-        self.shape_tol = number(0.0, 1.0, 0.12, decimals=2, step=0.02)
-        self.shape_tol.setSpecialValueText("off")
-        self.shape_tol.setToolTip(
-            "SHAPETOL: an outermost isophote off the trend inside it by more than this is "
-            "refitted with coarser isophotes or a smaller R1"
-        )
-        f.addRow("Outer isophotes off by", self.shape_tol)
         box.setVisible(False)
         self.fit_mode.currentIndexChanged.connect(lambda i: box.setVisible(i == 2))
         return box
@@ -930,8 +931,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         if self.sky_plane.isChecked():
             out.append("SKYPLANE=1")
         out.append(f"TAIL={self.tail.currentData()}")
-        if self.shape_tol.value():
-            out.append(f"SHAPETOL={self.shape_tol.value():g}")
         if self.parallel.value() > 1:
             out.append(f"PARALLEL={self.parallel.value()}")
             if self.jitter.value() != 15:
@@ -1058,6 +1057,8 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         for key, b in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
             if b.currentData() != 2:  # 2: ELLIPROF's own default
                 parts.append(f"{key}={b.currentData()}")
+        if abs(self.shape_tol.value() - 0.12) > 1e-9:  # 0.12: the default
+            parts.append(f"SHAPETOL={self.shape_tol.value():g}")
         if self.use_sky.isChecked():
             parts.append(f"SKY={self.sky.value():.10g}")
             if abs(self.factor.value() - 1.0) > 1e-9:

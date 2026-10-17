@@ -1010,6 +1010,12 @@ TIPS = {
     "and the cap), or a circle when no source matches. <i>This radius</i> sets it by hand "
     "(CORE=), over the Companion's core setting. It never covers the other centre, and it "
     "is fixed for the whole run.",
+    "outer_shape": "<b>Outer ellipses off by</b> (SHAPETOL, 0.12): the outer ellipses follow "
+    "the inner ones, their ellipticity and position angle changing gradually. When one of "
+    "the 3 outermost ellipses is off the trend of the 4 inside them by more than this (the "
+    "shape e·exp(2i PA): ellipticity and angle together), the fit is touching the sky: R1 is "
+    "reduced by 10 % at a time and fitted again (at most 12 times, never below 8 px or 3 R0) "
+    "until they follow, in every fit, single and pair. 0: off.",
     "harmonics": "<b>Harmonics</b> of the model: COS3X, the cos 3θ term (lopsided, egg-shaped "
     "isophotes), and COS4X, the cos 4θ term (disky: positive; boxy: negative). 0 (none) by "
     "default. 2: fitted at each isophote; 1: the median of all; for COS3X, -1, -2 and -3 "

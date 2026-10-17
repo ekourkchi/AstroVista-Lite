@@ -87,6 +87,17 @@ SHAPE_TOL = 0.12
 SHAPE_REF = 4
 SHAPE_OUTER = 3
 SHAPE_COARSE = 0.7
+# The outer ellipses follow the inner ones: their ellipticity and PA change gradually. An
+# outer ellipse off that trend (outer_shape, by more than SHAPETOL) is fitting the sky, and R1
+# is reduced by SHRINK at a time (at most SHRINK_TRIES times, never below shrink_floor) until
+# the outer ellipses follow the inner ones again; in every fit, single and pair.
+SHRINK = 0.9
+SHRINK_TRIES = 12
+
+
+def shrink_floor(r0: float) -> float:
+    """The smallest R1 the outer-ellipse rule reduces R1 to."""
+    return max(JOE_MIN_R1, 3.0 * r0)
 
 
 class PairError(Exception):
@@ -1505,6 +1516,7 @@ def run(
     cycles continue at the radii reached."""
     s = snap.settings
     comps = dict(snap.components)  # R0 may be raised during the run (INNER_R0)
+    shape_cap: Dict[str, float] = {}  # R1 reduced for the outer ellipses: never exceeded
     image = snap.image
     finite = np.isfinite(image)
     result = PairResult(status="incomplete_initialization", run_id=snap.run_id)
@@ -1542,10 +1554,11 @@ def run(
         cos3x, cos4x = comp.harmonics()
         mask = snap.mask_for(cid, first=first)
         usable = finite & ~mask
-        r1 = r1_start
+        r1 = min(r1_start, shape_cap.get(cid, r1_start))
         adaptive = comp.adaptive if adaptive is None else adaptive
         tries = 4 if adaptive else 1
         inner_tries = INNER_TRIES
+        shrinks = 0
         attempt = -1
         while attempt + 1 < tries:
             attempt += 1
@@ -1574,6 +1587,19 @@ def run(
                 tie=s.tie,
             )
             ok, reason, kind, radius = check(fit, comp, r1, finite)
+            if ok and s.shape_tol > 0:
+                # the outer ellipses must follow the inner ones; else R1 is touching the sky
+                bad = outer_shape(fit.profile, s.shape_tol)
+                if (
+                    bad is not None
+                    and shrinks < SHRINK_TRIES
+                    and SHRINK * r1 >= shrink_floor(comp.r0)
+                ):
+                    ok, kind, radius = False, "shape", bad["r"]
+                    reason = (
+                        f"its ellipse at {bad['r']:.1f} is off the ellipses inside it (by "
+                        f"{bad['d']:.2f}): R1 reduced by 10 %"
+                    )
             result.attempted_r1[cid] = r1
             drift = _centre_drift(fit.profile, comp) if ok else None
             call = Call(
@@ -1619,6 +1645,8 @@ def run(
                 ellipses=profile_ellipses(fit.profile) if ok else None,
             )
             if ok:
+                if r1 < r1_start - 1e-9:
+                    shape_cap[cid] = r1
                 support = outer_support(fit.profile, usable)
                 return Commit(
                     model=tail_model(fit.model, fit.profile, s.tail, conditional - s.sky, usable),
@@ -1631,6 +1659,11 @@ def run(
                     bootstrap=bootstrap,
                     requested_r1=comp.r1,
                 )
+            if kind == "shape":  # R1 reduced by 10 % and fitted again (not an adaptive try)
+                shrinks += 1
+                r1 = SHRINK * r1
+                attempt -= 1
+                continue
             result.failures[cid] = f"{cycle}: {reason} (R1 {r1:.1f})"
             result.diagnostics[cid] = fit
             if kind == "outer" and radius is not None and radius <= INNER_R0 and inner_tries:
@@ -2712,9 +2745,9 @@ def run_joe(
         return ({"r": None, "good": None, "d": 0.0, "model": why} if why else None), model
 
     def guard(cid, fit, r1, data, mask, cycle):
-        """SHAPETOL: when an outer isophote is off the trend or the model is anomalous,
-        coarser isophotes (automatic NR) and an R1 inside the bad isophote are tried; the
-        largest radius whose isophotes and model are fine is kept (else the smallest)."""
+        """SHAPETOL: when an outer isophote is off the trend of those inside it, or the
+        model is anomalous, R1 is reduced by 10 % at a time (SHRINK) and fitted again until
+        the outer ellipses follow the inner ones; the first fine fit is kept."""
         bad, model = flaw(fit, data, mask)
         if bad is None:
             return fit, r1, data, mask, model, None
@@ -2724,35 +2757,28 @@ def run_joe(
             if bad["r"] is not None
             else bad["model"]
         )
-        trims = []
-        if bad["good"] is not None and bad["good"] >= JOE_MIN_R1:
-            trims.append(bad["good"])
-        elif bad["r"] is None:
-            trims.append(0.85 * r1)  # an anomalous model: a little further in
-        tries = []
-        n_now = nr_for(replace(comp, nr=nr_over.get(cid, comp.nr)), r1)
-        if comp.nr == 0 and n_now > 5:
-            tries.append((r1, max(4, int(round(SHAPE_COARSE * n_now)))))
-        for t in trims:
-            tries.append((t, None))
-            if comp.nr == 0 and nr_for(comp, t) > 5:
-                tries.append((t, max(4, int(round(SHAPE_COARSE * nr_for(comp, t))))))
-        clean, shaped = None, None  # the largest fine fit; the largest with fine isophotes
-        for r_try, nr in tries:
-            f2, r2, d2, m2 = call(cid, r_try, cycle, comp.fixctr, nr=nr)
+        clean, shaped = None, None  # the first fine fit; the first with fine isophotes
+        r_try = r1
+        for _k in range(SHRINK_TRIES):
+            r_try *= SHRINK
+            if r_try < max(shrink_floor(comp.r0), JOE_MIN_R1):
+                break
+            f2, r2, d2, m2 = call(cid, r_try, cycle, comp.fixctr)
             if f2 is None:
                 continue
             b2, model2 = flaw(f2, d2, m2)
-            option = (f2, r2, d2, m2, model2, nr)
-            if b2 is None and (clean is None or r2 > clean[1] + 0.5):
-                clean = option
-            if (b2 is None or b2["r"] is None) and (shaped is None or r2 > shaped[1] + 0.5):
+            option = (f2, r2, d2, m2, model2, None)
+            if (b2 is None or b2["r"] is None) and shaped is None:
                 shaped = option
+            if b2 is None:
+                clean = option
+                break
+            r_try = min(r_try, r2)
         # an off-trend isophote is always replaced by fine ones; an anomalous model alone is
         # replaced only by a fit that is fine in both (never shrinking R1 cycle after cycle)
         chosen = clean or (shaped if bad["r"] is not None else None)
         if chosen is None:
-            steps.append(f"{cycle}: {cid}: {what}; no other radius or NR did better, kept")
+            steps.append(f"{cycle}: {cid}: {what}; no smaller R1 did better, kept")
             return fit, r1, data, mask, model, None
         f2, r2, d2, m2, model2, nr = chosen
         how = f"R1 {r2:.1f}" + (f", NR {nr}" if nr else "")

@@ -275,8 +275,8 @@ def fit_once(
 
 def _guard(fit, r1, nr, comp, s, image, mask, call, out):
     """SHAPETOL: the outermost isophotes checked against the trend inside them; when one
-    is off (or the model is anomalous beyond R1), coarser isophotes and an R1 inside it are
-    tried and the largest clean fit kept (pair.outer_shape, pair.model_anomaly)."""
+    is off (or the model is anomalous beyond R1), R1 is reduced by 10 % at a time until the
+    outer ellipses follow the inner ones (pair.outer_shape, pair.model_anomaly, pair.SHRINK)."""
     finite = np.isfinite(image)
 
     def flaw(f):
@@ -296,30 +296,31 @@ def _guard(fit, r1, nr, comp, s, image, mask, call, out):
         if bad["r"] is not None
         else bad["model"]
     )
-    tries = []
-    if comp.nr == 0 and nr > 5:
-        tries.append((r1, max(4, int(round(pair.SHAPE_COARSE * nr)))))
-    trim = bad["good"] if bad["good"] is not None else 0.85 * r1
-    if trim >= pair.JOE_MIN_R1:
-        tries.append((trim, None))
-        n_trim = pair.nr_for(replace(comp, r1=trim), trim)
-        if comp.nr == 0 and n_trim > 5:
-            tries.append((trim, max(4, int(round(pair.SHAPE_COARSE * n_trim)))))
-    clean, shaped = None, None
-    for r_try, n_try in tries:
-        f2, r2, n2 = call(r_try, nr=n_try)
+    # R1 reduced by 10 % at a time until the outer ellipses follow the inner ones
+    clean, shaped = None, None  # the first fine fit; the first with fine isophotes
+    r_try = r1
+    for _k in range(pair.SHRINK_TRIES):
+        r_try *= pair.SHRINK
+        if r_try < pair.shrink_floor(comp.r0):
+            break
+        f2, r2, n2 = call(r_try)
         if f2 is None:
             continue
         b2 = flaw(f2)
-        if b2 is None and (clean is None or r2 > clean[1] + 0.5):
-            clean = (f2, r2, n2)
-        if (b2 is None or b2["r"] is None) and (shaped is None or r2 > shaped[1] + 0.5):
+        if (b2 is None or b2["r"] is None) and shaped is None:
             shaped = (f2, r2, n2)
+        if b2 is None:
+            clean = (f2, r2, n2)
+            break
+        r_try = min(r_try, r2)
     chosen = clean or (shaped if bad["r"] is not None else None)
     if chosen is None:
-        out.steps.append(f"outer isophotes: {what}; no other radius or NR did better, kept")
+        out.steps.append(f"outer isophotes: {what}; no smaller R1 did better, kept")
         return fit, r1, nr
-    out.steps.append(f"outer isophotes: {what}; refitted with R1 {chosen[1]:.1f}, NR {chosen[2]}")
+    out.steps.append(
+        f"outer isophotes: {what}; R1 reduced by 10 % at a time to {chosen[1]:.1f} (NR "
+        f"{chosen[2]})"
+    )
     return chosen
 
 

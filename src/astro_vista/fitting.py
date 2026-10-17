@@ -43,6 +43,9 @@ class FitSettings:
     rlaw: Optional[int] = None  # spacing of the radii
     gain: Optional[float] = None
     tie: Optional[int] = None
+    # the outer ellipses must follow the inner ones: one off their trend by more than this
+    # (pair.outer_shape) is fitting the sky, and R1 is reduced by 10 % at a time (0: off)
+    shape_tol: float = 0.12
 
 
 @dataclass
@@ -93,41 +96,72 @@ def fit(image: Image, s: FitSettings) -> FitResult:
         notes.append(note)
     if r0 != s.r0:
         s = replace(s, r0=r0)
-    with tempfile.TemporaryDirectory(prefix="astro-vista-") as tmp:
-        tmp = Path(tmp)
-        source = image.derived(image.name, image.data)
-        for key in ("CNPIX1", "CNPIX2"):  # elliprof would add an image origin to X0, Y0
-            source.header.remove(key, ignore_missing=True)
-        path = write_fits(source, tmp / "image.fits")
-        mask_path = None
-        if masked.any():
-            mask_path = tmp / "mask.fits"  # 1 = good, 0 = masked
-            fits.PrimaryHDU((~masked).astype(np.float32)).writeto(mask_path)
-        result = run_elliprof(
-            str(path),
-            float(s.x0),
-            float(s.y0),
-            mask=str(mask_path) if mask_path else None,
-            sky=s.sky,
-            r0=float(s.r0),
-            r1=float(s.r1),
-            nr=int(s.nr),
-            niter=int(s.niter),
-            rmstar=s.rmstar,
-            **native_options(s),
-            output_dir=str(tmp),
-            model_path=str(tmp / "model.fits"),
-            residual_path=str(tmp / "residual.fits"),
-            csv_path=str(tmp / "profile.csv"),
-            check=False,
-        )
-        if result.returncode != 0 or result.profile is None:
-            lines = (result.stderr or result.stdout or "").strip().splitlines()
-            raise RuntimeError(
-                "ELLIPROF failed: " + (lines[-1] if lines else f"exit {result.returncode}")
+    def once(s):
+        """One elliprof call: (its result, the model, the residual)."""
+        with tempfile.TemporaryDirectory(prefix="astro-vista-") as tmp:
+            tmp = Path(tmp)
+            source = image.derived(image.name, image.data)
+            for key in ("CNPIX1", "CNPIX2"):  # elliprof would add an image origin to X0, Y0
+                source.header.remove(key, ignore_missing=True)
+            path = write_fits(source, tmp / "image.fits")
+            mask_path = None
+            if masked.any():
+                mask_path = tmp / "mask.fits"  # 1 = good, 0 = masked
+                fits.PrimaryHDU((~masked).astype(np.float32)).writeto(mask_path)
+            result = run_elliprof(
+                str(path),
+                float(s.x0),
+                float(s.y0),
+                mask=str(mask_path) if mask_path else None,
+                sky=s.sky,
+                r0=float(s.r0),
+                r1=float(s.r1),
+                nr=int(s.nr),
+                niter=int(s.niter),
+                rmstar=s.rmstar,
+                **native_options(s),
+                output_dir=str(tmp),
+                model_path=str(tmp / "model.fits"),
+                residual_path=str(tmp / "residual.fits"),
+                csv_path=str(tmp / "profile.csv"),
+                check=False,
             )
-        model = fits.getdata(tmp / "model.fits").astype(np.float32)
-        residual = fits.getdata(tmp / "residual.fits").astype(np.float32)
+            if result.returncode != 0 or result.profile is None:
+                lines = (result.stderr or result.stdout or "").strip().splitlines()
+                raise RuntimeError(
+                    "ELLIPROF failed: " + (lines[-1] if lines else f"exit {result.returncode}")
+                )
+            model = fits.getdata(tmp / "model.fits").astype(np.float32)
+            residual = fits.getdata(tmp / "residual.fits").astype(np.float32)
+        return result, model, residual
+
+    result, model, residual = once(s)
+    if s.shape_tol > 0:
+        # an outer ellipse off the trend of those inside it is touching the sky: R1 reduced
+        # by 10 % at a time until the outer ellipses follow the inner ones
+        from .pair import SHRINK, SHRINK_TRIES, outer_shape, shrink_floor
+
+        bad = outer_shape(result.profile, s.shape_tol)
+        r1, tries = s.r1, 0
+        while bad is not None and tries < SHRINK_TRIES and SHRINK * r1 >= shrink_floor(s.r0):
+            tries += 1
+            r1 *= SHRINK
+            trial = replace(s, r1=r1)
+            try:
+                got = once(trial)
+            except RuntimeError:
+                continue
+            if outer_shape(got[0].profile, s.shape_tol) is None:
+                notes.append(
+                    f"the ellipse at {bad['r']:.1f} was off the ellipses inside it (by "
+                    f"{bad['d']:.2f}): R1 reduced by 10 % at a time, from {s.r1:g} to {r1:.1f}"
+                )
+                s, (result, model, residual), bad = trial, got, None
+        if bad is not None:
+            notes.append(
+                f"the ellipse at {bad['r']:.1f} is off the ellipses inside it (by "
+                f"{bad['d']:.2f}); no R1 down to {r1:.1f} did better: R1 kept"
+            )
     residual[masked] = np.nan
     profile = result.profile
     # elliprof's DS9 ellipses put the first pixel's centre at 1; the viewer at 0.5

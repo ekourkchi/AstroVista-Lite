@@ -408,13 +408,24 @@ def test_a_hard_blend_ends_honestly():
         "A": pair.Component("A", a.x, a.y, 3, 180, 25),
         "B": pair.Component("B", b.x, b.y, 3, 80, 20),
     }
-    snap = pair.prepare(
-        scene.data, "hard", None, comps, pair.Settings(sky=1000.0), fit_mask=scene.star_mask
-    )
+    settings = pair.Settings(sky=1000.0, shape_tol=0)  # without the outer-ellipse rule
+    snap = pair.prepare(scene.data, "hard", None, comps, settings, fit_mask=scene.star_mask)
     result = pair.run(snap)
     assert result.status != "stable_valid_pair"
     if result.status == "retained_after_failed_update":
         assert result.checkpoint_cycle is not None and result.complete
+    # with it, A's outer ellipses (far past where A is seen) are off those inside them: its
+    # R1 is reduced by 10 % at a time, and the pair is fitted
+    snap = pair.prepare(
+        scene.data, "hard", None, comps, pair.Settings(sky=1000.0), fit_mask=scene.star_mask
+    )
+    result = pair.run(snap)
+    assert result.complete and result.commits["A"].r1_call < 180
+    shrunk = [c for c in result.calls if "R1 reduced by 10 %" in c.reason]
+    assert shrunk and all(c.component == "A" for c in shrunk)
+    # each retry is at 0.9 x the R1 that failed
+    after = {round(result.calls[k + 1].r1, 6) for k, c in enumerate(result.calls[:-1]) if c in shrunk}
+    assert after <= {round(pair.SHRINK * c.r1, 6) for c in shrunk}
 
 
 def test_inputs_are_unchanged_by_a_pair_fit():

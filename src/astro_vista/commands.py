@@ -845,6 +845,7 @@ class Session(ImageCommands):
             mask_file=self.path(keys["MASKFILE"]) if "MASKFILE" in keys else None,
             extra_mask=maskops.union(layers),
             extra_mask_label=", ".join(m.name for m in layers),
+            shape_tol=number(keys.get("SHAPETOL", 0.12), "SHAPETOL"),
             **self._native_keys(keys),
         )
         if s.mask_file is not None and not s.mask_file.exists():
@@ -1005,7 +1006,7 @@ class Session(ImageCommands):
             try_cos4x=numbers("TRYCOS4X", int),
             harmonic_search=harmonics.lower(),
             wide=search == "FULL",
-            shape_tol=number(keys.get("SHAPETOL", 0), "SHAPETOL"),
+            shape_tol=number(keys.get("SHAPETOL", pairs.SHAPE_TOL), "SHAPETOL"),
             parallel=integer(keys.get("PARALLEL", 1), "PARALLEL"),
             runs=integer(keys.get("RUNS", 1), "RUNS"),
             jitter=number(keys.get("JITTER", 0.15), "JITTER"),
@@ -2828,7 +2829,6 @@ ITERATIVE = {
     "JITTER",
     "SEED",
     "TAIL",
-    "SHAPETOL",
     "SEARCH",
 }
 
