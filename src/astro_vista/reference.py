@@ -551,9 +551,10 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "a sky tilt taken out when it lowers the residual",
                     ),
                     (
-                        "TRYFIX=, HARMONICS=AUTO, TRYCOS3X=, TRYCOS4X=",
+                        "TRYFIX=, HARMONICS=COMMON|AUTO, TRYCOS3X=, TRYCOS4X=",
                         "the search: fixed and free centres fitted, the lowest residual kept; "
-                        "then the harmonics",
+                        "then the harmonics (COMMON: COS3X 0 and -1, COS4X 0 and 1; AUTO: "
+                        "every one)",
                     ),
                     (
                         "SEARCH=FULL",
@@ -792,9 +793,10 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                         "PARALLEL=5: ten fits, five at a time)",
                     ),
                     (
-                        "HARMONICS=AUTO",
-                        "try every COS3X and COS4X for each galaxy on the fit kept, and keep "
-                        "the stable fit with the smallest residual",
+                        "HARMONICS=COMMON, HARMONICS=AUTO",
+                        "try the harmonics most used (COS3X 0 and -1, COS4X 0 and 1), or every "
+                        "COS3X and COS4X, for each galaxy on the fit kept, and keep the stable "
+                        "fit with the smallest residual",
                     ),
                     (
                         "WINGS=1",

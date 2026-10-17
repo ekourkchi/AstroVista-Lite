@@ -194,6 +194,32 @@ class InputChoice(QtWidgets.QComboBox):
         self.blockSignals(False)
 
 
+HARMONIC_SEARCHES = (
+    ("Common: COS3X 0, −1 × COS4X 0, 1", "COMMON"),
+    ("Every COS3X and COS4X", "AUTO"),
+    ("None", ""),
+)
+
+
+def harmonic_search_box() -> QtWidgets.QComboBox:
+    """HARMONICS: the harmonics tried on the fit kept (the common ones by default)."""
+    box = QtWidgets.QComboBox()
+    for label, key in HARMONIC_SEARCHES:
+        box.addItem(label, key)
+    box.setToolTip(
+        "HARMONICS: on the fit kept, other harmonics are tried and the one with the smallest "
+        "residual is kept (when it lowers it enough). Common (HARMONICS=COMMON): COS3X 0 and "
+        "−1 with COS4X 0 and 1, the harmonics most used (−1 and 1) against none. Every "
+        "(HARMONICS=AUTO): all 18 combinations. None: the harmonics set above only."
+    )
+    return box
+
+
+def harmonic_search_keywords(box: QtWidgets.QComboBox) -> list:
+    key = box.currentData()
+    return [f"HARMONICS={key}"] if key else []
+
+
 def residual_sources_row(rounds: int = 0, thresh: float = 8.0):
     """RESIDMASK: rounds of faint sources found in the residual, masked, fitted again; and
     their detection threshold.  (rounds box, threshold box, the row)"""
@@ -275,7 +301,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         "SKYPLANE=1",
         "TRYFIX=1,0",
         "SHAPETOL=0.12",
-        "HARMONICS=AUTO",
     ]
 
     def __init__(self, parent=None):
@@ -427,15 +452,42 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         row.addStretch(1)
         self.parallel_row = tip(row, "pair_parallel")
         form.addRow("Fits to average", self.parallel_row)
-        self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic (COS3X, COS4X)")
-        self.all_harmonics.setChecked(True)
-        self.all_harmonics.setToolTip("HARMONICS=AUTO: every COS3X and COS4X tried on the fit kept")
-        form.addRow(self.all_harmonics)
+        self.cos3x = QtWidgets.QComboBox()
+        self.cos4x = QtWidgets.QComboBox()
+        for box_, values in (
+            (
+                self.cos3x,
+                (
+                    (2, "each isophote"),
+                    (1, "median"),
+                    (0, "none"),
+                    (-2, "6th, each"),
+                    (-1, "6th, median"),
+                    (-3, "6th, none"),
+                ),
+            ),
+            (self.cos4x, ((2, "each isophote"), (1, "median"), (0, "none"))),
+        ):
+            for v, label in values:
+                box_.addItem(f"{v}: {label}", v)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("COS3X"))
+        row.addWidget(self.cos3x)
+        row.addWidget(QtWidgets.QLabel("COS4X"))
+        row.addWidget(self.cos4x)
+        self.cos3x.setCurrentIndex(self.cos3x.findData(0))  # none by default
+        self.cos4x.setCurrentIndex(self.cos4x.findData(0))
+        self.cos3x.setToolTip("COS3X: the cos 3θ term of the model (0: none, the default)")
+        self.cos4x.setToolTip("COS4X: the cos 4θ term of the model (0: none, the default)")
+        form.addRow("Harmonics", tip(row, "harmonics"))
+        self.harmonic_search = harmonic_search_box()
+        self.search_row = tip(self.harmonic_search, "harmonic_search")
+        form.addRow("Harmonic search", self.search_row)
         self.resid_rounds, self.resid_thresh, row = residual_sources_row()
         form.addRow("Residual sources", tip(row, "resid_sources"))
         form.addRow(tip(self.rmstar, "rmstar"))
         form.addRow("NITER", tip(self.niter, "niter"))
-        for w in (self.parallel_row, self.all_harmonics):
+        for w in (self.parallel_row, self.search_row):
             self.fit_mode.currentIndexChanged.connect(lambda i, w=w: form.setRowVisible(w, i > 0))
             form.setRowVisible(w, False)
         self.iterative = self._iterative_box()
@@ -566,30 +618,6 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         f.addRow("Centres", self.fixctr)
         self.tie = whole(-50, 10, -3, tip="TIE: -3 smooths over 3 isophotes; -1 none")
         f.addRow("Smoothing (TIE)", self.tie)
-        self.cos3x = QtWidgets.QComboBox()
-        self.cos4x = QtWidgets.QComboBox()
-        for box_, values in (
-            (
-                self.cos3x,
-                (
-                    (2, "each isophote"),
-                    (1, "median"),
-                    (0, "none"),
-                    (-2, "6th, each"),
-                    (-1, "6th, median"),
-                    (-3, "6th, none"),
-                ),
-            ),
-            (self.cos4x, ((2, "each isophote"), (1, "median"), (0, "none"))),
-        ):
-            for v, label in values:
-                box_.addItem(f"{v}: {label}", v)
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("COS3X"))
-        row.addWidget(self.cos3x)
-        row.addWidget(QtWidgets.QLabel("COS4X"))
-        row.addWidget(self.cos4x)
-        f.addRow("Harmonics", row)
         self.search_fix = QtWidgets.QCheckBox("Search fixed and free centres")
         self.search_fix.setChecked(True)
         self.search_fix.setToolTip("TRYFIX=1,0: both fitted, the lower residual kept")
@@ -883,7 +911,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
     def iterative_keywords(self, measured_sky: bool) -> list:
         """The keywords of the iterative fit (Automatic, or the box's settings)."""
         if self.fit_mode.currentIndex() == 1:
-            out = [w for w in self.AUTO if w != "HARMONICS=AUTO" or self.all_harmonics.isChecked()]
+            out = list(self.AUTO) + harmonic_search_keywords(self.harmonic_search)
             if measured_sky:
                 out.append("SKYITER=3")
             if self.parallel.value() > 1:
@@ -892,11 +920,7 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
                     out.append(f"JITTER={self.jitter.value() / 100:g}")
             return out
         out = [f"FIXCTR={self.fixctr.currentData()}", f"TIE={self.tie.value()}"]
-        for key, b in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
-            if b.currentData() != 2:
-                out.append(f"{key}={b.currentData()}")
-        if self.all_harmonics.isChecked():
-            out.append("HARMONICS=AUTO")
+        out += harmonic_search_keywords(self.harmonic_search)
         if self.search_fix.isChecked():
             out.append("TRYFIX=1,0")
         if not self.search_wide.isChecked():
@@ -1031,6 +1055,9 @@ class ElliprofPanel(SkySection, QtWidgets.QWidget):
         nr = "AUTO" if iterative and (auto or self.nr_auto.isChecked()) else str(self.nr.value())
         parts += [f"R0={self.r0.value():g}", f"R1={r1}"]
         parts += [f"NR={nr}", f"NITER={self.niter.value()}"]
+        for key, b in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
+            if b.currentData() != 2:  # 2: ELLIPROF's own default
+                parts.append(f"{key}={b.currentData()}")
         if self.use_sky.isChecked():
             parts.append(f"SKY={self.sky.value():.10g}")
             if abs(self.factor.value() - 1.0) > 1e-9:

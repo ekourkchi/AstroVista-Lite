@@ -210,12 +210,13 @@ result:   A, B, A + B, and the residual: image − sky − A − B, on every pix
     residual. With this setting a first pass is fitted, and what its residual shows next to
     a masked source is added to the mask. It never masks pixels near a galaxy's centre, and
     specks of SBF or noise that touch no mask are left alone.</li>
-    <li><b>Search every harmonic</b> (<code>HARMONICS=AUTO</code>) tries every
-    <code>COS3X</code> and <code>COS4X</code> for A, then for B, on the fit kept. Another
-    combination replaces the fit kept only when it lowers the residual by more than 0.01 of
-    the noise. ELLIPROF's default, each isophote's own terms, already follows boxy and
-    disky galaxies. The search takes about 1.7 times as long and matters mostly next to
-    a bright star.</li>
+    <li><b>Harmonics</b> are none by default (<code>COS3X=0 COS4X=0</code>). The
+    <b>Harmonic search</b> tries others for A, then for B, on the fit kept: <i>Common</i>
+    (<code>HARMONICS=COMMON</code>, the default) the ones most used, <code>COS3X=-1</code>
+    and <code>COS4X=1</code>, against none; <i>Every</i> (<code>HARMONICS=AUTO</code>) all
+    18 combinations. Another combination replaces the fit kept only when it lowers the
+    residual by more than 0.01 of the noise. On the pair example the common search takes
+    about twice as long as no search.</li>
   </ul>
   <pre><code>pair 1 SKY=1000 MASK=stars PARALLEL=4 \
        A: NAME=A X0=294.3 Y0=263.8 R0=3 R1=120 \

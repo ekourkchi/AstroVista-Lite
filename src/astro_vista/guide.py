@@ -1010,6 +1010,15 @@ TIPS = {
     "and the cap), or a circle when no source matches. <i>This radius</i> sets it by hand "
     "(CORE=), over the Companion's core setting. It never covers the other centre, and it "
     "is fixed for the whole run.",
+    "harmonics": "<b>Harmonics</b> of the model: COS3X, the cos 3θ term (lopsided, egg-shaped "
+    "isophotes), and COS4X, the cos 4θ term (disky: positive; boxy: negative). 0 (none) by "
+    "default. 2: fitted at each isophote; 1: the median of all; for COS3X, -1, -2 and -3 "
+    "add the 6th order (median, each, none). The ones most used are COS3X=-1 and COS4X=1.",
+    "harmonic_search": "<b>Harmonic search</b>: on the fit kept, other harmonics are fitted and "
+    "the one with the smallest residual is kept when it lowers it by more than 0.01 of the "
+    "noise. <i>Common</i> (HARMONICS=COMMON, the default): COS3X 0 and -1 with COS4X 0 and "
+    "1, the harmonics most used against none (3 more fits for each galaxy). <i>Every</i> "
+    "(HARMONICS=AUTO): all 18 combinations. <i>None</i>: only the harmonics set.",
     "pair_cores": "<b>The companion's core</b>: while A is fitted, the pixels around B's "
     "centre can be left out (and around A's while B is fitted), where the subtracted model "
     "of the other galaxy is least certain. <i>Off</i> (CORES=0): nothing is left out, only "

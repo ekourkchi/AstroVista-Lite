@@ -194,7 +194,7 @@ class Settings:
     runs: int = 1  # RUNS=: the fits averaged, when not PARALLEL's number (see averaged())
     jitter: float = 0.15  # JITTER=: each repeat's R0 and R1 change by 2/3 of this to this
     seed: Optional[int] = None  # SEED=: the repeats' random numbers (default: the run's number)
-    harmonic_search: bool = False  # HARMONICS=AUTO: every COS3X and COS4X tried for each
+    harmonic_search: str = ""  # HARMONICS=COMMON (0,-1 x 0,1) or AUTO (every one) tried
     method: str = "pair"  # METHOD=JOE: Joe's mode (run_joe) instead of the cycles and search
     pull_check: bool = True  # PULLCHECK=0: no check of the outer ellipses' pull (pull_check)
     pull_px: float = PULL_PX  # PULLPX=: a pull is a move towards the other of more than this
@@ -658,6 +658,10 @@ def resolve_auto(
 COS3X_VALUES = (-3, -2, -1, 0, 1, 2)
 COS4X_VALUES = (0, 1, 2)
 DEFAULT_HARMONICS = (2, 2)
+# HARMONICS=COMMON: the harmonics most used (COS3X=-1, COS4X=1) tried against none
+COMMON_COS3X = (0, -1)
+COMMON_COS4X = (0, 1)
+HARMONIC_SEARCHES = ("AUTO", "COMMON")
 HARMONIC_COMBINATIONS = 18  # TRYCOS3X x TRYCOS4X of one galaxy: at most this many to fit
 
 
@@ -775,7 +779,7 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         runs=_num(shared, "RUNS", "", 1, int),
         jitter=_num(shared, "JITTER", "", 0.15),
         seed=_num(shared, "SEED", "", None, int) if "SEED" in shared else None,
-        harmonic_search=shared.get("HARMONICS", "").strip().upper() == "AUTO",
+        harmonic_search=shared.get("HARMONICS", "").strip().lower(),
         method=shared.get("METHOD", "pair").strip().lower(),
         pull_check=_num(shared, "PULLCHECK", "", 1, int) != 0,
         pull_px=_num(shared, "PULLPX", "", PULL_PX),
@@ -822,8 +826,11 @@ def settings_from(shared: Dict[str, str]) -> Settings:
         raise PairError("METHOD must be PAIR (the cycles and the search) or JOE (Joe's mode)")
     if s.tail not in TAILS:
         raise PairError("TAIL must be one of " + ", ".join(TAILS))
-    if "HARMONICS" in shared and not s.harmonic_search:
-        raise PairError("HARMONICS must be AUTO (every COS3X and COS4X tried for each galaxy)")
+    if "HARMONICS" in shared and s.harmonic_search.upper() not in HARMONIC_SEARCHES:
+        raise PairError(
+            "HARMONICS must be COMMON (COS3X 0 and -1, COS4X 0 and 1 tried for each galaxy) or "
+            "AUTO (every COS3X and COS4X)"
+        )
     if not 1 <= s.runs <= MAX_RUNS:
         raise PairError(f"RUNS must be 1 to {MAX_RUNS}")
     if not 0 < s.jitter <= 0.5:
@@ -3193,15 +3200,23 @@ def choose_harmonics(kept: PairResult, tried: List[Tuple[PairResult, Snapshot]])
 ENSEMBLE_SHARE = 0.05
 
 
+def harmonic_values(search: str) -> Tuple[List[int], List[int]]:
+    """The COS3X and COS4X a harmonic search tries: COMMON (0 and -1, 0 and 1), AUTO (every
+    one), or none."""
+    search = (search or "").upper()
+    if search == "AUTO":
+        return list(COS3X_VALUES), list(COS4X_VALUES)
+    if search == "COMMON":
+        return list(COMMON_COS3X), list(COMMON_COS4X)
+    return [], []
+
+
 def all_harmonics(snap: Snapshot) -> Snapshot:
-    """HARMONICS=AUTO: every COS3X and COS4X to try for each galaxy (unless it lists its
-    own TRYCOS3X / TRYCOS4X)."""
+    """HARMONICS=COMMON or AUTO: the COS3X and COS4X to try for each galaxy (unless it lists
+    its own TRYCOS3X / TRYCOS4X)."""
+    c3s, c4s = harmonic_values(snap.settings.harmonic_search)
     comps = {
-        cid: replace(
-            c,
-            try_cos3x=c.try_cos3x or list(COS3X_VALUES),
-            try_cos4x=c.try_cos4x or list(COS4X_VALUES),
-        )
+        cid: replace(c, try_cos3x=c.try_cos3x or list(c3s), try_cos4x=c.try_cos4x or list(c4s))
         for cid, c in snap.components.items()
     }
     return replace(snap, components=comps)

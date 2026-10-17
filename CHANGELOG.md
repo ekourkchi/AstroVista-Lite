@@ -5,6 +5,10 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Harmonics: none by default, the common ones searched.** COS3X and COS4X are 0 by
+  default in ELLIPROF (every mode) and the pair fit. The *Harmonic search* tries the ones
+  most used, COS3X=-1 and COS4X=1, against none (`HARMONICS=COMMON`, the default); *Every*
+  (`HARMONICS=AUTO`) tries all 18 combinations, *None* none.
 - **Projects.** A project is one field: the galaxy image, its masks and auxiliary images,
   all of one size, with the sources, fits and models made from them. Opening another file
   adds it to the project (a mask, a weight map, another HDU); a file of another size is

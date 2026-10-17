@@ -34,6 +34,8 @@ from .pair import (
     SHAPE_TOL,
 )
 from .panels import (
+    harmonic_search_box,
+    harmonic_search_keywords,
     InputChoice,
     heading,
     note,
@@ -49,14 +51,14 @@ from .skysection import SkyHistogram, SkySection  # after panels, which it uses
 
 COLOURS = {"A": "#00e5ff", "B": "#ff9f1c"}  # cyan and orange (Layers: click to change)
 COS3X_SHOWN = [
-    (2, "2: each isophote (default)"),
+    (2, "2: each isophote"),
     (1, "1: median of all"),
-    (0, "0: none"),
+    (0, "0: none (default)"),
     (-2, "-2: 6th order, each"),
     (-1, "-1: 6th order, median"),
     (-3, "-3: 6th order, none"),
 ]
-COS4X_SHOWN = [(2, "2: each isophote (default)"), (1, "1: median of all"), (0, "0: none")]
+COS4X_SHOWN = [(2, "2: each isophote"), (1, "1: median of all"), (0, "0: none (default)")]
 DEFAULT_PARALLEL = max(1, min(5, (os.cpu_count() or 1) - 1))
 MODES_SHOWN = ["Automatic", "Automatic, adjustable", "Manual", "Joe's mode"]
 AUTOMATIC, ADJUSTABLE, MANUAL, JOE = range(4)
@@ -221,8 +223,8 @@ class GalaxyCard(QtWidgets.QGroupBox):
         self.cos4x = QtWidgets.QComboBox()
         for value, text in COS4X_SHOWN:
             self.cos4x.addItem(text, value)
-        self.cos3x.setCurrentIndex(self.cos3x.findData(2))
-        self.cos4x.setCurrentIndex(self.cos4x.findData(2))
+        self.cos3x.setCurrentIndex(self.cos3x.findData(0))  # none by default
+        self.cos4x.setCurrentIndex(self.cos4x.findData(0))
         self.cos3x.setToolTip(
             "COS3X: the cos 3θ term (lopsided, egg-shaped isophotes) in the model: 2 each "
             "isophote's own, 1 the median over all isophotes, 0 none; negative values fit the "
@@ -344,6 +346,9 @@ class GalaxyCard(QtWidgets.QGroupBox):
         parts += [f"X0={self.x0.value():g}", f"Y0={self.y0.value():g}", "R0=3"]
         parts.append("R1=AUTO" if self.r1_auto.isChecked() else f"R1={self.r1.value():g}")
         parts += ["START=AUTO", "NR=AUTO", "FIXCTR=1"]
+        for key, box in (("COS3X", self.cos3x), ("COS4X", self.cos4x)):
+            if box.currentData() != 2:  # 2: ELLIPROF's own default
+                parts.append(f"{key}={box.currentData()}")
         return " ".join(parts)
 
     def _growth_mode(self, index: int) -> None:
@@ -674,17 +679,13 @@ class PairPanel(SkySection, QtWidgets.QWidget):
         form.addRow("Fits to average", tip(row, "pair_parallel"))
         self.parallel_note = note(f"this computer has {os.cpu_count() or 1} cores; 1: a single fit")
         form.addRow(self.parallel_note)
-        self.all_harmonics = QtWidgets.QCheckBox("Search every harmonic (COS3X, COS4X)")
-        self.all_harmonics.setToolTip(
-            "HARMONICS=AUTO: on the fit kept, try every COS3X and COS4X for A, then for B, and "
-            "keep the stable fit with the smallest residual"
-        )
+        self.harmonic_search = harmonic_search_box()
         self.wings = QtWidgets.QCheckBox("Mask star wings and spikes the first pass shows")
         self.wings.setToolTip(
             "WINGS=1: light beyond the masks of bright sources (a star's wings, its diffraction "
             "spikes) found in the residual of a first pass is added to the mask"
         )
-        form.addRow(tip(self.all_harmonics, "pair_mode"))
+        form.addRow("Harmonic search", tip(self.harmonic_search, "harmonic_search"))
         form.addRow(tip(self.wings, "pair_wings"))
         self.pull_check = QtWidgets.QCheckBox("Check the pull of the outer ellipses after the fit")
         self.pull_check.setChecked(True)
@@ -1260,8 +1261,7 @@ class PairPanel(SkySection, QtWidgets.QWidget):
             out.append(f"PARALLEL={self.parallel.value()}")
             if self.jitter.value() != 15:
                 out.append(f"JITTER={self.jitter.value() / 100:g}")
-        if self.all_harmonics.isChecked():
-            out.append("HARMONICS=AUTO")
+        out += harmonic_search_keywords(self.harmonic_search)
         if self.wings.isChecked():
             out.append("WINGS=1")
         return out

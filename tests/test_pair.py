@@ -1071,9 +1071,10 @@ def test_the_pair_tool_in_the_window():
     assert abs(panel.cards["B"].x0.value() - 421.0) < 3.5
     panel.cards["A"].set_values({"x0": 294.3, "y0": 263.8, "r1": 120})
     panel.cards["B"].set_values({"x0": 421.18, "y0": 322.97, "r1": 50, "nr": 20})
+    panel.harmonic_search.setCurrentIndex(panel.harmonic_search.findData(""))  # quicker
     # the run, in the worker thread
     panel.run_requested.emit()
-    settle(120)
+    settle(400)  # ends when the fit does
     image = window.viewer.image
     record = window.session.pairs[image.key]
     assert record.result.status == "stable_valid_pair"
@@ -1394,7 +1395,9 @@ def test_the_panel_writes_harmonics_and_parallel_fits():
     panel = PairPanel()
     panel.set_mode(2)
     card = panel.cards["A"]
-    assert "COS3X" not in card.keywords()  # elliprof's default: nothing written
+    assert "COS3X=0" in card.keywords().split()  # none by default (ELLIPROF's own is 2)
+    card.cos3x.setCurrentIndex(card.cos3x.findData(2))
+    assert "COS3X" not in card.keywords()  # ELLIPROF's default: nothing written
     card.cos4x.setCurrentIndex(card.cos4x.findData(1))
     card.try_cos3x.setText("0, 1")
     words = card.keywords().split()
@@ -1458,7 +1461,7 @@ def test_every_harmonic_is_searched_with_harmonics_auto():
     from dataclasses import replace
 
     snap = harmonic_snapshot()
-    snap = replace(snap, settings=replace(snap.settings, harmonic_search=True, parallel=4))
+    snap = replace(snap, settings=replace(snap.settings, harmonic_search="auto", parallel=4))
     f = PureFitter(share={1: 1.0, 0: 0.0, 2: 0.5, None: 0.5})
     result = pair.run_search(snap, fitter=f)
     tried = [r for r in result.search if r.get("harmonics") == "A"]
@@ -2181,14 +2184,14 @@ def test_the_elliprof_panel_writes_the_iterative_fit():
     assert "SKYITER=3" not in p.command(1, 3, 4, measured_sky=False).split()
     assert "TOSKY=7" in p.command(1, 3, 4, tosky=7).split()
     # Fits to average and the harmonics: shown in Automatic (as in the pair fit) and followed
-    assert p.parallel_row.isVisibleTo(p) and p.all_harmonics.isVisibleTo(p)
-    assert "HARMONICS=AUTO" in words
-    p.all_harmonics.setChecked(False)
+    assert p.parallel_row.isVisibleTo(p) and p.search_row.isVisibleTo(p)
+    assert "HARMONICS=COMMON" in words  # the harmonics most used, searched by default
+    p.harmonic_search.setCurrentIndex(p.harmonic_search.findData(""))
     p.parallel.setValue(3)
     p.jitter.setValue(20)
     words = p.command(1, 3, 4).split()
-    assert "HARMONICS=AUTO" not in words and {"PARALLEL=3", "JITTER=0.2"} <= set(words)
-    p.all_harmonics.setChecked(True)
+    assert not any("HARMONICS" in w for w in words) and {"PARALLEL=3", "JITTER=0.2"} <= set(words)
+    p.harmonic_search.setCurrentIndex(p.harmonic_search.findData("AUTO"))
     p.fit_mode.setCurrentIndex(0)
     assert not p.parallel_row.isVisibleTo(p)
     p.fit_mode.setCurrentIndex(2)  # Iterative, my settings
@@ -2289,7 +2292,7 @@ def test_the_single_fit_analyses_every_harmonic_and_reports_crossings():
     # COS3X does not matter here, so it stays at its own value (a tie goes to the nearest)
     f = PureFitter(share={1: 1.0, 0: 0.0, 2: 0.5, None: 0.5})
     s = single.SingleSettings(
-        x0=30.5, y0=30.5, r0=2, r1=20, sky=100.0, harmonic_search=True, try_fix=[1, 0]
+        x0=30.5, y0=30.5, r0=2, r1=20, sky=100.0, harmonic_search="auto", try_fix=[1, 0]
     )
     r = single.fit_single(image, mask, s, fitter=f)
     combos = {(h["cos3x"], h["cos4x"]) for h in r.harmonics if h["round"] == 1}
@@ -2567,3 +2570,31 @@ def test_the_window_draws_the_cores_the_settings_would_leave_out():
     window._overlays()
     assert core.boundingRect().width() < 10
     window.close()
+
+
+def test_harmonics_are_none_by_default_and_the_common_ones_are_searched():
+    from PySide6 import QtWidgets
+
+    from astro_vista.pairpanel import JOE, PairPanel
+    from astro_vista.panels import ElliprofPanel
+
+    assert pair.harmonic_values("COMMON") == ([0, -1], [0, 1])
+    assert pair.harmonic_values("auto") == (list(pair.COS3X_VALUES), list(pair.COS4X_VALUES))
+    assert pair.harmonic_values("") == ([], [])
+    s = pair.settings_from({"SKY": "1", "HARMONICS": "COMMON"})
+    snap = pair.all_harmonics(iterative_snapshot(harmonic_search=s.harmonic_search))
+    assert snap.components["A"].try_cos3x == [0, -1] and snap.components["B"].try_cos4x == [0, 1]
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    panel = PairPanel()
+    words = panel.command(1).split()
+    assert "HARMONICS=COMMON" in words and words.count("COS3X=0") == 2 and "COS4X=0" in words
+    panel.set_mode(JOE)
+    assert "COS3X=0" in panel.command(1).split()
+    e = ElliprofPanel()
+    words = e.command(1, 3, 4).split()  # one elliprof call
+    assert "COS3X=0" in words and "COS4X=0" in words and not any("HARMONICS" in w for w in words)
+    e.fit_mode.setCurrentIndex(1)
+    assert "HARMONICS=COMMON" in e.command(1, 3, 4).split()
+    e.harmonic_search.setCurrentIndex(e.harmonic_search.findData("AUTO"))
+    assert "HARMONICS=AUTO" in e.command(1, 3, 4).split()
+    app.processEvents()

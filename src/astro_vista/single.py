@@ -51,7 +51,7 @@ class SingleSettings:
     try_fix: List[int] = field(default_factory=list)
     try_cos3x: List[int] = field(default_factory=list)
     try_cos4x: List[int] = field(default_factory=list)
-    harmonic_search: bool = False
+    harmonic_search: str = ""  # HARMONICS=COMMON or AUTO (pair.harmonic_values)
     wide: bool = False  # SEARCH=FULL: R0, TIE, the centre and NR searched as well
     shape_tol: float = 0.0  # the outer-shape guard (0: off)
     parallel: int = 1  # N fits at the same time, all averaged
@@ -686,8 +686,9 @@ def fit_single(
     # the fit kept, its sky kept; when another combination lowers the residual, the search
     # is made again with it, until the harmonics stay (at most HARMONIC_ROUNDS times).  A
     # combination whose ellipses cross is fitted only out to where they do not (the checks).
-    c3s = s.try_cos3x or (list(pair.COS3X_VALUES) if s.harmonic_search else [])
-    c4s = s.try_cos4x or (list(pair.COS4X_VALUES) if s.harmonic_search else [])
+    found3, found4 = pair.harmonic_values(s.harmonic_search)
+    c3s = s.try_cos3x or found3
+    c4s = s.try_cos4x or found4
     for rnd in range(1, HARMONIC_ROUNDS + 1):
         if not (c3s or c4s) or stopped():
             break

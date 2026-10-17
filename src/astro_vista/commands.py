@@ -80,7 +80,7 @@ HELP = {
     "MINUS= subtracts buffers first; RAW keeps every pixel of the residual; RESIDMASK=n "
     "[RESIDTHRESH=8] [RESIDGROW=2] [RESIDCORE=10]: n times, the faint sources the residual shows "
     "are found, masked (layer residsources) and the galaxy fitted again. Any of R1=AUTO NR=AUTO "
-    "SKYITER= SKYPLANE= TRYFIX= HARMONICS=AUTO TRYCOS3X= TRYCOS4X= "
+    "SKYITER= SKYPLANE= TRYFIX= HARMONICS=COMMON|AUTO TRYCOS3X= TRYCOS4X= "
     "PARALLEL= RUNS= JITTER= TAIL= SHAPETOL= SEARCH= makes it an iterative fit with the pair "
     "fit's options for one galaxy (SKY= or a sky measurement needed); SEARCH=FULL (the "
     "default) also tries TIE off, a larger R0 (out of a masked core), the fixed centre to "
@@ -958,8 +958,10 @@ class Session(ImageCommands):
                 )
             support = measured.support
         harmonics = str(keys.get("HARMONICS", "")).strip().upper()
-        if harmonics and harmonics != "AUTO":
-            raise CommandError("HARMONICS must be AUTO")
+        if harmonics and harmonics not in pairs.HARMONIC_SEARCHES:
+            raise CommandError(
+                "HARMONICS must be COMMON (COS3X 0 and -1, COS4X 0 and 1) or AUTO (every one)"
+            )
         search = str(keys.get("SEARCH", "FULL")).strip().upper()
         if search not in ("FULL", "BASIC"):
             raise CommandError("SEARCH must be FULL or BASIC")
@@ -989,7 +991,7 @@ class Session(ImageCommands):
             try_fix=numbers("TRYFIX", int),
             try_cos3x=numbers("TRYCOS3X", int),
             try_cos4x=numbers("TRYCOS4X", int),
-            harmonic_search=harmonics == "AUTO",
+            harmonic_search=harmonics.lower(),
             wide=search == "FULL",
             shape_tol=number(keys.get("SHAPETOL", 0), "SHAPETOL"),
             parallel=integer(keys.get("PARALLEL", 1), "PARALLEL"),
@@ -2686,8 +2688,9 @@ Shared (before A:)
                 A + B models, mean residual (image - mean sky - mean A + B), the models'
                 spread and each fit's own model and residual go to buffers  [SEED=]
   RUNS=         the number of fits averaged, when not PARALLEL's (RUNS=10 PARALLEL=5)
-  HARMONICS=AUTO   try every COS3X and COS4X for each galaxy, A's then B's, on the fit
-                kept (as TRYCOS3X=-3,-2,-1,0,1,2 TRYCOS4X=0,1,2)
+  HARMONICS=COMMON  try the harmonics most used for each galaxy, A's then B's, on the fit
+                kept: COS3X 0 and -1, COS4X 0 and 1 (as TRYCOS3X=0,-1 TRYCOS4X=0,1)
+  HARMONICS=AUTO   try every COS3X and COS4X (as TRYCOS3X=-3,-2,-1,0,1,2 TRYCOS4X=0,1,2)
   WINGS=1       mask the light beyond the masks of bright sources (star wings, spikes)
                 that the residual of a first pass shows, joined to their masks
   METHOD=JOE    Joe's mode: each galaxy's centre left out while the other is fitted, the
