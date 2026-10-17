@@ -72,6 +72,12 @@ rd 3 frame.fits[sci,2]</code></pre>
 <p><code>close N | ALL</code></p>
 <p>Remove buffer N, or with ALL every buffer, every mask layer and what belonged to them (sources, fits, skies). In the window, the buffers and mask layers are saved to the session folder first: session restore brings them back.</p>
 <pre><code>close 5</code></pre>
+<h3><code>project</code></h3>
+<p><code>project [new [NAME] | close | name NAME]</code></p>
+<p>The project: one field. Its images are all of one size: the galaxy image, its masks and auxiliary images (any file whose content is FITS, whatever its name; different buffers may come from different HDUs of one file: rd 2 file[SCI,2]). Opening another file adds it to the project; another field is another project. Closing the project closes everything: images, buffers, mask layers, models, source runs and fits (the session is saved first).</p>
+<table cellspacing='4'><tr><td><code>(no word)</code></td><td>its name, image size, the files read and what is open</td></tr><tr><td><code>new [NAME]</code></td><td>close this project and start another (File ▸ New project)</td></tr><tr><td><code>close</code></td><td>close everything (File ▸ Close project)</td></tr><tr><td><code>name NAME</code></td><td>rename it (shown in the window's title)</td></tr></table>
+<pre><code>project
+project name UGC 12517</code></pre>
 <h3><code>session</code></h3>
 <p><code>session [save|restore] [FOLDER]</code></p>
 <p>The buffers (with their names, tags and model parameters) and the mask layers kept for next time. The window saves them to the session folder (.temp beside the settings, or the one chosen in File ▸ Session folder…) when buffers are closed, when it closes, and every 2 minutes when something changed; at the start it offers to continue. The save before the last is kept as FOLDER.previous.</p>

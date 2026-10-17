@@ -68,10 +68,11 @@ def box(masked: np.ndarray, x0: float, y0: float, x1: float, y1: float, value=Tr
 
 
 def load(path, shape=None) -> np.ndarray:
-    """Read a mask file (FITS or .dmask): True where it masks a pixel."""
-    from elliprof import load_mask
+    """Read a mask file (FITS or a legacy bitmap, gzip-compressed or not, whatever it is
+    called): True where it masks a pixel (0 or not finite)."""
+    from .images import read_fits
 
-    values = np.asarray(load_mask(str(Path(path).expanduser())))
+    values = read_fits(Path(path).expanduser()).data
     if shape is not None and values.shape != tuple(shape):
         raise ValueError(
             f"the mask {Path(path).name} is {values.shape[1]} x {values.shape[0]} pixels, "

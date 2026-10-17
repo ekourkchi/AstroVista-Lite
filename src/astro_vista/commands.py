@@ -45,6 +45,11 @@ HELP = {
     "close": "close N  -  remove buffer N;  close ALL  -  remove every buffer, every mask "
     "layer and what belonged to them (sources, fits, skies; the session is saved first: "
     "session restore brings the buffers and mask layers back)",
+    "project": "project  -  the project: its name, image size, files and what is open;  "
+    "project new [NAME]  -  close this one (everything: images, buffers, masks, sources, "
+    "fits; the session is saved first) and start another field;  project close  -  close "
+    "everything;  project name NAME  -  rename it.  Every image read into a project is of "
+    "its size (a mask or an auxiliary image of the same field)",
     "session": "session [save|restore] [FOLDER]  -  the buffers and mask layers kept for next "
     "time: where and what (no word), save them now, or read them back (the session folder, "
     "or FOLDER)",
@@ -173,6 +178,52 @@ Changing a layer
 undo / redo undo or redo the last mask edits"""
 
 
+@dataclasses.dataclass
+class Project:
+    """One field: its images (of one size: the galaxy, its masks and auxiliary images,
+    which may come from different HDUs of a file) and the files they came from."""
+
+    name: str = ""
+    shape: Optional[Tuple[int, int]] = None  # the size of its images (the first one read)
+    files: List[str] = dataclasses.field(default_factory=list)  # read, in order
+
+    def check(self, shape, what: str) -> None:
+        if self.shape is not None and tuple(shape) != tuple(self.shape):
+            raise CommandError(
+                f"{what} is {shape[1]} x {shape[0]}; this project's images are "
+                f"{self.shape[1]} x {self.shape[0]}. Another field is another project: "
+                "project new (File > New project) closes this one first"
+            )
+
+    def add(self, shape, path, ext=None, kind: str = "image") -> None:
+        if self.shape is None:
+            self.shape = tuple(shape)
+        label = f"{path}[{ext}]" if ext is not None else str(path)
+        label = f"{label} ({kind})" if kind != "image" else label
+        if label not in self.files:
+            self.files.append(label)
+
+    def emptied(self) -> None:
+        """Every image closed: the next one read sets the size again."""
+        self.shape = None
+        self.files.clear()
+
+    def title(self) -> str:
+        size = f"{self.shape[1]} x {self.shape[0]}" if self.shape else "no image yet"
+        return f"{self.name or 'project'} ({size})"
+
+    def describe(self, session) -> str:
+        size = f"images {self.shape[1]} x {self.shape[0]}" if self.shape else "no image yet"
+        lines = [f"project {self.name or '(unnamed)'}: {size}"]
+        lines += [f"  {f}" for f in self.files] or ["  no file read"]
+        lines.append(
+            f"  {len(session.buffers)} buffers, {len(session.masks)} mask layers, "
+            f"{len(session.runs)} source runs, {len(session.fits)} ELLIPROF fits, "
+            f"{len(session.pairs)} pair fits"
+        )
+        return "\n".join(lines)
+
+
 class Session(ImageCommands):
     """The buffers, fits, source-finder runs and mask layers of a session."""
 
@@ -201,6 +252,9 @@ class Session(ImageCommands):
         # the session folder: the buffers and mask layers kept for next time (the window sets
         # it; None: not kept)
         self.store_folder: Optional[Path] = None
+        # the project: one field (a galaxy image, its masks and auxiliary files, all of one
+        # size), with what was made from it; project new / project close start again
+        self.project = Project()
 
     # ---- helpers
     def buffer(self, text) -> Image:
@@ -476,10 +530,12 @@ class Session(ImageCommands):
             image = read_fits(path, hdu)
         except (OSError, ValueError, IndexError) as e:
             raise CommandError(str(e))
+        self.project.check(image.shape, image.name)
         self.buffers[n] = image
+        self.project.add(image.shape, path, ext)
         return Reply(
             f"buffer {n}: {image.name}, {image.shape[1]} x {image.shape[0]}",
-            {"buffers", "data"},
+            {"buffers", "data", "project"},
             show=n,
         )
 
@@ -586,13 +642,38 @@ class Session(ImageCommands):
             self.skies.clear()
             self.sky_of.clear()
             self.sky_buffer.clear()
+            self.centre = None
+            self.project.emptied()
             return Reply(
                 f"closed {count} buffer{'s' if count != 1 else ''} and {layers} mask "
                 f"layer{'s' if layers != 1 else ''}{kept}",
-                {"buffers", "masks", "sources", "fits", "pairs", "sky", "data"},
+                {"buffers", "masks", "sources", "fits", "pairs", "sky", "data", "project"},
             )
         del self.buffers[integer(words[0], "the buffer")]
         return Reply(f"closed {image.name}{kept}", {"buffers"})
+
+    def c_project(self, words, keys) -> Reply:
+        """project [new [NAME] | close | name NAME]: the field worked on."""
+        action = words[0].lower() if words else ""
+        if action not in ("", "new", "close", "name"):
+            raise CommandError(HELP["project"])
+        if action == "name":
+            if len(words) < 2:
+                raise CommandError("usage: project name NAME")
+            self.project.name = " ".join(words[1:])
+            return Reply(f"project {self.project.name}", {"project"})
+        if action in ("new", "close"):
+            reply = self.c_close(["ALL"], {})
+            self.project = Project(" ".join(words[1:]) if action == "new" else "")
+            what = (
+                f"new project {self.project.name or '(unnamed)'}: open its image"
+                if action == "new"
+                else "project closed"
+            )
+            reply.text = f"{what}\n{reply.text}"
+            reply.changed |= {"project"}
+            return reply
+        return Reply(self.project.describe(self))
 
     def c_session(self, words, keys) -> Reply:
         """session [save|restore] [FOLDER]: the buffers and mask layers kept for next time."""
@@ -619,7 +700,7 @@ class Session(ImageCommands):
                 text = sessionstore.restore(self, folder)
             except (OSError, ValueError, KeyError) as e:
                 raise CommandError(f"cannot read the session in {folder}: {e}")
-            return Reply(text, {"buffers", "data", "masks"})
+            return Reply(text, {"buffers", "data", "masks", "project"})
         info = sessionstore.describe(folder)
         if info is None:
             return Reply(f"session folder {folder}: nothing saved yet")
@@ -2106,6 +2187,7 @@ class Session(ImageCommands):
                     )
                 except ValueError as e:
                     raise CommandError(str(e))
+                self.project.add(self.masks[name].shape, path, None, "mask")
             elif action == "frombuf":
                 if not rest:
                     raise CommandError("usage: mask frombuf NAME N")
@@ -2440,6 +2522,9 @@ def completions(session: "Session", line: str):
             return start, [n for n in session.masks if n.startswith(word)]
         if before[1] in ("load", "save") and len(before) == 3:
             return start, _files(session, word)
+    if verb in ("project", "session") and len(before) == 1:
+        actions = ("new", "close", "name") if verb == "project" else ("save", "restore")
+        return start, [a for a in actions if a.startswith(word)]
     if verb == "help" and len(before) == 1:
         return start, [k for k in HELP if k.startswith(word) and k != "="]
     if FILE_COMMANDS.get(verb) == len(before) or not hasattr(session, f"c_{verb}"):

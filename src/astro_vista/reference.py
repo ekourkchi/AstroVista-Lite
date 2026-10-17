@@ -93,6 +93,23 @@ GROUPS: List[Tuple[str, str, List[Command]]] = [
                 "close 5",
             ),
             _c(
+                "project",
+                "project [new [NAME] | close | name NAME]",
+                "The project: one field. Its images are all of one size: the galaxy image, "
+                "its masks and auxiliary images (any file whose content is FITS, whatever its "
+                "name; different buffers may come from different HDUs of one file: "
+                "rd 2 file[SCI,2]). Opening another file adds it to the project; another field "
+                "is another project. Closing the project closes everything: images, buffers, "
+                "mask layers, models, source runs and fits (the session is saved first).",
+                (
+                    ("(no word)", "its name, image size, the files read and what is open"),
+                    ("new [NAME]", "close this project and start another (File ▸ New project)"),
+                    ("close", "close everything (File ▸ Close project)"),
+                    ("name NAME", "rename it (shown in the window's title)"),
+                ),
+                "project\nproject name UGC 12517",
+            ),
+            _c(
                 "session",
                 "session [save|restore] [FOLDER]",
                 "The buffers (with their names, tags and model parameters) and the mask layers "

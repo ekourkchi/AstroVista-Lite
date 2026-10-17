@@ -61,7 +61,8 @@
     already placed. The dashed circles are each galaxy's R1: guides, not fits.</p>
     <figure><img src="images/pair_setup.png" alt="The synthetic pair with A's centre and R1 circle in magenta and B's in orange, and the Pair fit panel" loading="lazy"></figure>
     <p>The same in the terminal:</p>
-    <pre><code>rd 1 pair.fits
+    <pre><code>project new pair                    <span class="c"># another field: a project of its own</span>
+rd 1 pair.fits
 mask load stars pair.dmask 1
 mask role stars fit                 <span class="c"># left out of fits</span>
 sources 1</code></pre>

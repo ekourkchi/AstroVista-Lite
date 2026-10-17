@@ -47,7 +47,7 @@ def test_header_only_primary_is_skipped(tmp_path):
     fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(data, name="SCI")]).writeto(tmp_path / "x.fits")
     image = read_fits(tmp_path / "x.fits")
     assert image.shape == (20, 30)
-    assert image.name == "x.fits[1]"
+    assert image.name == "x.fits[SCI]"  # named by its EXTNAME
 
 
 def test_fit_recovers_the_galaxy():
@@ -1012,7 +1012,7 @@ def test_same_scale_blinking_and_the_wheel_guard():
     QtWidgets.QApplication.sendEvent(box, wheel)
     assert box.value() == before
     app.removeEventFilter(guard)
-    assert window.windowTitle() == "AstroVista Lite"
+    assert window.windowTitle().startswith("AstroVista Lite")  # and the project
     assert list(guide.TOPICS)[:2] == ["overview", "lesson"] and "credits" in guide.TOPICS
     assert "github.com/sep-developers/sep" in guide.TOPICS["credits"][1]
     window.close()
@@ -2173,3 +2173,75 @@ def test_the_layers_fold_and_the_buffers_get_the_room(tmp_path):
     app.processEvents()
     assert not window.layers.body.isHidden() and window.left_split.sizes() == before
     window.close()
+
+
+def test_a_project_is_one_field_of_one_size(tmp_path):
+    import gzip
+
+    from astropy.io import fits
+
+    from astro_vista.commands import CommandError, Session
+
+    big, small = np.ones((40, 50), np.float32), np.ones((30, 30), np.float32)
+    fits.writeto(tmp_path / "galaxy.fits", big)
+    # a FITS file is opened whatever its name: no extension, another one, gzipped
+    fits.writeto(tmp_path / "weightmap", 2 * big)
+    fits.writeto(tmp_path / "aux.dat", 3 * big)
+    (tmp_path / "zipped").write_bytes(gzip.compress((tmp_path / "aux.dat").read_bytes()))
+    fits.HDUList(
+        [fits.PrimaryHDU(), fits.ImageHDU(big, name="SCI"), fits.ImageHDU(4 * big, name="ERR")]
+    ).writeto(tmp_path / "frame")
+    fits.writeto(tmp_path / "other.fits", small)
+    s = Session()
+    s.folder = tmp_path
+    s.execute("rd 1 galaxy.fits")
+    s.execute("rd 2 weightmap")
+    s.execute("rd 3 aux.dat")
+    s.execute("rd 4 zipped")
+    s.execute("rd 5 frame[SCI]")
+    s.execute("rd 6 frame[ERR]")
+    assert s.buffers[2].data[0, 0] == 2 and s.buffers[4].data[0, 0] == 3
+    assert s.buffers[6].data[0, 0] == 4
+    assert s.project.shape == (40, 50) and len(s.project.files) == 6
+    with pytest.raises(CommandError, match="project new"):
+        s.execute("rd 7 other.fits")  # another field
+    # a mask too, gzip-compressed and of no particular name
+    good = np.ones((40, 50), np.uint8)
+    good[5:10, 5:10] = 0
+    fits.writeto(tmp_path / "starmask", good)
+    (tmp_path / "zmask").write_bytes(gzip.compress((tmp_path / "starmask").read_bytes()))
+    s.execute("mask load stars zmask 1")
+    assert s.masks["stars"].count() == 25
+    s.execute("project name NGC 4898")
+    assert "NGC 4898" in s.execute("project").text
+    s.execute("mask new m 1")
+    s.execute("sources 1")
+    # a new project closes everything, and takes any size
+    reply = s.execute("project new other")
+    assert "new project other" in reply.text
+    assert not s.buffers and not s.masks and not s.runs and s.project.shape is None
+    s.execute("rd 1 other.fits")
+    assert s.project.shape == (30, 30) and s.project.name == "other"
+    s.execute("project close")
+    assert not s.buffers and s.project.name == "" and s.project.shape is None
+
+
+def test_a_restored_session_keeps_its_project(tmp_path):
+    from astropy.io import fits
+
+    from astro_vista.commands import CommandError, Session
+
+    fits.writeto(tmp_path / "galaxy.fits", np.ones((40, 50), np.float32))
+    fits.writeto(tmp_path / "other.fits", np.ones((30, 30), np.float32))
+    s = Session()
+    s.folder = tmp_path
+    s.execute("rd 1 galaxy.fits")
+    s.execute("project name field one")
+    s.execute(f"session save {tmp_path / 'kept'}")
+    s.execute("project close")
+    s.execute("rd 1 other.fits")
+    with pytest.raises(CommandError, match="close the project first"):
+        s.execute(f"session restore {tmp_path / 'kept'}")
+    s.execute("project close")
+    s.execute(f"session restore {tmp_path / 'kept'}")
+    assert s.project.name == "field one" and s.project.shape == (40, 50)

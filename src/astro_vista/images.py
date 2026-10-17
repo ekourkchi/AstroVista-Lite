@@ -84,6 +84,25 @@ def first_header(path) -> Optional[str]:
     return block.decode("ascii", "replace") if block.startswith(b"SIMPLE  =") else None
 
 
+def read_bitmap(path) -> np.ndarray:
+    """A legacy bitmap mask's values (1 = good, 0 = masked), gzip-compressed or not."""
+    import gzip
+    import tempfile
+
+    from elliprof import load_mask
+
+    path = Path(path)
+    with open(path, "rb") as f:
+        zipped = f.read(2) == b"\x1f\x8b"
+    if not zipped:
+        return np.asarray(load_mask(str(path)), np.float32)
+    with tempfile.TemporaryDirectory() as folder:  # elliprof reads plain files only
+        plain = Path(folder) / "mask.dmask"
+        with gzip.open(path, "rb") as f:
+            plain.write_bytes(f.read())
+        return np.asarray(load_mask(str(plain)), np.float32)
+
+
 def is_fits(path) -> bool:
     return first_header(path) is not None
 
@@ -117,9 +136,7 @@ def read_fits(path, ext: Optional[int] = None) -> Image:
     if not is_fits(path):
         raise ValueError(f"{path.name} is not a FITS file")
     if is_bitmap_mask(path):  # a legacy bitmap: 1 = good, 0 = masked
-        from elliprof import load_mask
-
-        return Image(path.name, np.asarray(load_mask(str(path)), np.float32), fits.Header(), path)
+        return Image(path.name, read_bitmap(path), fits.Header(), path)
     if ext is None:
         found = image_hdus(path)
         if not found:
@@ -133,7 +150,10 @@ def read_fits(path, ext: Optional[int] = None) -> Image:
         header = hdu.header.copy()
     if data.ndim != 2:
         raise ValueError(f"HDU {ext} of {path.name} is {data.ndim}-dimensional, not an image")
-    name = path.name if ext == 0 else f"{path.name}[{ext}]"
+    label = str(header.get("EXTNAME", "")).strip() or str(ext)
+    if label != str(ext) and int(header.get("EXTVER", 1) or 1) > 1:
+        label += f",{int(header['EXTVER'])}"
+    name = path.name if ext == 0 else f"{path.name}[{label}]"
     return Image(name, data.astype(np.float32), header, path)
 
 

@@ -5,6 +5,17 @@ newest is at the top.
 
 ## 1.1.0rc1 (not released yet)
 
+- **Projects.** A project is one field: the galaxy image, its masks and auxiliary images,
+  all of one size, with the sources, fits and models made from them. Opening another file
+  adds it to the project (a mask, a weight map, another HDU); a file of another size is
+  another field, and AstroVista Lite offers to start a new project for it. File ▸ New
+  project and File ▸ Close project close everything (images, buffers, mask layers, models,
+  source runs, fits; the session is saved first); the window's title names the project.
+  Terminal: `project`, `project new [NAME]`, `project close`, `project name NAME`.
+- **Several HDUs at once.** Opening a file with several images lists them; choose several
+  (or *Open all*) and each goes into a buffer of its own.
+- **FITS by content, whatever the name.** Images and masks are read when the file is FITS,
+  with any name or none, gzip-compressed or not (a gzipped legacy bitmap mask too).
 - **The companion's core, seen and chosen.** Pair fit ▸ 3. Fitting masks has *Companion's
   core* in every mode: *Off* (nothing left out around the other galaxy's centre, the
   automatic settings' choice), *Auto size, capped at* (CORECAP, or JOECOREMAX in Joe's

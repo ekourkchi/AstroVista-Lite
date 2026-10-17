@@ -78,6 +78,11 @@ def save(session, folder: Path) -> Optional[str]:
         "folder": str(session.folder),
         "buffers": buffers,
         "masks": masks,
+        "project": {
+            "name": session.project.name,
+            "shape": list(session.project.shape) if session.project.shape else None,
+            "files": list(session.project.files),
+        },
     }
     (work / MANIFEST).write_text(json.dumps(manifest, indent=1))
     # the save before this one is kept beside it (FOLDER.previous), in case this one is
@@ -109,6 +114,26 @@ def restore(session, folder: Path) -> str:
     free ones when taken) and its mask layers (renamed when the name is taken)."""
     folder = Path(folder)
     manifest = json.loads((folder / MANIFEST).read_text())
+    # one project: its images all of one size
+    saved = manifest.get("project") or {}
+    shapes = {tuple(int(v) for v in saved["shape"])} if saved.get("shape") else set()
+    for entry in manifest.get("buffers", []):
+        with fits.open(folder / entry["file"], memmap=False) as hdul:
+            shapes.add(tuple(hdul[0].data.shape))
+    project = session.project
+    if project.shape is not None and shapes - {tuple(project.shape)}:
+        size = " and ".join(f"{s[1]} x {s[0]}" for s in sorted(shapes))
+        raise ValueError(
+            f"its images are {size}, this project's {project.shape[1]} x {project.shape[0]}: "
+            "close the project first (project close)"
+        )
+    if saved.get("name") and not project.name:
+        project.name = saved["name"]
+    if project.shape is None and len(shapes) == 1:
+        project.shape = next(iter(shapes))
+    for f in saved.get("files", []):
+        if f not in project.files:
+            project.files.append(f)
     numbers = []
     for entry in manifest.get("buffers", []):
         with fits.open(folder / entry["file"], memmap=False) as hdul:

@@ -609,6 +609,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.a_sources = a("Export the &sources (CSV)…", self.export_sources)
         self.a_profile_png = a("Export the profile plot (PNG)…", self.export_profile_png)
         self.a_plot_png = a("Export the sources plot (PNG)…", self.export_plot_png)
+        self.a_new_project = a("&New project…", self.new_project, shortcut="Ctrl+Shift+N")
+        self.a_close_project = a("&Close project", self.close_project)
+        self.a_project_info = a("Project…", lambda: self.run_command("project"))
         self.a_restore = a("Restore the last session", self.restore_session)
         self.a_session_folder = a("Session folder…", self.choose_session_folder)
         self.a_quit = a("&Quit", self.close, shortcut=QtGui.QKeySequence.Quit)
@@ -755,6 +758,10 @@ class MainWindow(QtWidgets.QMainWindow):
         menu(
             "&File",
             (
+                self.a_new_project,
+                self.a_close_project,
+                self.a_project_info,
+                None,
                 self.a_open,
                 self.recent_menu.menuAction(),
                 self.a_example,
@@ -1243,6 +1250,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._session_dirty = True
         if "buffers" in reply.changed:
             self._refresh_buffers()
+        if "project" in reply.changed:
+            self._project_title()
         if reply.show is not None:
             self.show_buffer(reply.show)
         elif "data" in reply.changed and self.shown is not None:
@@ -1390,6 +1399,79 @@ class MainWindow(QtWidgets.QMainWindow):
         menu.addAction("Close all", self._close_all_buffers)
         menu.exec(self.buffer_list.mapToGlobal(pos))
 
+    # ---- the project
+    def _project_title(self) -> None:
+        project = self.session.project
+        self.setWindowTitle(
+            f"{TITLE} — {project.title()}" if project.shape or project.name else TITLE
+        )
+
+    def new_project(self) -> None:
+        """Close this project (everything; it is saved first) and start another field."""
+        if self.session.buffers or self.session.masks:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "New project",
+                "Start a new project? This one is closed: its images, buffers, mask layers, "
+                "sources and fits (they are kept in the session folder first: File ▸ Restore "
+                "the last session brings the buffers and mask layers back).",
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "New project", "A name for the project (the galaxy or field):"
+        )
+        if ok:
+            self.run_command(f"project new {name.strip()}".strip())
+
+    def close_project(self) -> None:
+        if not (self.session.buffers or self.session.masks or self.session.project.name):
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Close project",
+            "Close the project: every image, buffer, mask layer, model, source run and fit? "
+            "(They are kept in the session folder first: File ▸ Restore the last session "
+            "brings the buffers and mask layers back.)",
+        )
+        if answer == QtWidgets.QMessageBox.Yes:
+            self.run_command("project close")
+
+    def _fits_shape(self, path: Path, ext=None):
+        """The size (ny, nx) of the image a file holds (HDU ``ext``, or the first), or None."""
+        from astropy.io import fits
+
+        try:
+            with fits.open(path) as hdul:
+                k = ext if ext is not None else (image_hdus(path) or [0])[0]
+                if isinstance(k, str) and not k.isdigit():
+                    k = Session._hdu_named(path, k)  # SCI, or SCI,2
+                h = hdul[int(k)].header
+                axes = [int(h.get(f"NAXIS{i}", 1)) for i in range(1, int(h.get("NAXIS", 0)) + 1)]
+        except Exception:
+            return None
+        axes = [a for a in axes if a > 1]
+        return (axes[1], axes[0]) if len(axes) == 2 else None
+
+    def _fits_project(self, shape, what: str) -> bool:
+        """An image of ``shape`` can be opened: the project's size, or no image yet, or (asked)
+        a new project started for it.  False: not opened."""
+        project = self.session.project
+        if shape is None or project.shape is None or tuple(shape) == tuple(project.shape):
+            return True
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Another field",
+            f"{what} is {shape[1]} × {shape[0]}; this project's images are "
+            f"{project.shape[1]} × {project.shape[0]}.\n\nAll the images of a project are of "
+            "one size (the galaxy, its masks and auxiliary images). Start a new project for it? "
+            "This one is closed (and kept in the session folder first).",
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return False
+        self.run_command("project new")
+        return True
+
     def _close_all_buffers(self) -> None:
         count = len(self.session.buffers)
         if not count:
@@ -1451,6 +1533,10 @@ class MainWindow(QtWidgets.QMainWindow):
         layer of the image of its size, or an image when there is none."""
         m = re.fullmatch(r"(.+)\[([^\]]+)\]", str(path))
         if m and not path.exists() and Path(m.group(1)).expanduser().exists():
+            if not self._fits_project(
+                self._fits_shape(Path(m.group(1)).expanduser(), m.group(2)), path.name
+            ):
+                return
             n = self.session.free_buffer()
             self.run_command(f"rd {n} {shlex.quote(str(path))}")
             self.remember(str(path))
@@ -1475,19 +1561,22 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, TITLE, f"Could not open {path.name}:\n{e}")
             return
-        name = str(path)
+        chosen = [None]
         if len(hdus) > 1:
-            ext = self._choose_hdu(path, hdus)
-            if ext is None:
+            chosen = self._choose_hdu(path, hdus)
+            if not chosen:
                 return
-            name += f"[{ext}]"
-        waiting = self._queue + ([self._running] if self._running else [])
-        queued = {int(m.group(1)) for q in waiting if (m := re.match(r"rd (\d+) ", q))}
-        n = self.session.free_buffer()
-        while n in queued:
-            n += 1
-        self.run_command(f"rd {n} {shlex.quote(name)}")
-        self.remember(name)
+        if not self._fits_project(self._fits_shape(path, chosen[0]), path.name):
+            return
+        for ext in chosen:  # each HDU chosen into a buffer of its own
+            name = str(path) if ext is None else f"{path}[{ext}]"
+            waiting = self._queue + ([self._running] if self._running else [])
+            queued = {int(m.group(1)) for q in waiting if (m := re.match(r"rd (\d+) ", q))}
+            n = self.session.free_buffer()
+            while n in queued:
+                n += 1
+            self.run_command(f"rd {n} {shlex.quote(name)}")
+            self.remember(name)
 
     # ---- recently opened files
     def _recent(self) -> List[str]:
@@ -1511,7 +1600,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recent_menu.addSeparator()
         self.recent_menu.addAction("Clear the list", lambda: settings().setValue("recent", []))
 
-    def _choose_hdu(self, path: Path, hdus: List[int]) -> Optional[int]:
+    def _choose_hdu(self, path: Path, hdus: List[int]) -> List[int]:
+        """The images of a file to open (several HDUs: each into a buffer of its own)."""
         from astropy.io import fits
 
         with fits.open(path) as hdul:
@@ -1520,10 +1610,33 @@ class MainWindow(QtWidgets.QMainWindow):
                 h = hdul[k].header
                 shape = " × ".join(str(h.get(f"NAXIS{a}")) for a in range(1, h["NAXIS"] + 1))
                 labels.append(f"[{k}] {h.get('EXTNAME', 'PRIMARY' if k == 0 else '')}  {shape}")
-        label, ok = QtWidgets.QInputDialog.getItem(
-            self, TITLE, f"{path.name} holds several images. Open:", labels, 0, False
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(TITLE)
+        lay = QtWidgets.QVBoxLayout(dialog)
+        lay.addWidget(
+            QtWidgets.QLabel(
+                f"{path.name} holds several images. Open (each into a buffer of its own; "
+                "Shift- or Cmd-click for several):"
+            )
         )
-        return hdus[labels.index(label)] if ok else None
+        listing = QtWidgets.QListWidget()
+        listing.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        listing.addItems(labels)
+        listing.setCurrentRow(0)
+        listing.itemDoubleClicked.connect(lambda _i: dialog.accept())
+        lay.addWidget(listing)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        every = buttons.addButton("Open all", QtWidgets.QDialogButtonBox.AcceptRole)
+        every.clicked.connect(listing.selectAll)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        lay.addWidget(buttons)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return []
+        rows = sorted(listing.row(item) for item in listing.selectedItems())
+        return [hdus[r] for r in rows]
 
     def save_buffer(self, n=None) -> None:
         n = n if isinstance(n, int) and not isinstance(n, bool) else self.shown
@@ -1566,6 +1679,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def open_pair_example(self) -> None:
         """Load the synthetic pair, its star mask, and the settings that fit it."""
         folder = example_folder()
+        if not self._fits_project(self._fits_shape(folder / "pair.fits.gz"), "The pair example"):
+            return
         n = self.session.free_buffer()
         self.run_command(f"rd {n} {shlex.quote(str(folder / 'pair.fits.gz'))}")
         self.run_command(f"mask load stars {shlex.quote(str(folder / 'pair.dmask'))} {n}")
@@ -1600,6 +1715,8 @@ class MainWindow(QtWidgets.QMainWindow):
             info = pairs.read_folder(folder)
         except pairs.PairError as e:
             QtWidgets.QMessageBox.information(self, TITLE, str(e))
+            return
+        if not self._fits_project(self._fits_shape(info.image), info.image.name):
             return
         n = self.session.free_buffer()
         self.run_command(f"rd {n} {shlex.quote(info.rd_name)}")
@@ -2100,6 +2217,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _example_ready(self, show_tool: bool = True) -> None:
         folder = example_folder()
+        if not self._fits_project(self._fits_shape(folder / EXAMPLE_FILES[0]), "The example"):
+            return
         n = self.session.free_buffer()
         image = shlex.quote(str(folder / EXAMPLE_FILES[0]))
         mask = shlex.quote(str(folder / EXAMPLE_FILES[1]))
